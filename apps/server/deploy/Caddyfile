@@ -1,0 +1,65 @@
+# trine 服务端 Caddy 反代示例
+#
+# Caddy 自动申请并续期 Let's Encrypt 证书，这正是配对流程要求 serverUrl
+# 必须是 wss:// / https:// 的落点（core 的 pairing.ts 会拒绝明文 ws/http：
+# 明文通道下中间人可以直接替换 pair.begin 里的公钥）。
+#
+# 安装：
+#   sudo cp Caddyfile /etc/caddy/Caddyfile   # 或并入已有站点配置
+#   sudo systemctl reload caddy
+
+trine.example.com {
+	# WebSocket 与 HTTP 同一个 upstream——Caddy v2 自动透传 Upgrade 头，
+	# 不需要像 Nginx 那样手写 Connection/Upgrade 映射
+	reverse_proxy 127.0.0.1:8787 {
+		# 认证限流按「deviceId + 来源 IP」计数，服务端靠这个头认来源。
+		# 这里用赋值形式（{remote_host} = 反代直接看到的对端 socket IP），
+		# 把整条 X-Forwarded-For **覆盖为单值真实 IP**，丢弃客户端自带的任何
+		# XFF——显式写出来是为了让这条依赖可见，删掉它会让所有设备落进同一个
+		# 限流桶而互相牵连。
+		#
+		# 关键：服务端 clientSource() 取 XFF 链的**最右**值作为来源
+		# （见 src/http.ts 注释）。XFF 每跳追加、越右越可信，最左恒由客户端
+		# 可控——取最左会让单个 IP 伪造无限来源、绕开按来源限流。本行覆盖成
+		# 单值后最右=最左=真实 IP；即便日后改成追加语义
+		# （如 `{header.X-Forwarded-For}, {remote_host}`），服务端取最右仍拿到
+		# 真实 IP，不受客户端伪造前缀影响。
+		header_up X-Forwarded-For {remote_host}
+
+		# 长连接：中转会话可以几小时没有数据往来，
+		# 上游超时必须大于服务端自己的空闲判定（TRINE_IDLE_TIMEOUT_MS），
+		# 让「谁来断连」这件事由应用层心跳决定，而不是反代偷偷掐掉
+		transport http {
+			read_timeout 0
+			write_timeout 0
+		}
+	}
+
+	# 安全响应头
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+		-Server
+	}
+
+	# 认证端点限流（需要 Caddy 的 rate_limit 插件；没装就删掉这段，
+	# 服务端自身已有按设备的失败计数限流作为兜底）
+	# rate_limit {
+	# 	zone auth {
+	# 		match {
+	# 			path /auth/*
+	# 		}
+	# 		key {remote_host}
+	# 		events 30
+	# 		window 1m
+	# 	}
+	# }
+
+	log {
+		output file /var/log/caddy/trine.log
+		# 不记录请求体：认证端点的请求体里有挑战应答签名，
+		# 且 WS 帧根本不经这里，但显式声明意图以免日后有人加上
+	}
+}

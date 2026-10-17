@@ -1,0 +1,55 @@
+# Dependencies and generated output
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+
+# Local environments: commit templates only
+.env
+.env.*
+*.env
+*.env.*
+!.env.example
+!*.env.example
+
+# Runtime identity, sessions, databases, logs and backups
+.trine/
+.dev/
+identity.json
+identity.json.*
+recipients.json
+state.json
+sessions.json
+cwd.json
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+*.log
+*.pem
+*.key
+*.p12
+*.pfx
+*.bundle
+*.bak
+*.tgz
+*.tar.gz
+
+# Private working files and assistant configuration
+.local/
+.claude/
+.agents/skills/local-*/
+CLAUDE.local.md
+AGENTS.local.md
+.playwright-mcp/
+playwright-report/
+test-results/
+
+# Editor and OS metadata
+.DS_Store
+._*
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo

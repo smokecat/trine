@@ -1,0 +1,66 @@
+# trine 服务端 systemd unit
+#
+# 安装：
+#   sudo cp trine-server.service /etc/systemd/system/
+#   sudo cp trine-server.env.example /etc/trine/server.env   # 按需改配置
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now trine-server
+#
+# 查看日志：journalctl -u trine-server -f
+
+[Unit]
+Description=trine relay server (end-to-end encrypted message relay)
+Documentation=https://github.com/smokecat/trine
+After=network-online.target
+Wants=network-online.target
+# 反复崩溃时不要无限重启刷日志（这两项属于 [Unit]，放 [Service] 会被 systemd 忽略）
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=trine
+Group=trine
+WorkingDirectory=/opt/trine
+
+# bun 的绝对路径——systemd 不走登录 shell，$PATH 里通常没有 ~/.bun/bin
+ExecStart=/usr/local/bin/bun run /opt/trine/apps/server/src/index.ts
+EnvironmentFile=/etc/trine/server.env
+
+Restart=on-failure
+RestartSec=3s
+
+# 优雅退出：进程收到 SIGTERM 后自行关连接、关库（见 src/index.ts）
+KillSignal=SIGTERM
+TimeoutStopSec=15
+
+# ---- 安全加固 ----
+# 中转服务只需要读自己的代码、写自己的 SQLite，其余一律不给
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=false
+# ↑ Bun 是 JIT，必须允许可写可执行内存，否则进程起不来
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
+
+# 唯一可写目录：数据库所在处
+ReadWritePaths=/var/lib/trine
+
+# 资源上限（小 VPS 友好；实测占用远低于此）
+MemoryMax=512M
+TasksMax=256
+
+[Install]
+WantedBy=multi-user.target

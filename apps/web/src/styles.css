@@ -1,0 +1,289 @@
+/**
+ * 设计 token 与主题。
+ *
+ * 集中定义配色、字体和组件语义变量
+ * 头部那组 CSS 变量——这里做的是**迁移**而不是重新设计：同名 token 的色值
+ * 逐个照抄，只把承载方式换成 Tailwind 4 的 `@theme` + shadcn 约定的语义变量。
+ *
+ * 三层结构：
+ *   1. `:root` / `.dark` 里的**原始 token**（`--surface` `--accent` …）——
+ *      与原型一一对应，是唯一的事实来源；
+ *   2. 同一块里的**shadcn 语义变量**（`--background` `--primary` …）——全部
+ *      引用第 1 层，shadcn 组件因此自动长成 trine 的样子，不需要逐个改组件；
+ *   3. `@theme inline` 把两层都暴露成 Tailwind 工具类（`bg-surface`
+ *      `text-text-2` `border-border` `bg-primary` …）。
+ *
+ * 深色模式三态（system / light / dark，跟原型一致）：
+ *   - `:root` 定义完整浅色；
+ *   - `@media (prefers-color-scheme: dark)` 里 `:root:not([data-theme='light'])`
+ *     覆盖为深色 —— 即「跟随系统」且未被手动锁成浅色时生效；
+ *   - `[data-theme='dark']` 再覆盖一次 —— 手动选深色在任何系统设置下都赢。
+ *   `.dark` 类与 `[data-theme='dark']` 同时挂，shadcn 生态里按 `.dark`
+ *   选择器写的东西（如 tw-animate-css / 第三方组件）也能跟上。
+ *   挂载逻辑见 `src/app/theme.ts`。
+ *
+ * 字体：@fontsource 本地打包（latin 子集，只要原型用到的字重），**不引
+ * Google Fonts**——方案 §4.1 的零第三方脚本/CDN 约束。中文走系统字体回落，
+ * 与原型的 font stack 一致。
+ */
+@import 'tailwindcss';
+
+/* IBM Plex Sans 400/500/600 + Mono 400/500，latin 子集，本地文件 */
+@import '@fontsource/ibm-plex-sans/latin-400.css';
+@import '@fontsource/ibm-plex-sans/latin-500.css';
+@import '@fontsource/ibm-plex-sans/latin-600.css';
+@import '@fontsource/ibm-plex-mono/latin-400.css';
+@import '@fontsource/ibm-plex-mono/latin-500.css';
+
+/* shadcn radix-nova 组件用到的 keyframes / data-* 变体 / scroll-fade 等工具类。
+   16KB 纯 CSS，零外部 URL（本地 node_modules，符合零 CDN 约束）。 */
+@import 'shadcn/tailwind.css';
+@import 'tw-animate-css';
+
+/* shadcn 的 dark: 变体按 class 走，我们同时挂 .dark 与 [data-theme=dark] */
+@custom-variant dark (&:where(.dark, [data-theme='dark'], .dark *, [data-theme='dark'] *));
+
+/* ============================================================
+   浅色（原型 :root）
+   ============================================================ */
+:root {
+  /* --- 原型原始 token --- */
+  --phone-bg: #f7f9fa;
+  --surface: #ffffff;
+  --surface-2: #eef2f5;
+  --surface-3: #e4eaef;
+  --border-c: #dce3e9;
+  --border-strong: #c4ced6;
+  --text: #1b2530;
+  --text-2: #5d6b78;
+  --text-3: #8c99a6;
+  --accent: #0fa089;
+  --accent-ink: #0b7d6b;
+  --accent-soft: rgba(15, 160, 137, 0.1);
+  --accent-border: rgba(15, 160, 137, 0.35);
+  /* accent 底上的前景色：浅色主题下 accent 是深青，配白字 */
+  --accent-fg: #ffffff;
+  --amber: #b97d10;
+  --amber-soft: rgba(214, 152, 32, 0.12);
+  --amber-border: rgba(185, 125, 16, 0.45);
+  --red: #c24a4a;
+  --red-soft: rgba(194, 74, 74, 0.1);
+  --green: #2e8f55;
+  --green-soft: rgba(46, 143, 85, 0.12);
+  --blue: #3d6fb4;
+  --blue-soft: rgba(61, 111, 180, 0.1);
+  --user-bubble: #dcefea;
+  --code-bg: #f0f3f6;
+  --shadow-card: 0 1px 3px rgba(27, 37, 48, 0.08), 0 4px 16px rgba(27, 37, 48, 0.06);
+
+  /* --- shadcn 语义变量：一律引用上面的原始 token --- */
+  --radius: 0.75rem; /* 原型卡片 14px / 按钮 10px，取中 12px 作基准 */
+  --background: var(--phone-bg);
+  --foreground: var(--text);
+  --card: var(--surface);
+  --card-foreground: var(--text);
+  --popover: var(--surface);
+  --popover-foreground: var(--text);
+  --primary: var(--accent);
+  --primary-foreground: var(--accent-fg);
+  --secondary: var(--surface-2);
+  --secondary-foreground: var(--text);
+  --muted: var(--surface-2);
+  --muted-foreground: var(--text-3);
+  --accent-bg: var(--surface-2);
+  --accent-foreground: var(--text);
+  --destructive: var(--red);
+  --destructive-foreground: #ffffff;
+  --border: var(--border-c);
+  --input: var(--border-strong);
+  --ring: var(--accent);
+}
+
+/* 跟随系统 + 未手动锁浅色 → 深色 */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    --phone-bg: #12181f;
+    --surface: #1a222b;
+    --surface-2: #222c36;
+    --surface-3: #2a3642;
+    --border-c: #2b3844;
+    --border-strong: #3b4a58;
+    --text: #e8edf2;
+    --text-2: #9aa7b4;
+    --text-3: #68788a;
+    --accent: #35c9ae;
+    --accent-ink: #5fd9c2;
+    --accent-soft: rgba(53, 201, 174, 0.12);
+    --accent-border: rgba(53, 201, 174, 0.38);
+    /* 深色下 accent 是亮青，白字对比度不够，原型用的是深青底色文字 */
+    --accent-fg: #08211c;
+    --amber: #e8a83e;
+    --amber-soft: rgba(232, 168, 62, 0.13);
+    --amber-border: rgba(232, 168, 62, 0.42);
+    --red: #e06c6c;
+    --red-soft: rgba(224, 108, 108, 0.12);
+    --green: #57c77e;
+    --green-soft: rgba(87, 199, 126, 0.13);
+    --blue: #6fa3e0;
+    --blue-soft: rgba(111, 163, 224, 0.12);
+    --user-bubble: #1e3b35;
+    --code-bg: #141b22;
+    --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.35), 0 4px 18px rgba(0, 0, 0, 0.28);
+    --destructive-foreground: #ffffff;
+  }
+}
+
+/* 手动选深色：任何系统设置下都赢 */
+:root[data-theme='dark'],
+:root.dark {
+  --phone-bg: #12181f;
+  --surface: #1a222b;
+  --surface-2: #222c36;
+  --surface-3: #2a3642;
+  --border-c: #2b3844;
+  --border-strong: #3b4a58;
+  --text: #e8edf2;
+  --text-2: #9aa7b4;
+  --text-3: #68788a;
+  --accent: #35c9ae;
+  --accent-ink: #5fd9c2;
+  --accent-soft: rgba(53, 201, 174, 0.12);
+  --accent-border: rgba(53, 201, 174, 0.38);
+  --accent-fg: #08211c;
+  --amber: #e8a83e;
+  --amber-soft: rgba(232, 168, 62, 0.13);
+  --amber-border: rgba(232, 168, 62, 0.42);
+  --red: #e06c6c;
+  --red-soft: rgba(224, 108, 108, 0.12);
+  --green: #57c77e;
+  --green-soft: rgba(87, 199, 126, 0.13);
+  --blue: #6fa3e0;
+  --blue-soft: rgba(111, 163, 224, 0.12);
+  --user-bubble: #1e3b35;
+  --code-bg: #141b22;
+  --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.35), 0 4px 18px rgba(0, 0, 0, 0.28);
+  --destructive-foreground: #ffffff;
+}
+
+/* ============================================================
+   暴露成 Tailwind 工具类
+   inline 模式：生成的工具类直接引用上面的 var()，所以 .dark 一切就全切
+   ============================================================ */
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent-bg);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  /* trine 自有 token（原型语义，shadcn 没有对应概念的那些） */
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
+  --color-border-strong: var(--border-strong);
+  --color-text: var(--text);
+  --color-text-2: var(--text-2);
+  --color-text-3: var(--text-3);
+  --color-brand: var(--accent);
+  --color-brand-ink: var(--accent-ink);
+  --color-brand-soft: var(--accent-soft);
+  --color-brand-border: var(--accent-border);
+  --color-brand-fg: var(--accent-fg);
+  --color-amber: var(--amber);
+  --color-amber-soft: var(--amber-soft);
+  --color-amber-border: var(--amber-border);
+  --color-red: var(--red);
+  --color-red-soft: var(--red-soft);
+  --color-green: var(--green);
+  --color-green-soft: var(--green-soft);
+  --color-blue: var(--blue);
+  --color-blue-soft: var(--blue-soft);
+  --color-user-bubble: var(--user-bubble);
+  --color-code-bg: var(--code-bg);
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 2px);
+
+  --shadow-card: var(--shadow-card);
+
+  --font-sans: 'IBM Plex Sans', -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  html {
+    /* 主题切换时浏览器 UI（滚动条、表单控件）跟着走 */
+    color-scheme: light dark;
+  }
+  :root[data-theme='light'] {
+    color-scheme: light;
+  }
+  :root[data-theme='dark'] {
+    color-scheme: dark;
+  }
+  body {
+    @apply bg-background text-foreground font-sans;
+    /* 原型基准：14px / 1.55 */
+    font-size: 14px;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+    /* iOS Safari 安全区（PWA standalone 下刘海/home indicator） */
+    overscroll-behavior-y: none;
+  }
+  /* 原型的统一焦点环 */
+  :focus-visible {
+    @apply outline-brand outline-2 outline-offset-2;
+  }
+}
+
+@layer utilities {
+  /* 原型里反复出现的两个小工具 */
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+  .safe-bottom {
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  .safe-top {
+    padding-top: env(safe-area-inset-top, 0px);
+  }
+}
+
+/* iOS Safari 聚焦字号 <16px 的输入框会自动放大页面（且不回缩），触屏设备上
+ * 统一抬到 16px；!important 用来压过组件上的 text-xs / text-[14px] 等工具类 */
+@media (pointer: coarse) {
+  input,
+  textarea,
+  select {
+    font-size: 16px !important;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

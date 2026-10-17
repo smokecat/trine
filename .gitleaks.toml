@@ -1,0 +1,13 @@
+title = "trine secret scanning"
+
+[extend]
+useDefault = true
+
+# These are API symbol names in a vendored upstream diff, not credentials.
+# Match both the exact path AND the entire detected value.
+[[allowlists]]
+description = "libsodium API symbols in the wrapper import patch"
+condition = "AND"
+paths = ['''^patches/libsodium-wrappers@0\.7\.16\.patch$''']
+regexTarget = "secret"
+regexes = ['''^crypto_(aead_aegis256_decrypt|aead_chacha20poly1305_decrypt|aead_chacha20poly1305_keygen|kdf_blake2b_BYTES_MAX|kdf_hkdf_sha512_BYTES_MAX)$''']

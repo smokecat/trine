@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- maskable：图形收在中心 80% 安全区内，四周留给系统裁切（圆形/圆角皆可） -->
+  <rect width="512" height="512" fill="#12181F"/>
+  <path d="M256 154 L332 256 L256 358 L180 256 Z" fill="none" stroke="#35C9AE" stroke-width="24" stroke-linejoin="round"/>
+  <path d="M256 202 L300 256 L256 310 L212 256 Z" fill="#35C9AE" fill-opacity="0.18"/>
+</svg>

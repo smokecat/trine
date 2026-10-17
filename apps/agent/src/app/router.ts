@@ -1,0 +1,1019 @@
+/**
+ * 入站路由：已解密的 `ClientToAgentEvent` → SessionManager / cwd-store / identity。
+ *
+ * ## 每会话命令链
+ *
+ * 会话级事件一律挂到该 sessionId 的 Promise 链上串行执行。ClaudeSession 的
+ * stop / setModel / setPermissionMode / close 都是 async，而 send / recall 是同步的：
+ * 不串行的话「stop 紧接着 send」两帧同批到达时，send 会在 stop 的 interrupt
+ * 还没落地前执行，新消息被半拆的 query 吃掉。链上任何异常捕获后转 error.fatal，
+ * **不断链**——一条坏帧不能让这个会话此后全部命令都卡死。
+ *
+ * 机器级事件（session.create / list / cwd.* / machine.*）走一条独立的机器级链，
+ * 同样串行：它们都会碰文件（cwd.json / identity.json）或并发名额，串行最省心。
+ * 例外是 `machine.claude.update.request`：`claude update` 可能跑几分钟，在链上
+ * await 会把 session.create / list 全堵住——链上只负责把它**发起**，执行在链外
+ * （单飞由 ClaudeUpdater 保证），跑完再发机器级应答。
+ *
+ * ## resolveSession：按需 resume + 去重 + 三级参数来源
+ *
+ * 远端对一个本进程没有活跃实例的 sessionId 发消息时，要把它 resume 起来。
+ * 参数（cwd / model / permissionMode）按代价从低到高找：本地 state.json →
+ * manager 的 meta 缓存 → SDK `listSessions`（慢，结果缓存 5s）。都没有 →
+ * 机器级 `error.fatal(config)`——**不为不存在的会话开 seq 流**，否则任何
+ * client 随手编个 sessionId 就能让服务端多一条流（可被膨胀）。
+ * 并发两帧同 sid 只 acquire 一次：命令链已经串行化了同 sid 的处理，
+ * in-flight 表是给链外调用者（resumeAt 定时器）的第二道保险。
+ *
+ * ## 会话元数据命令（rename / archive / delete）
+ *
+ * 挂会话链（与同 sid 的 input.send 串行，delete 尤其需要），但**绝不**
+ * resolveSession（见 session-mutations.ts）。应答一律机器级
+ * `session.mutate.response`；handler 内的异常在这里转成 `io` 应答，不交给链的
+ * 兜底——那会发会话级 error.fatal，进聊天时间线且关联不到请求。
+ *
+ * ## 墓碑
+ *
+ * 永久删除过的会话（flags store 的 deleted）收到的**任何**会话级帧都不
+ * resolve：带 reqId 的回机器级 `session.mutate.response{code:'deleted'}`
+ * （client 的 request() 只按 reqId 关联）；不带的（input.send、parked 的旧帧、
+ * 补发回来的旧帧……）log 后忽略，并对该 sid 广播 `session.removed`（按 sid
+ * 限频，60s 至多一次），让还缓存着它的设备自清。
+ *
+ * ## 不 resolve 的会话级读命令：session.history.request
+ *
+ * 历史回看读的是本机转录（SDK `getSessionMessages`，纯文件读），**不拉起会话进程**、
+ * 不占并发名额，也不走 resolveSession——否则打开一个老会话看一眼历史就会起一个
+ * claude 子进程。它仍挂在该会话的命令链上，和同会话的其他命令保持先后。
+ * 响应只定向发给请求方设备（大帧，别的设备用不上）。
+ *
+ * ## 不 resolve 的会话级读命令：subagent.history.request
+ *
+ * 子 agent 过程回看：同 session.history.request，只读本机子转录
+ * （subagent-history.ts 定位 + history.ts 转换），不拉起会话进程、定向回请求方。
+ * 找不到 → 空 items。体积封顶复用 paginateHistory（取最新的一段，截了置 truncated）。
+ *
+ * ## 不 resolve 的会话级读命令：session.commands.request
+ *
+ * 斜杠命令清单：同样不拉起会话进程、不走 resolveSession，交给 CommandsProbe
+ * （按 cwd 起一个不发消息的探测 query 取 supportedCommands，带缓存与单飞）。
+ * 墓碑判定仍在会话链上做；探测本身（冷启动一两秒，最坏到超时）放到**链外**
+ * 跑，不堵同会话紧随其后的 input.send。尽力而为：探测失败只 log、回空数组，
+ * 不发 error.fatal（菜单拉取失败不该进聊天时间线）。只定向回请求方。
+ */
+import { randomUUID } from 'node:crypto';
+import { getSessionMessages, type SlashCommand as SdkSlashCommand } from '@anthropic-ai/claude-agent-sdk';
+import type {
+  AgentToClientEvent,
+  ClientToAgentEvent,
+  MachineInfo,
+  PermissionMode,
+  McpServerStatus,
+  SlashCommand,
+} from '@trine/core';
+import type { EventEmitter } from '../bridge/emitter.ts';
+import { paginateHistory, toHistoryItems, toSubagentHistoryItems } from '../bridge/history.ts';
+import { readSubagentTranscript } from '../bridge/subagent-history.ts';
+import {
+  ConcurrencyLimitError,
+  seedFromInfo,
+  type SessionManager,
+  type SessionSeed,
+} from '../bridge/manager.ts';
+import type { ClaudeSession } from '../bridge/session.ts';
+import type { EventBody } from '../bridge/types.ts';
+import type { Recipient } from '../net/recipients.ts';
+import type { CwdStore } from './cwd-store.ts';
+import type { ClaudeUpdateOutcome } from './claude-cli.ts';
+import type { SessionFlagsStore } from './session-flags.ts';
+import { SessionMutations, type MutationOutcome } from './session-mutations.ts';
+import type { AgentState, SessionParams } from './state.ts';
+
+/** resumeAt 最长等多久（协议里 retryAt 是额度重置时间，不该超过一天） */
+export const RESUME_AT_MAX_DELAY_MS = 24 * 60 * 60 * 1000;
+/** listSessions 结果缓存时长 */
+export const LIST_CACHE_MS = 5_000;
+/** 墓碑命中时为同一会话广播 session.removed 的最小间隔 */
+export const REMOVED_ANNOUNCE_INTERVAL_MS = 60_000;
+
+/** run.resumeAt 到点后发给会话的提示语（与 session.ts 的续跑提示同一取向：先核实再继续） */
+export const RESUME_AT_PROMPT =
+  '（额度已重置，自动续跑）请先核实上一步操作是否已经完成，再继续未完成的工作，不要重复已完成的修改。';
+
+/** 斜杠命令 description 截断上限：菜单只显示一两行，插件的长描述没必要整段过 E2E */
+export const COMMAND_DESCRIPTION_MAX = 300;
+
+/** 机器级链在 chains 表里的键（sessionId 不可能为空串） */
+const MACHINE_CHAIN = '';
+
+/** 机器级事件类型：按类型而不是按 sessionId 有无判定，client 多带了 sessionId 也不当会话级处理 */
+const MACHINE_LEVEL_TYPES = new Set<ClientToAgentEvent['type']>([
+  'session.list.request',
+  'session.create',
+  'machine.rename',
+  'machine.unpair',
+  'machine.claude.update.request',
+  'cwd.list.request',
+  'cwd.add',
+  'cwd.remove',
+  'cwd.setDefault',
+]);
+
+/**
+ * 会话元数据命令：挂会话链、**不** resolveSession、应答走机器级
+ * session.mutate.response（见文件头）
+ */
+const SESSION_META_TYPES = new Set<ClientToAgentEvent['type']>([
+  'session.rename',
+  'session.archive',
+  'session.delete',
+]);
+
+/** 有副作用的会话级操作才 resume；这些只作用于**已活跃**的实例，没有就 log */
+const ACTIVE_ONLY_TYPES = new Set<ClientToAgentEvent['type']>([
+  'permission.respond',
+  'run.stop',
+  'input.recall',
+]);
+
+/**
+ * 旁路截获 `session.capabilities`，给 mcp.status.request 答复用。
+ * ClaudeSession 只在 SDK init 时吐一次能力清单，之后 client 随时可能问 MCP 状态，
+ * 得有人记着。按 sid 覆盖式更新（一次 init 一份）。
+ */
+export class CapabilitiesCache {
+  readonly #mcp = new Map<string, McpServerStatus[]>();
+
+  observe(event: AgentToClientEvent): void {
+    if (event.type !== 'session.capabilities' || event.sessionId === undefined) return;
+    this.#mcp.set(event.sessionId, event.mcpServers);
+  }
+
+  mcpServers(sessionId: string): McpServerStatus[] | undefined {
+    return this.#mcp.get(sessionId);
+  }
+
+  /** 会话被永久删除时清掉 */
+  forget(sessionId: string): void {
+    this.#mcp.delete(sessionId);
+  }
+}
+
+export interface RouterDeps {
+  manager: SessionManager;
+  emitter: EventEmitter;
+  state: AgentState;
+  cwdStore: CwdStore;
+  /** 会话标记（归档 / 墓碑 / 未落盘标题），与 manager 的 flags 是同一个实例 */
+  flags: SessionFlagsStore;
+  capabilities: CapabilitiesCache;
+  /** 组当前 MachineInfo（machine.rename 后广播用） */
+  machineInfo: () => MachineInfo;
+  /** 改 identity.name 并落盘 */
+  renameMachine: (name: string) => Promise<void>;
+  /**
+   * 跑一次 `claude update`（app 的 ClaudeUpdater：单飞、超时、跑完刷新版本并
+   * 广播 machine.info）。不抛——失败以 outcome 表达；万一抛了 router 兜成 failed。
+   */
+  updateClaude: () => Promise<ClaudeUpdateOutcome>;
+  /** listSessions 查不到模型时的兜底 */
+  defaultModel: string;
+  now?: () => number;
+  log?: (line: string) => void;
+  /** 注入定时器（resumeAt），测试用 */
+  setTimeoutImpl?: (fn: () => void, ms: number) => unknown;
+  clearTimeoutImpl?: (handle: unknown) => void;
+  listCacheMs?: number;
+  /** 读本机转录（session.history.request）；测试注入假实现，默认走 SDK */
+  getSessionMessagesFn?: typeof getSessionMessages;
+  /** 读子 agent 转录（subagent.history.request）；测试注入假实现，默认读本机文件 */
+  readSubagentTranscriptFn?: typeof readSubagentTranscript;
+  /**
+   * 斜杠命令探测（session.commands.request，见 commands-probe.ts）。
+   * 缺省 = 不探测、一律回空数组（测试 / 无 claude 场景）
+   */
+  commandsProbe?: { commands(cwd: string): Promise<SdkSlashCommand[]> };
+}
+
+type SessionEvent = Extract<ClientToAgentEvent, { sessionId?: string }>;
+type SessionMetaEvent = Extract<
+  ClientToAgentEvent,
+  { type: 'session.rename' | 'session.archive' | 'session.delete' }
+>;
+
+/** listSessions 结果缓存的每条：resume 参数 + resume 时种进 meta 的字段 */
+interface ListedSession {
+  params: SessionParams;
+  seed: SessionSeed;
+}
+
+export class Router {
+  readonly #deps: RouterDeps;
+  readonly #now: () => number;
+  readonly #log: (line: string) => void;
+  readonly #setTimeout: (fn: () => void, ms: number) => unknown;
+  readonly #clearTimeout: (handle: unknown) => void;
+  readonly #listCacheMs: number;
+
+  /** 命令链：key = sessionId 或 MACHINE_CHAIN */
+  readonly #chains = new Map<string, Promise<void>>();
+  /** 正在 resume 中的会话（链外去重） */
+  readonly #resolving = new Map<string, Promise<ClaudeSession | undefined>>();
+  /** run.resumeAt 定时器，同会话覆盖 */
+  readonly #resumeTimers = new Map<string, unknown>();
+  #listCache: { at: number; promise: Promise<Map<string, ListedSession>> } | undefined =
+    undefined;
+  /**
+   * 墓碑命中时上次为该会话广播 session.removed 的时刻：按 sid 限频
+   * （REMOVED_ANNOUNCE_INTERVAL_MS），而不是整个进程只广播一次——评审 CM1：
+   * 旧缓存的 web 深链回来又发消息时，第二次也得让它收到 removed 自清
+   */
+  readonly #removedAnnouncedAt = new Map<string, number>();
+  readonly #mutations: SessionMutations;
+  /** 链外执行中的长任务（claude update），idle() 也等它们 */
+  readonly #background = new Set<Promise<void>>();
+
+  constructor(deps: RouterDeps) {
+    this.#deps = deps;
+    this.#now = deps.now ?? (() => Date.now());
+    this.#log = deps.log ?? (() => {});
+    this.#setTimeout = deps.setTimeoutImpl ?? ((fn, ms) => setTimeout(fn, ms));
+    this.#clearTimeout = deps.clearTimeoutImpl ?? ((h) => clearTimeout(h as never));
+    this.#listCacheMs = deps.listCacheMs ?? LIST_CACHE_MS;
+    this.#mutations = new SessionMutations({
+      manager: deps.manager,
+      emitter: deps.emitter,
+      state: deps.state,
+      flags: deps.flags,
+      capabilities: deps.capabilities,
+      now: this.#now,
+      log: this.#log,
+      cancelPending: (sid) => this.#cancelPending(sid),
+      setTimer: (fn, ms) => {
+        const handle = this.#setTimeout(fn, ms);
+        // 后台兜底，不拖住进程退出（真定时器才有 unref；测试注入的假句柄没有）
+        (handle as { unref?: () => void } | null)?.unref?.();
+        return handle;
+      },
+      clearTimer: (handle) => this.#clearTimeout(handle),
+      onChain: (sid, task) => void this.#enqueue(sid, task),
+    });
+  }
+
+  /** 删除后复查定时器数（测试用） */
+  get pendingRecheckCount(): number {
+    return this.#mutations.pendingRecheckCount;
+  }
+
+  /**
+   * 复查一个已删除会话：转录又冒出来就再删（评审 CB1）。挂到该会话链上串行。
+   * app 在启动 / 每日 sweep 时对全部墓碑调一次。
+   */
+  recheckDeleted(sessionId: string): Promise<void> {
+    return this.#enqueue(sessionId, () => this.#mutations.recheckDeleted(sessionId));
+  }
+
+  /**
+   * 入口：把一帧挂到对应命令链上。返回的 Promise 在该帧处理完后 resolve
+   * （测试与 resumeAt 用；网络回调直接忽略返回值即可，异常已在链内兜住）。
+   */
+  handle(event: ClientToAgentEvent, sender: Recipient): Promise<void> {
+    if (MACHINE_LEVEL_TYPES.has(event.type)) {
+      return this.#enqueue(MACHINE_CHAIN, () => this.#handleMachine(event, sender));
+    }
+    const sessionId = event.sessionId;
+    if (sessionId === undefined) {
+      // 会话级事件缺 sessionId：schema 上 optional 是给机器级用的，这里是对端 bug
+      this.#log(`[router] 丢弃缺 sessionId 的会话级事件 type=${event.type} from=${sender.deviceId}`);
+      return Promise.resolve();
+    }
+    return this.#enqueue(sessionId, () => this.#handleSession(sessionId, event, sender));
+  }
+
+  /** 等全部链跑空（测试用） */
+  async idle(): Promise<void> {
+    while (this.#chains.size > 0 || this.#background.size > 0) {
+      await Promise.all([...this.#chains.values(), ...this.#background]);
+    }
+  }
+
+  /**
+   * manager 报「一轮跑完」时调（app 把 SessionManager 的 onRunEnd 接到这里）：
+   * 有 pendingTitle 就挂到该会话链上补写。首条消息的转录要等子进程处理后才
+   * 落盘，input.send 那一刻补写多半还找不到文件。
+   */
+  onRunEnd(sessionId: string): void {
+    if (this.#deps.flags.pendingTitle(sessionId) === undefined) return;
+    void this.#enqueue(sessionId, () => this.#mutations.flushPendingTitle(sessionId));
+  }
+
+  /**
+   * manager 报「活跃会话权限模式变了」时调（app 接线）：写进 state.json。
+   *
+   * 与 `session.setPermissionMode` 分支写的是同一条 `state.updateSession` 路径；
+   * 那条分支自己也写一次（幂等，rememberSession 值相同即不落盘），这里补上的是
+   * **没有 client 命令经过 router** 的来源——CLI 在 ExitPlanMode 批准后自行
+   * 切回 default / acceptEdits（session.ts #syncCliPermissionMode）。不落盘的话
+   * state.json 停在 plan，下次 resume 会又以 plan 模式拉起。
+   */
+  onPermissionModeChange(sessionId: string, mode: PermissionMode): void {
+    this.#deps.state.updateSession(sessionId, { permissionMode: mode });
+  }
+
+    /** 清掉 resumeAt 定时器与删除复查定时器（进程退出） */
+  dispose(): void {
+    for (const handle of this.#resumeTimers.values()) this.#clearTimeout(handle);
+    this.#resumeTimers.clear();
+    this.#mutations.dispose();
+  }
+
+  // -------------------------------------------------------------------------
+  // 命令链
+  // -------------------------------------------------------------------------
+
+  #enqueue(key: string, task: () => Promise<void>): Promise<void> {
+    const prev = this.#chains.get(key) ?? Promise.resolve();
+    // 每个任务自己兜异常：链上任何一环炸了都不能让后面的命令永远排不上
+    const next = prev.then(task).catch((err: unknown) => this.#onChainError(key, err));
+    this.#chains.set(key, next);
+    void next.finally(() => {
+      // 只有自己还是链尾时才收表，否则会把后来者的链头删掉
+      if (this.#chains.get(key) === next) this.#chains.delete(key);
+    });
+    return next;
+  }
+
+  #onChainError(key: string, err: unknown): void {
+    const message = err instanceof Error ? err.message : String(err);
+    this.#log(`[router] 处理失败 chain=${key === MACHINE_CHAIN ? '(machine)' : key}: ${message}`);
+    const body: EventBody = {
+      type: 'error.fatal',
+      kind: 'other',
+      message: `agent 处理命令时出错：${message}`.slice(0, 300),
+    };
+    this.#deps.emitter.emit(body, key === MACHINE_CHAIN ? null : key);
+  }
+
+  // -------------------------------------------------------------------------
+  // 会话级
+  // -------------------------------------------------------------------------
+
+  async #handleSession(
+    sessionId: string,
+    event: SessionEvent,
+    sender: Recipient,
+  ): Promise<void> {
+    // 在链上判：排在 delete 后面的帧要看到它刚写的墓碑
+    if (this.#deps.flags.isDeleted(sessionId)) {
+      this.#onTombstoned(sessionId, event);
+      return;
+    }
+    if (SESSION_META_TYPES.has(event.type)) {
+      await this.#handleMetaCommand(sessionId, event as SessionMetaEvent);
+      return;
+    }
+    if (ACTIVE_ONLY_TYPES.has(event.type)) {
+      const session = this.#deps.manager.get(sessionId);
+      if (session === undefined) {
+        this.#log(`[router] ${event.type} 指向的会话 ${sessionId} 没有活跃实例，忽略`);
+        return;
+      }
+      await this.#dispatchActive(session, event, sender);
+      return;
+    }
+    if (event.type === 'run.resumeAt') {
+      this.#scheduleResumeAt(sessionId, event.at);
+      return;
+    }
+    if (event.type === 'bgtask.stop') {
+      // 只作用于已活跃实例（不为它拉起会话——没有子进程就没有后台任务），
+      // 但与 ACTIVE_ONLY 那三类不同，它有 reqId，必须应答（复用 mutate.response）
+      await this.#stopBgTask(sessionId, event);
+      return;
+    }
+    if (event.type === 'session.history.request') {
+      // 必须在 resolveSession 之前拦截：只读转录，不拉起会话（见文件头）
+      await this.#history(sessionId, event, sender);
+      return;
+    }
+    if (event.type === 'subagent.history.request') {
+      // 同上：只读子转录，不拉起会话
+      await this.#subagentHistory(sessionId, event, sender);
+      return;
+    }
+    if (event.type === 'session.commands.request') {
+      // 同上：不拉起会话；探测放链外跑，不堵同会话后续命令（见文件头）
+      this.#runBackground(this.#commands(sessionId, event.reqId, sender));
+      return;
+    }
+
+    const session = await this.resolveSession(sessionId);
+    if (session === undefined) return;
+
+    switch (event.type) {
+      case 'input.send':
+        // duplicate 由 session 内部回执处理，这里不区分
+        session.send(event.clientMsgId, event.text);
+        // 发过消息即有转录：之后（含重启后）对它都该 resume 而非新建
+        this.#deps.state.updateSession(sessionId, { started: true });
+        // 未落盘时设的标题：先试一次补写（转录多半还没写出来，那就等 onRunEnd）
+        if (this.#deps.flags.pendingTitle(sessionId) !== undefined) {
+          await this.#mutations.flushPendingTitle(sessionId);
+        }
+        return;
+      case 'session.setModel':
+        await session.setModel(event.model);
+        this.#deps.state.updateSession(sessionId, { model: event.model });
+        return;
+      case 'session.setPermissionMode':
+        await session.setPermissionMode(event.mode);
+        this.#deps.state.updateSession(sessionId, { permissionMode: event.mode });
+        return;
+      case 'session.setCwd':
+        await this.#setCwd(sessionId, session, event.cwd);
+        return;
+      case 'session.status.request': {
+        const meta = session.meta();
+        const info = this.#deps.machineInfo();
+        this.#emitSession(sessionId, {
+          type: 'session.status.response',
+          reqId: event.reqId,
+          model: meta.model,
+          cwd: meta.cwd,
+          permissionMode: meta.permissionMode,
+          costUsd: meta.costUsd,
+          // 上下文用量 SDK 暂无稳定来源，占位 0/0（记遗留）
+          contextUsedTokens: 0,
+          contextLimitTokens: 0,
+          agentVersion: info.agentVersion,
+          claudeVersion: info.claudeVersion,
+        });
+        // 状态同步顺带给一帧后台任务快照（可能为空）：client 据此对账落盘的陈旧快照
+        this.#emitSession(sessionId, { type: 'bgtask.snapshot', tasks: session.bgTasks() });
+        return;
+      }
+      case 'mcp.status.request':
+        this.#emitSession(sessionId, {
+          type: 'mcp.status.response',
+          reqId: event.reqId,
+          servers: this.#deps.capabilities.mcpServers(sessionId) ?? [],
+        });
+        return;
+      default:
+        this.#log(`[router] 未处理的会话级事件 type=${event.type}`);
+    }
+  }
+
+  /** rename / archive / delete：业务结果与意外异常都收敛成一帧机器级应答 */
+  async #handleMetaCommand(sessionId: string, event: SessionMetaEvent): Promise<void> {
+    let outcome: MutationOutcome;
+    try {
+      switch (event.type) {
+        case 'session.rename':
+          outcome = await this.#mutations.rename(sessionId, event.title);
+          break;
+        case 'session.archive':
+          outcome = await this.#mutations.archive(sessionId, event.archived);
+          break;
+        case 'session.delete':
+          outcome = await this.#mutations.delete(sessionId);
+          break;
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.#log(`[router] ${event.type} 失败 session=${sessionId}: ${message}`);
+      outcome = { ok: false, code: 'io', message: `agent 处理失败：${message}`.slice(0, 300) };
+    }
+    this.#emitMutateResponse(event.reqId, sessionId, outcome);
+  }
+
+  /** 停止后台任务：SDK 结果 → 机器级 session.mutate.response（协议 §1.6） */
+  async #stopBgTask(
+    sessionId: string,
+    event: Extract<ClientToAgentEvent, { type: 'bgtask.stop' }>,
+  ): Promise<void> {
+    const session = this.#deps.manager.get(sessionId);
+    if (session === undefined) {
+      this.#emitMutateResponse(event.reqId, sessionId, {
+        ok: false,
+        code: 'not_found',
+        message: '会话没有活跃实例，后台任务已随子进程结束',
+      });
+      return;
+    }
+    const result = await session.stopBgTask(event.taskId);
+    this.#emitMutateResponse(event.reqId, sessionId, result.ok ? { ok: true } : result);
+  }
+
+  #emitMutateResponse(reqId: string, sessionId: string, outcome: MutationOutcome): void {
+    this.#emitMachine({
+      type: 'session.mutate.response',
+      reqId,
+      targetSessionId: sessionId,
+      ok: outcome.ok,
+      ...(outcome.ok ? {} : { error: { code: outcome.code, message: outcome.message } }),
+    });
+  }
+
+  /** 墓碑命中（见文件头「墓碑」） */
+  #onTombstoned(sessionId: string, event: SessionEvent): void {
+    if ('reqId' in event) {
+      this.#emitMutateResponse(event.reqId, sessionId, {
+        ok: false,
+        code: 'deleted',
+        message: '该会话已被永久删除',
+      });
+      return;
+    }
+    this.#log(`[router] 忽略指向已删除会话 ${sessionId} 的 ${event.type}`);
+    const now = this.#now();
+    const last = this.#removedAnnouncedAt.get(sessionId);
+    if (last === undefined || now - last >= REMOVED_ANNOUNCE_INTERVAL_MS) {
+      this.#removedAnnouncedAt.set(sessionId, now);
+      this.#emitMachine({ type: 'session.removed', targetSessionId: sessionId });
+    }
+  }
+
+  /** 删除第 2 步：清 resumeAt 定时器与 in-flight resolve */
+  #cancelPending(sessionId: string): void {
+    const timer = this.#resumeTimers.get(sessionId);
+    if (timer !== undefined) {
+      this.#clearTimeout(timer);
+      this.#resumeTimers.delete(sessionId);
+    }
+    this.#resolving.delete(sessionId);
+  }
+
+  /**
+   * 历史回看：读转录 → HistoryItem[] → 按 before/limit 分页 + 体积封顶 → 定向回给请求方。
+   *
+   * cwd 只从零成本来源取（state.json / manager meta），拿不到就不传 dir、让 SDK
+   * 搜全部项目——为了一个 dir 去跑 listSessions 不值。给了 dir 却没读到（会话切过
+   * cwd，转录在别的项目目录下）再不带 dir 兜一次。会话不存在 → 空页，不报错。
+   * 读取抛错交给命令链兜底（error.fatal，现有惯例）。
+   */
+  async #history(
+    sessionId: string,
+    event: Extract<ClientToAgentEvent, { type: 'session.history.request' }>,
+    sender: Recipient,
+  ): Promise<void> {
+    const read = this.#deps.getSessionMessagesFn ?? getSessionMessages;
+    const cwd = this.#deps.state.sessionParams(sessionId)?.cwd ?? this.#deps.manager.metaOf(sessionId)?.cwd;
+    let messages = await read(sessionId, cwd === undefined || cwd === '' ? {} : { dir: cwd });
+    if (messages.length === 0 && cwd !== undefined && cwd !== '') messages = await read(sessionId, {});
+    const page = paginateHistory(toHistoryItems(messages), { before: event.before, limit: event.limit });
+    this.#deps.emitter.emit(
+      {
+        type: 'session.history.response',
+        reqId: event.reqId,
+        items: page.items,
+        hasMore: page.hasMore,
+        ...(page.nextBefore === undefined ? {} : { nextBefore: page.nextBefore }),
+      },
+      sessionId,
+      { to: sender.deviceId },
+    );
+  }
+
+  /** 子 agent 过程回看（见文件头）：cwd 取法同 #history，猜不中由定位器扫描兜底 */
+  async #subagentHistory(
+    sessionId: string,
+    event: Extract<ClientToAgentEvent, { type: 'subagent.history.request' }>,
+    sender: Recipient,
+  ): Promise<void> {
+    const read = this.#deps.readSubagentTranscriptFn ?? readSubagentTranscript;
+    const cwd = this.#deps.state.sessionParams(sessionId)?.cwd ?? this.#deps.manager.metaOf(sessionId)?.cwd;
+    const lines = await read(sessionId, event.toolUseId, { cwd });
+    const page = paginateHistory(toSubagentHistoryItems(lines), { limit: 500 });
+    this.#deps.emitter.emit(
+      {
+        type: 'subagent.history.response',
+        reqId: event.reqId,
+        toolUseId: event.toolUseId,
+        items: page.items,
+        ...(page.hasMore ? { truncated: true } : {}),
+      },
+      sessionId,
+      { to: sender.deviceId },
+    );
+  }
+
+  /**
+   * 斜杠命令清单：cwd 取法同 #history（零成本来源），都没有就用机器默认 cwd。
+   * 探测失败 → 空数组（见文件头），source 统一 'project'（与 translate.ts 一致）。
+   */
+  async #commands(sessionId: string, reqId: string, sender: Recipient): Promise<void> {
+    const known = this.#deps.state.sessionParams(sessionId)?.cwd ?? this.#deps.manager.metaOf(sessionId)?.cwd;
+    const cwd = known === undefined || known === '' ? this.#deps.cwdStore.snapshot().defaultCwd : known;
+    let slashCommands: SlashCommand[] = [];
+    const probe = this.#deps.commandsProbe;
+    if (probe !== undefined) {
+      try {
+        slashCommands = toSlashCommands(await probe.commands(cwd));
+      } catch (err) {
+        this.#log(
+          `[router] session.commands.request 探测失败 session=${sessionId} cwd=${cwd}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+    }
+    this.#deps.emitter.emit({ type: 'session.commands.response', reqId, slashCommands }, sessionId, {
+      to: sender.deviceId,
+    });
+  }
+
+  /** 链外任务：登记到 #background（idle() 等它），异常只 log */
+  #runBackground(task: Promise<void>): void {
+    const tracked = task.catch((err: unknown) => {
+      this.#log(`[router] 后台任务失败：${err instanceof Error ? err.message : String(err)}`);
+    });
+    this.#background.add(tracked);
+    void tracked.finally(() => this.#background.delete(tracked));
+  }
+
+  /** 只作用于已活跃实例的三类事件 */
+  async #dispatchActive(
+    session: ClaudeSession,
+    event: SessionEvent,
+    sender: Recipient,
+  ): Promise<void> {
+    switch (event.type) {
+      case 'permission.respond': {
+        const hit = session.respondPermission({
+          requestId: event.requestId,
+          verdict: event.verdict,
+          ...(event.updatedInput === undefined ? {} : { updatedInput: event.updatedInput }),
+          ...(event.remember === undefined ? {} : { remember: event.remember }),
+          ...(event.message === undefined ? {} : { message: event.message }),
+          ...(event.setMode === undefined ? {} : { setMode: event.setMode }),
+          resolvedBy: sender.deviceId,
+        });
+        if (!hit) {
+          this.#log(
+            `[router] permission.respond 没命中挂起项 requestId=${event.requestId}（重复应答或已失效）`,
+          );
+        }
+        return;
+      }
+      case 'run.stop':
+        await session.stop();
+        return;
+      case 'input.recall': {
+        const ok = session.recall(event.clientMsgId);
+        // 协议没有 recall 回执帧（记遗留），失败只能 log
+        if (!ok) this.#log(`[router] input.recall 未命中排队消息 clientMsgId=${event.clientMsgId}`);
+        return;
+      }
+      default:
+        return;
+    }
+  }
+
+  /**
+   * 切换工作目录 = 关掉当前实例再以新 cwd resume（SDK 的 cwd 是 query 级参数，
+   * 运行中改不了）。运行中 / 等权限 / 有排队消息时拒绝：release 会作废挂起的
+   * 权限请求、丢掉排队消息，那是「静默丢用户输入」，宁可让用户等跑完再切。
+   */
+  async #setCwd(sessionId: string, session: ClaudeSession, cwd: string): Promise<void> {
+    const busy =
+      session.state === 'running' ||
+      session.state === 'waiting_permission' ||
+      session.queueLength > 0;
+    if (busy) {
+      this.#emitSession(sessionId, {
+        type: 'error.fatal',
+        kind: 'config',
+        message: '会话运行中或有排队消息，不能改工作目录；请等它跑完或先停止',
+      });
+      return;
+    }
+    const meta = session.meta();
+    const { manager, state } = this.#deps;
+    // 有转录才 resume；一条消息都没发过的新会话就以新建方式重开（会多广播一次
+    // session.created，client 按 sessionId 幂等）。「发过消息」持久化在 state.sessions
+    // 里（省略 = 历史会话，有转录），起过子进程也算
+    const started = session.hasProcess || (state.sessionParams(sessionId)?.started ?? true);
+    await manager.release(sessionId, '切换工作目录');
+    const params: SessionParams = {
+      cwd,
+      model: meta.model,
+      permissionMode: meta.permissionMode,
+      started,
+    };
+    manager.acquire({ sessionId, ...params, resume: started });
+    state.rememberSession(sessionId, params);
+    // acquire(resume:true) 不广播，这里手动发 session.updated 让所有 client 看到新 cwd
+    const updated = manager.metaOf(sessionId);
+    if (updated !== undefined) {
+      this.#emitMachine({ type: 'session.updated', session: updated });
+    }
+  }
+
+  #scheduleResumeAt(sessionId: string, at: number): void {
+    const existing = this.#resumeTimers.get(sessionId);
+    if (existing !== undefined) this.#clearTimeout(existing);
+    const delay = Math.min(Math.max(at - this.#now(), 0), RESUME_AT_MAX_DELAY_MS);
+    const handle = this.#setTimeout(() => {
+      this.#resumeTimers.delete(sessionId);
+      // 到点走正常命令链，与其他命令串行
+      void this.#enqueue(sessionId, async () => {
+        const session = await this.resolveSession(sessionId);
+        session?.send(randomUUID(), RESUME_AT_PROMPT);
+      });
+    }, delay);
+    this.#resumeTimers.set(sessionId, handle);
+    this.#log(`[router] 已安排 ${Math.round(delay / 1000)}s 后自动续跑会话 ${sessionId}`);
+  }
+
+  /** 当前挂着的 resumeAt 定时器数（测试用） */
+  get pendingResumeCount(): number {
+    return this.#resumeTimers.size;
+  }
+
+  // -------------------------------------------------------------------------
+  // resolveSession
+  // -------------------------------------------------------------------------
+
+  /**
+   * 取活跃实例；没有就按需 resume（见文件头）。返回 undefined 表示已向 client
+   * 报了机器级 error.fatal，调用方直接返回即可。
+   */
+  resolveSession(sessionId: string): Promise<ClaudeSession | undefined> {
+    // 永久删除过的会话绝不复活（链上的帧已在 #handleSession 拦下，这里兜链外调用者）
+    if (this.#deps.flags.isDeleted(sessionId)) {
+      this.#log(`[router] 拒绝 resume 已删除的会话 ${sessionId}`);
+      return Promise.resolve(undefined);
+    }
+    const existing = this.#deps.manager.get(sessionId);
+    if (existing !== undefined) return Promise.resolve(existing);
+    const inflight = this.#resolving.get(sessionId);
+    if (inflight !== undefined) return inflight;
+
+    const task = this.#resume(sessionId).finally(() => {
+      this.#resolving.delete(sessionId);
+    });
+    this.#resolving.set(sessionId, task);
+    return task;
+  }
+
+  async #resume(sessionId: string): Promise<ClaudeSession | undefined> {
+    let params: SessionParams | undefined;
+    try {
+      params = await this.#lookupParams(sessionId);
+    } catch (err) {
+      // listSessions 抛错：**机器级** fatal。交给命令链的兜底会按 sid 发会话级
+      // fatal，等于为一个尚不知存在与否的 sid 开了 seq 流（可被膨胀）
+      this.#emitMachine({
+        type: 'error.fatal',
+        kind: 'other',
+        message: `查询会话列表失败，无法恢复会话 ${sessionId}：${
+          err instanceof Error ? err.message : String(err)
+        }`.slice(0, 300),
+      });
+      return undefined;
+    }
+    if (params === undefined) {
+      this.#emitMachine({
+        type: 'error.fatal',
+        kind: 'config',
+        message: `会话 ${sessionId} 不存在`,
+      });
+      return undefined;
+    }
+    try {
+      // started 省略 = 历史会话有转录 → resume；本进程 create 出来还没发过消息的
+      // （started:false，进程重启后仍记着）→ 无转录，以新建方式起
+      const resume = params.started !== false;
+      // resume 历史会话：带上 title / firstPrompt 等，否则 meta 里这些是空的，
+      // 第一次状态迁移就把空标题广播出去（评审 B3）
+      const seed = resume ? await this.#seedFor(sessionId) : undefined;
+      if (this.#deps.manager.has(sessionId)) return this.#deps.manager.get(sessionId);
+      const { session } = this.#deps.manager.acquire({
+        sessionId,
+        ...params,
+        resume,
+        ...(seed === undefined ? {} : { seed }),
+      });
+      this.#deps.state.rememberSession(sessionId, params);
+      return session;
+    } catch (err) {
+      if (err instanceof ConcurrencyLimitError) {
+        this.#emitMachine({ type: 'error.fatal', kind: 'config', message: err.message });
+        return undefined;
+      }
+      throw err;
+    }
+  }
+
+  /** 三级参数来源：state.json → manager meta → listSessions（缓存 5s） */
+  async #lookupParams(sessionId: string): Promise<SessionParams | undefined> {
+    const local = this.#deps.state.sessionParams(sessionId);
+    if (local !== undefined) return local;
+    const meta = this.#deps.manager.metaOf(sessionId);
+    if (meta !== undefined) {
+      return {
+        cwd: meta.cwd,
+        model: meta.model || this.#deps.defaultModel,
+        permissionMode: meta.permissionMode,
+      };
+    }
+    const listed = await this.#listAll();
+    return listed.get(sessionId)?.params;
+  }
+
+  /**
+   * resume 种子：listSessions 缓存还新鲜就用它（#lookupParams 刚查过的情形），
+   * 否则 getSessionInfo。都拿不到就不种——manager 会保留已有 meta 里的值。
+   */
+  async #seedFor(sessionId: string): Promise<SessionSeed | undefined> {
+    const cache = this.#listCache;
+    if (cache !== undefined && this.#now() - cache.at < this.#listCacheMs) {
+      const hit = await cache.promise.then((m) => m.get(sessionId)).catch(() => undefined);
+      if (hit !== undefined) return hit.seed;
+    }
+    try {
+      const info = await this.#deps.manager.sessionInfo(sessionId);
+      return info === undefined ? undefined : seedFromInfo(info);
+    } catch (err) {
+      this.#log(`[router] 查会话 ${sessionId} 的信息失败，resume 不带种子：${(err as Error).message}`);
+      return undefined;
+    }
+  }
+
+  #listAll(): Promise<Map<string, ListedSession>> {
+    const now = this.#now();
+    if (this.#listCache !== undefined && now - this.#listCache.at < this.#listCacheMs) {
+      return this.#listCache.promise;
+    }
+    const promise = this.#deps.manager.list().then((sessions) => {
+      const map = new Map<string, ListedSession>();
+      for (const s of sessions) {
+        // listSessions 不带模型（''），cwd 也可能缺——缺 cwd 的会话无法 resume，跳过
+        if (s.cwd === '') continue;
+        map.set(s.sessionId, {
+          params: {
+            cwd: s.cwd,
+            model: s.model || this.#deps.defaultModel,
+            permissionMode: s.permissionMode,
+          },
+          seed: {
+            title: s.title,
+            ...(s.firstPrompt === undefined ? {} : { firstPrompt: s.firstPrompt }),
+            ...(s.gitBranch === undefined ? {} : { gitBranch: s.gitBranch }),
+            ...(s.createdAt === undefined ? {} : { createdAt: s.createdAt }),
+          },
+        });
+      }
+      return map;
+    });
+    this.#listCache = { at: now, promise };
+    // 查询失败不缓存，下次重试
+    promise.catch(() => {
+      if (this.#listCache?.promise === promise) this.#listCache = undefined;
+    });
+    return promise;
+  }
+
+  // -------------------------------------------------------------------------
+  // 机器级
+  // -------------------------------------------------------------------------
+
+  async #handleMachine(event: ClientToAgentEvent, sender: Recipient): Promise<void> {
+    const { manager, cwdStore } = this.#deps;
+    switch (event.type) {
+      case 'session.create': {
+        const sessionId = randomUUID();
+        const params: SessionParams = {
+          cwd: event.cwd,
+          model: event.model,
+          permissionMode: event.permissionMode,
+          // 还没发过消息、SDK 侧无转录：之后若要重开必须以新建方式
+          started: false,
+        };
+        try {
+          manager.acquire({ sessionId, cwd: params.cwd, model: params.model, permissionMode: params.permissionMode });
+        } catch (err) {
+          if (err instanceof ConcurrencyLimitError) {
+            this.#emitMachine({ type: 'error.fatal', kind: 'config', message: err.message });
+            return;
+          }
+          throw err;
+        }
+        this.#deps.state.rememberSession(sessionId, params);
+        const meta = manager.metaOf(sessionId);
+        if (meta === undefined) throw new Error('acquire 成功却没有 meta（不该发生）');
+        // 机器级：与 bridge 自发的 session.created 各占一个机器级 seq，发起端按 sessionId 去重
+        this.#emitMachine({
+          type: 'session.create.response',
+          reqId: event.reqId,
+          session: meta,
+        });
+        return;
+      }
+      case 'session.list.request': {
+        const sessions = await manager.list();
+        this.#emitMachine({ type: 'session.list.response', reqId: event.reqId, sessions });
+        return;
+      }
+      case 'cwd.list.request':
+        this.#emitMachine({
+          type: 'cwd.list.response',
+          reqId: event.reqId,
+          ...cwdStore.snapshot(),
+        });
+        return;
+      case 'cwd.add':
+        await cwdStore.add(event.path);
+        this.#emitMachine({ type: 'cwd.updated', ...cwdStore.snapshot() });
+        return;
+      case 'cwd.remove':
+        await cwdStore.remove(event.path);
+        this.#emitMachine({ type: 'cwd.updated', ...cwdStore.snapshot() });
+        return;
+      case 'cwd.setDefault':
+        await cwdStore.setDefault(event.path);
+        this.#emitMachine({ type: 'cwd.updated', ...cwdStore.snapshot() });
+        return;
+      case 'machine.rename':
+        await this.#deps.renameMachine(event.name);
+        this.#emitMachine({ type: 'machine.info', info: this.#deps.machineInfo() });
+        return;
+      case 'machine.claude.update.request': {
+        // 不 await：见文件头「机器级链」的例外说明
+        const task = this.#runClaudeUpdate(event.reqId);
+        this.#background.add(task);
+        void task.finally(() => this.#background.delete(task));
+        return;
+      }
+      case 'machine.unpair':
+        // 撤销流程未设计（DECISIONS backlog）：不动名册，只留痕
+        this.#log(`[router] 收到 machine.unpair from=${sender.deviceId}，本版本不实现，忽略`);
+        return;
+      default:
+        this.#log(`[router] 未处理的机器级事件 type=${event.type}`);
+    }
+  }
+
+  /** 跑 claude update 并回机器级应答（广播：别的设备按 reqId 对不上会忽略） */
+  async #runClaudeUpdate(reqId: string): Promise<void> {
+    let outcome: ClaudeUpdateOutcome;
+    try {
+      outcome = await this.#deps.updateClaude();
+    } catch (err) {
+      const version = this.#deps.machineInfo().claudeVersion;
+      outcome = {
+        ok: false,
+        fromVersion: version,
+        toVersion: version,
+        output: '',
+        outputTruncated: false,
+        error: { code: 'failed', message: `agent 执行 claude update 出错：${(err as Error).message}`.slice(0, 300) },
+      };
+    }
+    this.#emitMachine({
+      type: 'machine.claude.update.response',
+      reqId,
+      ok: outcome.ok,
+      fromVersion: outcome.fromVersion,
+      toVersion: outcome.toVersion,
+      output: outcome.output,
+      ...(outcome.outputTruncated ? { outputTruncated: true } : {}),
+      ...(outcome.error === undefined ? {} : { error: outcome.error }),
+    });
+  }
+
+  // -------------------------------------------------------------------------
+
+  #emitMachine(body: EventBody): void {
+    this.#deps.emitter.emit(body, null);
+  }
+
+  #emitSession(sessionId: string, body: EventBody): void {
+    this.#deps.emitter.emit(body, sessionId);
+  }
+}
+
+/** SDK 命令清单 → 协议 SlashCommand：去重、空描述省略、长描述截断 */
+export function toSlashCommands(commands: readonly SdkSlashCommand[]): SlashCommand[] {
+  const seen = new Set<string>();
+  const out: SlashCommand[] = [];
+  for (const c of commands) {
+    if (c.name === '' || seen.has(c.name)) continue;
+    seen.add(c.name);
+    const description = (c.description ?? '').trim();
+    out.push({
+      name: c.name,
+      ...(description === ''
+        ? {}
+        : {
+            description:
+              description.length > COMMAND_DESCRIPTION_MAX
+                ? `${description.slice(0, COMMAND_DESCRIPTION_MAX - 1)}…`
+                : description,
+          }),
+      source: 'project',
+    });
+  }
+  return out;
+}
