@@ -6,8 +6,8 @@
     "apps/*"
   ],
   "scripts": {
-    "dev:agent": "bun run --filter @trine/agent dev",
-    "dev:server": "bun run --filter @trine/server dev",
+    "dev:agent": "bun run apps/agent/src/cli.ts",
+    "dev:server": "bun run apps/server/src/index.ts",
     "dev:web": "bun run --filter @trine/web dev",
     "typecheck": "bun run --filter '*' typecheck",
     "test": "bun test",
