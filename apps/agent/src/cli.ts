@@ -20,6 +20,7 @@ import { installProcessGuards } from './app/process-guards.ts';
 import { ConfigError, loadAgentConfig, USAGE } from './app/config.ts';
 import type { PairingSession } from './net/pairing.ts';
 import { formatPairingPrompt, renderPairingPayload } from './net/qr.ts';
+import { logTime } from './log-time.ts';
 
 /** 优雅退出的总时限，超过就强退（可能留孤儿子进程，记遗留） */
 const SHUTDOWN_HARD_LIMIT_MS = 10_000;
@@ -34,8 +35,7 @@ const color = {
 };
 
 function log(line: string): void {
-  const ts = new Date().toISOString().slice(11, 19);
-  console.log(`${color.dim(ts)} ${line}`);
+  console.log(`${color.dim(logTime())} ${line}`);
 }
 
 async function main(): Promise<void> {
