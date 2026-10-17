@@ -12,6 +12,7 @@
  * - 不存：任何 E2E 正文（ciphertext 是密文，服务端无密钥，也不尝试解）、
  *   会话标题、cwd、工具参数、消息文本、机器名。
  *
+ * 认证凭据摘要与有效期是认证元数据，不属于 E2E 正文。
  * 加字段前先问：这个字段在 transport.ts 里有对应吗？没有就不该存。
  */
 
@@ -185,6 +186,12 @@ const MIGRATIONS: string[] = [
   FROM relay_frames
   GROUP BY machine_id, session_id, dir, recipient_id;
   `,
+  // v4: agent enrollment credentials; only hashes and administrative metadata.
+  `CREATE TABLE agent_invitations (
+    id TEXT PRIMARY KEY,
+    token_hash TEXT NOT NULL UNIQUE,
+    expires_at INTEGER NOT NULL
+  );`,
 ];
 
 /** 当前 schema 版本 = 迁移条数 */

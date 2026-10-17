@@ -5,6 +5,7 @@
  * 多一个文件格式就多一份「到底哪个生效」的困惑。argv 只覆盖几个启动时
  * 常用的开关（--pair / --server / --home / --name / --claude-bin），其余走 env。
  */
+import { assertEnrollmentUrl, httpBase } from '@trine/core/net';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -17,6 +18,7 @@ export interface AgentConfig {
   name: string | undefined;
   /** 启动后立刻发起一次配对（打 QR） */
   pair: boolean;
+  enroll?: boolean;
   /** resume 历史会话时若查不到模型（SDK listSessions 不带模型）就用它 */
   defaultModel: string;
   /** 并发活跃会话上限；undefined = SessionManager 默认 */
@@ -55,8 +57,9 @@ export function agentPaths(home: string): {
   };
 }
 
-export const USAGE = `用法：trine-agent [--pair] [--server URL] [--home DIR] [--name NAME] [--claude-bin PATH]
+export const USAGE = `用法：trine-agent [--enroll] [--pair] [--server URL] [--home DIR] [--name NAME] [--claude-bin PATH]
 
+  --enroll        未注册时从隐藏终端输入（或 stdin 一行）读取短期邀请，不保存
   --pair          启动后打出配对二维码，等 client 扫码并在终端确认 SAS
   --server URL    服务端地址（或 env TRINE_SERVER；二者必填其一）
   --home DIR      身份/名册/状态目录（或 env TRINE_HOME；默认 ~/.trine）
@@ -90,9 +93,9 @@ export function loadAgentConfig(
     throw new ConfigError('缺少服务端地址：请传 --server URL 或设 TRINE_SERVER');
   }
   try {
-    new URL(serverUrl);
+    assertEnrollmentUrl(httpBase(serverUrl));
   } catch {
-    throw new ConfigError(`服务端地址不是合法 URL：${serverUrl}`);
+    throw new ConfigError('服务端地址必须为 HTTPS/WSS（回环可用 HTTP/WS），不能含用户名、密码、查询参数或 fragment');
   }
 
   const home = flags.get('home') ?? env['TRINE_HOME'] ?? join(homedir(), '.trine');
@@ -104,6 +107,7 @@ export function loadAgentConfig(
     home,
     name: name === '' ? undefined : name,
     pair: flags.has('pair'),
+    enroll: flags.has('enroll'),
     defaultModel: nonEmpty(env['TRINE_DEFAULT_MODEL']) ?? DEFAULT_MODEL,
     maxSessions: envInt(env, 'TRINE_MAX_SESSIONS'),
     idleTimeoutMs: envInt(env, 'TRINE_IDLE_TIMEOUT_MS'),
@@ -115,7 +119,7 @@ export function loadAgentConfig(
 function parseArgv(argv: readonly string[]): Map<string, string | undefined> {
   const out = new Map<string, string | undefined>();
   const takesValue = new Set(['server', 'home', 'name', 'claude-bin']);
-  const boolean = new Set(['pair']);
+  const boolean = new Set(['pair', 'enroll']);
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
     if (!arg.startsWith('--')) {

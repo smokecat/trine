@@ -12,6 +12,8 @@
  * 是否一致（y/n）→ confirm/abort；非 TTY 无法确认，只 log、不 abort（token 自然
  * 过期，用户可在有效期内以 TTY 重跑）。
  */
+import { AuthClientError } from '@trine/core/net';
+import { readInvitation } from './enrollment-input.ts';
 import { createInterface } from 'node:readline/promises';
 import { AgentApp } from './app/app.ts';
 import { installProcessGuards } from './app/process-guards.ts';
@@ -49,7 +51,7 @@ async function main(): Promise<void> {
     throw err;
   }
 
-  const app = await AgentApp.create(config, { log });
+  const app = await AgentApp.create(config, { log, ...(config.enroll ? { getInvitation: readInvitation } : {}) });
   log(
     `${color.bold('trine-agent')} machine=${app.node.machineId} name=${app.node.identity.name} ` +
       `${color.dim(`server=${config.serverUrl} home=${config.home} 已配对 ${app.node.recipients.size} 台`)}`,
@@ -136,7 +138,19 @@ async function handlePairingRequest(app: AgentApp, session: PairingSession): Pro
 }
 
 main().catch((err: unknown) => {
+  if (err instanceof AuthClientError) {
+    const guidance: Record<string, string> = {
+      invalid_invitation: '邀请已过期、撤销、使用或不属于此 relay；请签发新邀请，保留原 --home 后重试 --enroll。',
+      registration_closed: '新 agent 必须使用邀请；请先升级 relay 和 agent，然后用 --enroll 重试。',
+      rate_limited: '请求过于频繁；请等一分钟再试。',
+      device_exists_with_other_key: '设备 ID 与已有公钥冲突；请检查身份备份与服务端，不要覆盖原身份。',
+      role_mismatch: '设备角色冲突；请检查 --home 和 --server。',
+      device_revoked: '此设备身份已撤销；邀请不能恢复被撤销的身份。',
+      bad_signature: '身份认证失败；请检查身份文件与服务端登记的公钥。',
+    };
+    if (guidance[err.reason]) console.error(color.yellow(guidance[err.reason]!));
+  }
   console.error(color.red(`启动失败：${err instanceof Error ? err.message : String(err)}`));
-  if (err instanceof Error && err.stack !== undefined) console.error(color.dim(err.stack));
+
   process.exit(1);
 });

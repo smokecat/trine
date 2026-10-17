@@ -43,6 +43,8 @@ export interface AuthClientOptions {
  */
 export interface AuthRequestOptions {
   signal?: AbortSignal;
+  /** Agent-only enrollment credential; never persisted. */
+  invitation?: string;
 }
 
 export interface AuthToken {
@@ -62,26 +64,19 @@ export class AuthClient {
     this.fetchImpl = options.fetchImpl ?? fetch.bind(globalThis);
   }
 
-  /**
-   * 注册本设备公钥。
-   *
-   * 幂等：同 deviceId + 同公钥重复注册服务端会放行（`created: false`），
-   * 所以每次启动无脑调一次是安全的。
-   *
-   * 服务端可能回 `registration_closed`——那是正常的稳态：这台 agent 早已
-   * 注册过（走 bootstrap 或手工开窗），只是本地记录丢了。调用方应当把它
-   * 当作「可以继续尝试认证」而不是致命错误，认证成不成会给出真正的答案。
-   */
+  /** Idempotent registration; new agents require an invitation, clients use pairing. */
   async register(
     role: 'agent' | 'client' = 'agent',
     opts: AuthRequestOptions = {},
   ): Promise<{ created: boolean }> {
+    if (opts.invitation !== undefined) assertEnrollmentUrl(this.base);
     const res = await this.post(
       '/auth/register',
       {
         deviceId: this.options.deviceId,
         role,
         signPubKey: this.options.signKeys.publicKey,
+        ...(opts.invitation === undefined ? {} : { invitation: opts.invitation }),
       },
       opts,
     );
@@ -122,32 +117,21 @@ export class AuthClient {
     return this.verify(challenge, opts);
   }
 
-  /**
-   * 首次接入：先尝试注册再认证。
-   *
-   * `registration_closed` 与 `device_exists_with_other_key` 都被吞掉继续
-   * 往下走——前者是「不是首设备且没开窗」，后者是「已登记过别的公钥」，
-   * 两种情况下认证本身会给出准确答案（能过说明本来就是我，过不了会以
-   * `unknown_device` / `bad_signature` 报出来），比在这里猜要可靠。
-   */
+  /** Existing identities authenticate first; registration only on unknown_device. */
   async bootstrap(opts: AuthRequestOptions = {}): Promise<AuthToken> {
     try {
-      await this.register('agent', opts);
+      return await this.authenticate(opts);
     } catch (err) {
-      const reason = err instanceof AuthClientError ? err.reason : '';
-      if (
-        reason !== 'registration_closed' &&
-        reason !== 'device_exists_with_other_key'
-      ) {
-        throw err;
-      }
+      if (!(err instanceof AuthClientError) || err.reason !== 'unknown_device') throw err;
     }
+    await this.register('agent', opts);
     return this.authenticate(opts);
   }
 
   private async post(path: string, body: unknown, opts: AuthRequestOptions = {}): Promise<unknown> {
     const res = await this.fetchImpl(`${this.base}${path}`, {
       method: 'POST',
+      redirect: 'error',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body),
       // 透传调用方的超时/取消信号（评审 N3）；未给就不设，行为与从前一致
@@ -165,5 +149,15 @@ export class AuthClient {
       );
     }
     return payload ?? {};
+  }
+}
+
+/** Credentials must never follow redirects or travel over remote plaintext HTTP. */
+export function assertEnrollmentUrl(base: string): void {
+  const url = new URL(base);
+  const loopback = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
+  if (url.username || url.password || url.search || url.hash ||
+      (url.protocol !== 'https:' && !(url.protocol === 'http:' && loopback))) {
+    throw new Error('Enrollment requires HTTPS (or loopback HTTP), without URL credentials/query/fragment');
   }
 }

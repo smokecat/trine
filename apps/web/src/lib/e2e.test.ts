@@ -1,3 +1,4 @@
+import { createInvitation } from '../../../server/src/auth/invitations.ts';
 /**
  * in-process e2e：真 `startServer` + 真 `startEchoAgent`（假 ClaudeSession）+ 本 lib
  * （内存适配器、真 WebSocket、真时钟）。验的是「服务端 + agent + web 协议层」
@@ -140,6 +141,7 @@ beforeEach(async () => {
   });
   agent = await startEchoAgent({
     serverUrl: `http://127.0.0.1:${server.port}`,
+    getInvitation: async () => createInvitation(server.store).token,
     home,
     machineId: 'mbp',
     log: (l) => agentLogs.push(l),
@@ -621,6 +623,7 @@ describe('web lib · 会话重命名 / 归档 / 永久删除（session-list-v2�
     transcripts = new FakeTranscripts();
     agent = await startEchoAgent({
       serverUrl: `http://127.0.0.1:${server.port}`,
+      getInvitation: async () => createInvitation(server.store).token,
       home,
       machineId: 'mbp',
       log: (l) => agentLogs.push(l),

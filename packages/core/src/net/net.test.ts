@@ -105,7 +105,7 @@ describe('AuthClient', () => {
     expect((err as AuthClientError).reason).toBe('unknown_device');
   });
 
-  test('bootstrap：registration_closed 被吞掉，继续走认证', async () => {
+  test('bootstrap：已注册设备直接认证，不调用注册', async () => {
     const { fetchImpl, calls } = stubFetch((path) => {
       if (path === '/auth/register') return json({ error: 'registration_closed' }, 403);
       if (path === '/auth/challenge') return json({ challenge: 'chal-2', expiresAt: 1 });
@@ -113,7 +113,6 @@ describe('AuthClient', () => {
     });
     expect(await make(fetchImpl).bootstrap()).toEqual({ token: 'tok-2', expiresAt: 2 });
     expect(calls.map((c) => c.path)).toEqual([
-      '/auth/register',
       '/auth/challenge',
       '/auth/verify',
     ]);
@@ -121,7 +120,7 @@ describe('AuthClient', () => {
 
   test('bootstrap：非「已登记」类的注册错误照常抛出', async () => {
     const { fetchImpl } = stubFetch((path) =>
-      path === '/auth/register' ? json({ error: 'rate_limited' }, 429) : json({}),
+      path === '/auth/register' ? json({ error: 'rate_limited' }, 429) : json({ error: 'unknown_device' }, 401),
     );
     const err = await make(fetchImpl)
       .bootstrap()
@@ -210,5 +209,28 @@ describe('AuthClient · signal 透传（评审 N3：认证不能是永久黑洞�
     await client(spy).challenge();
     expect(seenInit).not.toHaveProperty('signal');
     expect(calls).toHaveLength(1);
+  });
+});
+
+describe('registration secret transport', () => {
+  test('invitation is only in POST body; redirects are disabled', async () => {
+    let seen: RequestInit | undefined;
+    let endpoint = '';
+    const client = new AuthClient({ baseUrl: 'https://relay.example', deviceId: 'synthetic', signKeys,
+      fetchImpl: (async (url: Parameters<typeof fetch>[0], init?: RequestInit) => { endpoint = String(url); seen = init; return Response.json({ created: true }); }) as unknown as typeof fetch });
+    const invitation = 'synthetic-invite';
+    await client.register('agent', { invitation });
+    expect(endpoint).toBe('https://relay.example/auth/register');
+    expect(seen?.redirect).toBe('error');
+    expect(JSON.parse(String(seen?.body)).invitation).toBe(invitation);
+  });
+  test('remote plaintext, URL credentials and queries cannot carry an invitation', async () => {
+    for (const baseUrl of ['http://relay.example', 'https://user:pass@relay.example', 'https://relay.example?secret=x', 'https://relay.example#secret']) {
+      let calls = 0;
+      const client = new AuthClient({ baseUrl, deviceId: 'synthetic', signKeys,
+        fetchImpl: (async () => { calls++; return Response.json({}); }) as unknown as typeof fetch });
+      await expect(client.register('agent', { invitation: 'synthetic-invite' })).rejects.toThrow('Enrollment requires');
+      expect(calls).toBe(0);
+    }
   });
 });

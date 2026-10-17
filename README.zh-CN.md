@@ -37,8 +37,10 @@ bun run dev:web
 ```
 
 ```bash
-# 终端 3：agent，选择你的账户可访问的模型
-TRINE_DEFAULT_MODEL=sonnet bun run dev:agent --   --server http://localhost:5173 --home .dev/agent --pair
+# 终端 3：签发一次性邀请，然后在 agent 的隐藏提示中粘贴
+bun run agent:invite create --db .dev/relay.sqlite
+# 选择你的账户可访问的模型
+TRINE_DEFAULT_MODEL=sonnet bun run dev:agent --   --server http://localhost:5173 --home .dev/agent --enroll --pair
 ```
 
 浏览器打开 <http://localhost:5173>，粘贴终端中的配对码，对比两端校验码；完全一致时才在 agent 的交互式终端确认。浏览器和 agent 必须使用相同主机名。
@@ -47,7 +49,9 @@ TRINE_DEFAULT_MODEL=sonnet bun run dev:agent --   --server http://localhost:5173
 
 ## 公网使用
 
-按[部署指南](apps/server/deploy/README.md)配置 HTTPS/WSS。**在开放公网前，先用 SSH 隧道完成首台 agent 注册**。当前代码在设备库为空时允许首设备注册，关闭开放注册开关也不能替代这一步。
+按[部署指南](apps/server/deploy/README.md)配置 HTTPS/WSS。首台与新增 agent 均由 relay 管理员签发短期、单次邀请，然后用 `--enroll` 启动并隐藏输入邀请；不需要注册窗口、重启 relay 或切换 SSH 隧道地址。空库也拒绝无邀请注册，旧的 `TRINE_OPEN_REGISTRATION` 开关不再生效。
+
+以后保留同一 `--home`，启动时省略 `--enroll`；浏览器仍须单独配对并人工确认校验码。邀请管理、失败恢复、升级兼容和安全边界见[中文注册指南](docs/AGENT-ENROLLMENT.zh-CN.md)。
 
 不要把它作为多人共享的中转服务。Web 私钥保存在 localStorage，缓存聊天在 IndexedDB；端到端加密不能防止恶意前端脚本或受控终端读取它们。完整边界见 [SECURITY.md](SECURITY.md)。
 

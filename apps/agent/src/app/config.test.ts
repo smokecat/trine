@@ -74,3 +74,20 @@ describe('loadAgentConfig', () => {
     });
   });
 });
+
+describe('enrollment CLI configuration', () => {
+  test('--enroll accepts no secret argument and unsafe URLs are rejected without echoing them', () => {
+    expect(loadAgentConfig(['--enroll'], env).enroll).toBe(true);
+    expect(() => loadAgentConfig(['--enroll=secret'], env)).toThrow('--enroll 不接受值');
+    for (const url of ['http://relay.example', 'https://user:secret@relay.example', 'https://relay.example?secret=private']) {
+      try {
+        loadAgentConfig(['--server', url], {});
+        throw new Error('unsafe URL was accepted');
+      } catch (error) {
+        expect(error).toBeInstanceOf(ConfigError);
+        expect(String(error)).not.toContain('private');
+        expect(String(error)).not.toContain('user:secret');
+      }
+    }
+  });
+});

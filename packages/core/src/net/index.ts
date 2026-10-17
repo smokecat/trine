@@ -12,6 +12,7 @@
 export {
   AuthClient,
   AuthClientError,
+  assertEnrollmentUrl,
   type AuthClientOptions,
   type AuthRequestOptions,
   type AuthToken,

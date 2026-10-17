@@ -170,6 +170,7 @@ export class EchoSession {
 // ---------------------------------------------------------------------------
 
 export interface StartEchoAgentOptions {
+  getInvitation?: () => Promise<string>;
   /** 服务端根地址，如 `http://127.0.0.1:8787` */
   serverUrl: string;
   /** agent 的 home 目录（身份/名册/游标都落在这里，测试用临时目录） */
@@ -249,6 +250,7 @@ export async function startEchoAgent(
   const transcripts = recording ?? new FakeTranscripts();
   const app = await AgentApp.create(config, {
     machineId: options.machineId ?? 'mbp',
+    ...(options.getInvitation === undefined ? {} : { getInvitation: options.getInvitation }),
     claudeVersion: options.claudeVersion ?? 'test',
     whichFn: options.whichFn ?? (() => null),
     ...(options.spawnFn === undefined ? {} : { spawnFn: options.spawnFn }),

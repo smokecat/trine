@@ -113,7 +113,7 @@ describe('认证失败限流不被伪造 XFF 头绕过', () => {
       allowOpenRegistration: true,
     });
     auth = new AuthService(store, config);
-    auth.register(DEVICE, 'agent', kp.publicKey, 'bootstrap');
+    store.registerDevice(DEVICE, 'agent', kp.publicKey);
   });
 
   /**

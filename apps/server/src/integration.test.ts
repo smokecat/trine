@@ -1,3 +1,4 @@
+import { createInvitation } from './auth/invitations.ts';
 /**
  * 全链路集成测试：本地起真服务，两条真 WebSocket 模拟 client + agent，
  * 走完 注册/认证 → 握手 → 中转 → 断线补发 → 离线排队/撤回。
@@ -68,10 +69,12 @@ async function authenticate(
     return { status: res.status, body: (await res.json()) as Record<string, unknown> };
   };
 
+  if (role === 'client') server.store.registerDevice(deviceId, role, keys.publicKey);
   const reg = await post('/auth/register', {
     deviceId,
     role,
     signPubKey: keys.publicKey,
+    ...(role === 'agent' ? { invitation: createInvitation(server.store).token } : {}),
   });
   expect(reg.status).toBe(200);
 
@@ -236,6 +239,7 @@ describe('HTTP 认证端点', () => {
         deviceId: 'mbp',
         role: 'agent',
         signPubKey: agentKeys.publicKey,
+        invitation: createInvitation(server.store).token,
       }),
     });
     const chal = (await (

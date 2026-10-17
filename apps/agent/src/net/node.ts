@@ -24,7 +24,7 @@ import type {
   TransportFrame,
 } from '@trine/core';
 import { sodiumReady } from '@trine/core/crypto';
-import { AuthClient, httpBase, wsEndpoint } from '@trine/core/net';
+import { AuthClient, AuthClientError, assertEnrollmentUrl, httpBase, wsEndpoint } from '@trine/core/net';
 import {
   openInbound,
   sealForAll,
@@ -70,6 +70,8 @@ export interface AgentNodeOptions {
    */
   onOpen?: () => void;
 
+  /** Called once only for an unregistered identity; secret is not retained. */
+  getInvitation?: () => Promise<string>;
   fetchImpl?: typeof fetch;
   createSocket?: (url: string) => SocketLike;
   backoff?: BackoffOptions;
@@ -147,18 +149,34 @@ export class AgentNode {
     return this.#ws?.state === 'open';
   }
 
-  /**
-   * 接入服务端：bootstrap 注册（幂等）+ 换 token + 建 WS 长连。
-   *
-   * 首次接入与后续启动走的是同一条路径——`register` 幂等、`registration_closed`
-   * 被 AuthClient 吞掉（见其注释），所以调用方不需要区分「第一次」和「之后」。
-   */
+  /** Authenticate before starting retries, so enrollment failures are actionable. */
   async connect(): Promise<void> {
     const wsUrl = wsEndpoint(this.options.serverUrl);
+    let initialToken;
+    try {
+      initialToken = await this.auth.authenticate({ signal: AbortSignal.timeout(15_000) });
+    } catch (error) {
+      if (!(error instanceof AuthClientError) || error.reason !== 'unknown_device') throw error;
+      if (!this.options.getInvitation) {
+        throw new Error('此身份尚未注册：请由 relay 管理员签发邀请，并使用 --enroll 启动；已有设备请检查 --home 与 --server。');
+      }
+      assertEnrollmentUrl(httpBase(this.options.serverUrl));
+      const invitation = await this.options.getInvitation();
+      try {
+        await this.auth.register('agent', { invitation, signal: AbortSignal.timeout(15_000) });
+      } catch (error) {
+        // Server may have committed before the response was lost. Prove ownership
+        // rather than burning another invitation or storing a local receipt.
+        try { initialToken = await this.auth.authenticate({ signal: AbortSignal.timeout(15_000) }); }
+        catch { throw error; }
+      }
+      initialToken ??= await this.auth.authenticate({ signal: AbortSignal.timeout(15_000) });
+    }
     const ws = new WsClient({
       url: wsUrl,
       deviceId: this.identity.machineId,
-      refreshToken: async () => (await this.auth.bootstrap()).token,
+      token: initialToken.token,
+      refreshToken: async () => (await this.auth.authenticate({ signal: AbortSignal.timeout(15_000) })).token,
       onFrame: (frame) => this.#onFrame(frame),
       onOpen: () => this.#onOpen(),
       onError: (err) => this.log(`[net] 连接出错：${String(err)}`),

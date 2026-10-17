@@ -3,6 +3,9 @@
 import { startServer } from './server.ts';
 
 const server = await startServer();
+if (server.config.allowOpenRegistration) {
+  console.warn('[trine-server] TRINE_OPEN_REGISTRATION is deprecated and ignored; new agents require invitations.');
+}
 console.info(
   `[trine-server] 监听 ${server.config.hostname}:${server.port} · db=${server.config.dbPath}`,
 );

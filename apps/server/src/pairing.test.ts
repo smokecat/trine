@@ -1,3 +1,4 @@
+import { createInvitation } from './auth/invitations.ts';
 /**
  * 服务端侧的配对流程集成测试：真 Bun.serve + 真 WebSocket，
  * 覆盖 D8 的两处关键改动——免认证的 `role:'pairing'` 受限连接，
@@ -82,11 +83,12 @@ async function tokenFor(deviceId: string, keys: SignKeyPair): Promise<string> {
   return verified.body.token as string;
 }
 
-/** agent bootstrap：空库首设备可自助注册 */
+/** 首台 agent 同样需要管理员签发的邀请。 */
 async function bootstrapAgent(deviceId = 'mbp'): Promise<string> {
   const reg = await post('/auth/register', {
     deviceId,
     role: 'agent',
+    invitation: createInvitation(server.store).token,
     signPubKey: agentKeys.publicKey,
   });
   expect(reg.status).toBe(200);

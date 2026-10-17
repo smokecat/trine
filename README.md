@@ -58,8 +58,11 @@ bun run dev:web
 ```
 
 ```bash
-# 3. Agent: choose a model your Claude account can access.
-TRINE_DEFAULT_MODEL=sonnet bun run dev:agent --   --server http://localhost:5173 --home .dev/agent --pair
+# 3. Issue a short-lived invitation, then paste it at the agent's hidden prompt.
+# Only the invite command prints the secret; keep this terminal private.
+bun run agent:invite create --db .dev/relay.sqlite
+# Choose a model your Claude account can access.
+TRINE_DEFAULT_MODEL=sonnet bun run dev:agent --   --server http://localhost:5173 --home .dev/agent --enroll --pair
 ```
 
 Open <http://localhost:5173>, paste the pairing payload, compare the codes on both
@@ -72,7 +75,10 @@ The development agent can still operate your real Claude workspaces. The separat
 or history. Start with a disposable project and review permission requests.
 
 For a phone or an Internet-facing relay, follow the [deployment guide](apps/server/deploy/README.md).
-**Register the first agent over an SSH tunnel before opening the public relay.**
+First and additional agents use the same one-time invitation flow; no registration
+window or relay restart is needed. Keep the same `--home` and omit `--enroll` on
+subsequent starts. Browser pairing still requires manual confirmation.
+See [enrollment and recovery](apps/server/deploy/README.md#4-enroll-the-first-agent-and-pair-a-browser).
 
 ## Architecture
 
@@ -100,7 +106,8 @@ fallback model. `TRINE_MAX_SESSIONS` and `TRINE_IDLE_TIMEOUT_MS` control active 
 
 The relay reads environment variables. Copy the
 [environment template](apps/server/deploy/trine-server.env.example) outside the
-checkout and edit that copy. Keep registration closed and the listener on loopback.
+checkout and edit that copy. Keep the listener on loopback behind your TLS proxy.
+`TRINE_OPEN_REGISTRATION` is deprecated and cannot enable registration.
 
 | Location | Contents |
 | --- | --- |

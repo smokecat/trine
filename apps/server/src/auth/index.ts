@@ -61,6 +61,7 @@ export type AuthError =
   | 'rate_limited'
   | 'invalid_public_key'
   | 'registration_closed'
+  | 'invalid_invitation'
   | 'device_exists_with_other_key'
   | 'role_mismatch';
 
@@ -68,12 +69,8 @@ export type AuthResult<T> =
   | { ok: true; value: T }
   | { ok: false; error: AuthError };
 
-/**
- * 设备登记来源（D8：审计留痕）。
- * - `bootstrap` 空库首设备；`open` 手工开的注册窗口；
- * - `pairing` 已认证 agent 在 pair.confirm 里背书——常规路径。
- */
-export type RegistrationSource = 'bootstrap' | 'open' | 'pairing';
+/** pairing is trusted internal client enrollment; invitation is the public enrollment path. */
+export type RegistrationSource = 'invitation' | 'pairing';
 
 export class AuthService {
   private readonly log: (line: string) => void;
@@ -86,63 +83,65 @@ export class AuthService {
     this.log = log;
   }
 
-  /**
-   * 设备注册。
-   *
-   * 开放注册（`allowOpenRegistration`）默认关闭：生产部署下新设备应经配对
-   * 流程引入，而不是任何人 POST 一个公钥就能进。
-   * 但**库里一台设备都没有时永远允许**——否则全新部署无从 bootstrap，
-   * 且此时也无人可冒充（没有既有设备可顶替）。
-   *
-   * `via` 是登记来源（D8 拍板：审计留痕）。三条路径的信任来源完全不同，
-   * 混在一起看日志时分不清「这台设备当初是怎么进来的」：
-   * - `bootstrap` — 空库首设备，无人可冒充；
-   * - `open` — 手工开了 `allowOpenRegistration` 窗口（第二台 agent 暂用）；
-   * - `pairing` — 已认证 agent 在 `pair.confirm` 里背书（唯一的常规路径）。
-   *
-   * **`pairing` 来源不受 `allowOpenRegistration` 限制**——它的放行依据是
-   * agent 背书，与开放注册窗口是两回事；反过来说，调用方必须自己确保只在
-   * 校验通过后才用这个来源（见 hub 的 handlePairConfirm）。
-   */
+  /** Registration and invitation consumption share one write transaction. */
   register(
     deviceId: string,
     role: DeviceRole,
     signPubKey: string,
     via: RegistrationSource,
-    now = Date.now(),
+    now: number | undefined = undefined,
+    invitation?: string,
   ): AuthResult<{ created: boolean }> {
-    if (!isValidSignPublicKey(signPubKey)) {
-      return { ok: false, error: 'invalid_public_key' };
-    }
+    return this.store.db.transaction((): AuthResult<{ created: boolean }> => {
+      const registeredAt = now ?? Date.now();
+      if (!isValidSignPublicKey(signPubKey)) {
+        return { ok: false, error: 'invalid_public_key' };
+      }
 
-    const existing = this.store.getDevice(deviceId);
-    if (existing) {
-      // 幂等：同 deviceId + 同公钥当作重复注册放行；换了公钥一律拒绝
-      if (existing.signPubKey !== signPubKey) {
-        return { ok: false, error: 'device_exists_with_other_key' };
+      const existing = this.store.getDevice(deviceId);
+      if (existing) {
+        // 幂等：同 deviceId + 同公钥当作重复注册放行；换了公钥一律拒绝
+        if (existing.signPubKey !== signPubKey) {
+          return { ok: false, error: 'device_exists_with_other_key' };
+        }
+        if (existing.role !== role) {
+          return { ok: false, error: 'role_mismatch' };
+        }
+        if (existing.revokedAt !== null) {
+          return { ok: false, error: 'device_revoked' };
+        }
+        return { ok: true, value: { created: false } };
       }
-      if (existing.role !== role) {
-        return { ok: false, error: 'role_mismatch' };
-      }
-      if (existing.revokedAt !== null) {
-        return { ok: false, error: 'device_revoked' };
-      }
-      return { ok: true, value: { created: false } };
-    }
 
-    // pairing 来源的放行依据是 agent 背书（调用方已校验），与开放注册窗口无关
-    if (via !== 'pairing') {
-      const bootstrap = this.store.countDevices() === 0;
-      if (!bootstrap && !this.config.allowOpenRegistration) {
-        return { ok: false, error: 'registration_closed' };
+      if (via === 'pairing') {
+        if (role !== 'client') return { ok: false, error: 'role_mismatch' };
+      } else {
+        if (role !== 'agent' || !invitation) return { ok: false, error: 'registration_closed' };
+        const consumed = this.store.db.query(
+          'DELETE FROM agent_invitations WHERE token_hash = ? AND expires_at > ? RETURNING id',
+        ).get(hashToken(invitation), registeredAt);
+        if (!consumed) return { ok: false, error: 'invalid_invitation' };
       }
-    }
+      this.store.registerDevice(deviceId, role, signPubKey, registeredAt);
+      // Never log invitation material, request bodies or keys.
+      this.log(`[auth] 登记设备 device=${JSON.stringify(deviceId)} role=${role} via=${via === 'pairing' ? 'pairing' : 'invitation'}`);
+      return { ok: true, value: { created: true } };
+    }).immediate();
+  }
 
-    this.store.registerDevice(deviceId, role, signPubKey, now);
-    // 审计留痕：登记来源不入库（devices 表是零知识边界的一部分，不加列），
-    // 只落日志——运维排查「这台设备当初怎么进来的」够用，成本为零
-    this.log(`[auth] 登记设备 device=${deviceId} role=${role} via=${via}`);
-    return { ok: true, value: { created: true } };
+  /** Bounded per-source + global request budget, independent of attacker-chosen IDs. */
+  allowRegistrationAttempt(source: string, now = Date.now()): boolean {
+    return this.store.db.transaction(() => {
+      const window = 60_000;
+      this.store.db.query("DELETE FROM auth_failures WHERE source LIKE 'registration:%' AND window_start <= ?").run(now - window);
+      const globalKey = 'registration:global';
+      const sourceKey = `registration:source:${hashToken(source)}`;
+      if (this.store.authFailureCount(globalKey, window, now) >= 200) return false;
+      this.store.recordAuthFailure(globalKey, window, now);
+      if (this.store.authFailureCount(sourceKey, window, now) >= 20) return false;
+      this.store.recordAuthFailure(sourceKey, window, now);
+      return true;
+    }).immediate();
   }
 
   /**

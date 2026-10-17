@@ -67,49 +67,16 @@ sudo systemctl status trine-server
 curl --fail http://127.0.0.1:8787/healthz
 ```
 
-Do **not** enable the public Caddy site yet. If an existing proxy already forwards
-to this port, disable that route first. Do not expose port 8787 in the firewall.
+The listener must remain on loopback behind Caddy; do not expose port 8787. On this
+version, even an empty database refuses registration without an invitation. When
+upgrading an older empty relay, keep its public route disabled until the new
+version is running. `TRINE_OPEN_REGISTRATION` no longer enables enrollment.
 
-## 3. Register the first agent before opening the public endpoint
-
-An empty relay database accepts the first registration even with
-`TRINE_OPEN_REGISTRATION=0`. A public endpoint at this point would allow someone
-else to claim that slot. Initialize over SSH while the public route is disabled.
-
-On the machine that will run the agent, keep an SSH tunnel open:
-
-```bash
-ssh -N -L 127.0.0.1:18787:127.0.0.1:8787 relay-host
-```
-
-In another terminal, from a local trine checkout with dependencies installed and
-Claude Code authenticated, start the agent **without** `--pair`:
-
-```bash
-TRINE_DEFAULT_MODEL=sonnet bun run dev:agent --   --server http://localhost:18787 --home ~/.trine
-```
-
-On the relay, check that exactly the expected agent was registered:
-
-```bash
-sudo -u trine sqlite3 /var/lib/trine/trine.sqlite   'SELECT device_id, role FROM devices;'
-sudo journalctl -u trine-server -n 30
-```
-
-Compare the device ID with the local agent terminal; do not share the logs.
-Stop the agent with Ctrl-C and close the tunnel. Preserve `~/.trine`: the same
-identity will authenticate after switching to the public URL.
-
-If registration is already closed but the expected agent is absent, stop and
-investigate the database. Do not enable open registration to work around an
-unexpected first device.
-
-## 4. Enable HTTPS and pair the browser
+## 3. Enable HTTPS
 
 Point your domain's DNS at the relay host. Adapt [Caddyfile](Caddyfile), replacing
 `trine.example.com`; merge it into your existing configuration or install it as
-the main Caddyfile on a dedicated host. Validate and reload using your Caddy
-installation's documented paths:
+the main Caddyfile on a dedicated host. Validate and reload:
 
 ```bash
 sudo caddy validate --config /etc/caddy/Caddyfile
@@ -117,37 +84,87 @@ sudo systemctl reload caddy
 curl --fail https://trine.example.com/healthz
 ```
 
-Caddy terminates TLS and forwards to `127.0.0.1:8787`. The template overwrites
-forwarded IP headers from the incoming client; keep that trust boundary intact.
-If using multiple proxy hops, review source-IP handling rather than assuming the
-single-proxy configuration applies.
+Caddy terminates TLS and forwards to `127.0.0.1:8787`. Keep its forwarded-IP header
+trust boundary intact; review source-IP handling if adding proxy hops.
 
-Restart the **same local agent identity** in an interactive terminal:
+## 4. Enroll the first agent and pair a browser
+
+In a **private SSH terminal on the relay**, run the local administration command
+against the exact database used by the running service, using the same release:
 
 ```bash
-TRINE_DEFAULT_MODEL=sonnet bun run dev:agent --   --server https://trine.example.com --home ~/.trine --pair
+cd /opt/trine
+sudo -u trine /usr/local/bin/bun run agent:invite create --db /var/lib/trine/trine.sqlite
 ```
 
-Open `https://trine.example.com` in your browser, scan or paste the pairing payload,
-compare the short authentication codes, and confirm in the agent terminal only
-if both match. The pairing payload expires after five minutes. For later starts,
-omit `--pair` unless enrolling another browser. Never publish the payload or QR code.
+It prints the credential once to stdout, and its non-secret ID and expiry to stderr.
+Default validity is 10 minutes; `--ttl 300` selects five minutes (maximum one hour).
+The CLI requires an existing database initialized by the matching relay. No
+configuration change, public-access window or relay restart is needed.
 
-Agent background-service setup is OS-specific. Preserve the same `--home`, server
-URL, PATH and provider configuration in that service; do initial pairing in a TTY.
-Do not run two agent processes with the same identity simultaneously.
+On the new machine, from a checkout with dependencies installed and Claude Code
+authenticated, start the agent in an interactive terminal:
 
-## 5. Add another machine
+```bash
+TRINE_DEFAULT_MODEL=sonnet bun run dev:agent -- --server https://trine.example.com --home ~/.trine --enroll --pair
+```
 
-A new browser pairs through an already registered agent. A new **agent machine**
-currently requires direct registration: temporarily disable public access to the
-relay, set `TRINE_OPEN_REGISTRATION=1`, restart it, enroll the new agent through
-the same SSH procedure, then set the value back to `0` and restart **before**
-restoring public access. Verify the registered device IDs. Pair each browser with
-each agent it should control.
+Paste only the invitation at the hidden prompt, then press Enter. Never put the
+credential in a command argument, environment variable or URL. Keep terminal and
+clipboard history private. `--enroll` can also read one line from a private stdin
+pipe; such a run cannot manually confirm browser pairing, so restart interactively
+with `--pair` afterward. The invitation is not saved by the agent.
 
-Do not leave an enrollment window open to the Internet. A future one-time
-initialization credential is described in SECURITY.md; it is not implemented yet.
+Open `https://trine.example.com`, scan/paste the pairing payload, compare both
+short authentication codes and approve in the agent terminal only if they match.
+Pairing still requires this separate human confirmation. Its payload expires after
+five minutes; never publish the QR or payload.
+
+For later starts, preserve the same `--home` and omit `--enroll`; omit `--pair`
+unless adding a browser. Even if `--enroll` remains, an existing identity does not
+prompt for or consume an invitation. Do not run two agents with the same identity.
+Background-service setup is OS-specific; preserve server URL, identity directory,
+PATH and provider configuration. Do initial pairing in a TTY.
+
+## 5. Add machines, revoke invitations and recover
+
+For each new agent, repeat only the **issue invitation + start with `--enroll`**
+steps above. Pair each browser with each agent it should control. Previously this
+required blocking public access, enabling registration, restarting, enrolling,
+disabling registration, restarting again and restoring access. These maintenance
+steps and the first-agent tunnel/URL switch are no longer required.
+
+Use local metadata-only administration commands on the relay:
+
+```bash
+sudo -u trine /usr/local/bin/bun run agent:invite list --db /var/lib/trine/trine.sqlite
+sudo -u trine /usr/local/bin/bun run agent:invite revoke INVITATION_ID --db /var/lib/trine/trine.sqlite
+```
+
+`INVITATION_ID` is the non-secret ID printed when issuing/listing. An invitation
+can register only one new agent, not a browser. Revoking an invitation cannot
+revoke an already enrolled device. There is a maximum of 100 pending invitations;
+revoke unused ones or let them expire.
+
+| Failure | Recovery |
+| --- | --- |
+| `invalid_invitation` | Expired, revoked, used or issued for a different relay. Issue a fresh one and retry with the same `--home`. |
+| Network failure during enrollment | Preserve `--home` and retry. If the device was committed before the response was lost, private-key authentication succeeds without another invitation. If not, reuse the unexpired invitation. |
+| `registration_closed` / unregistered identity | Check `--server` and `--home`; for a genuinely new device upgrade both sides and use `--enroll`. |
+| `rate_limited` | Wait at least a minute; check trusted proxy configuration/abuse if it persists. |
+| Key or role conflict / `bad_signature` | Check the correct identity backup and relay. Do not overwrite identity keys to force enrollment. |
+| `device_revoked` | An invitation does not restore a revoked device. Follow [lost-device guidance](../../../SECURITY.md#lost-devices-and-recovery). |
+| Local invitation CLI fails | Check database path, ownership, matching source/schema version, TTL and pending invitation count. |
+
+Upgrade the relay first. Schema v4 adds the invitation table and preserves existing
+identities, tokens, encrypted state and pairings. Already registered older agents
+continue to work (their idempotent register requests are still accepted); new
+agents on older binaries must upgrade. The old public/empty-database enrollment
+behavior is intentionally removed, including when the old switch is set to `1`.
+Old relay binaries refuse schema v4; use a matching pre-upgrade backup for rollback,
+accepting loss of newer state. After restoring any backup, revoke all listed
+invitations before reopening public access, since a backup may resurrect a still
+valid invitation. [中文注册、部署与迁移说明](../../../docs/AGENT-ENROLLMENT.zh-CN.md).
 
 ## 6. Optional Bark notifications
 
@@ -215,7 +232,7 @@ release or backup before confirming the new deployment.
 | --- | --- |
 | Service fails to start | Bun executable path, SQLite directory ownership, environment validation and `journalctl` |
 | Database is read-only | `TRINE_DB` must be within the unit's writable `/var/lib/trine` directory |
-| `registration_closed` for a new agent | Use the protected enrollment procedure; do not enable public registration |
+| `registration_closed` for a new agent | Issue an invitation and start with `--enroll`; check identity/server URL |
 | WS closes with 4001 | Device/token authentication; preserve the correct agent identity |
 | WS closes with 4005 | Another process is using the same agent identity |
 | Browser cannot connect | HTTPS certificate, reverse proxy, same origin, and WS Origin configuration |

@@ -1,3 +1,4 @@
+import { createInvitation } from '../../../server/src/auth/invitations.ts';
 /**
  * `startEchoAgent` 助手本身的测试。
  *
@@ -41,8 +42,8 @@ const serverUrl = () => `http://127.0.0.1:${server.port}`;
 const settle = (ms = 60) => new Promise((r) => setTimeout(r, ms));
 
 describe('startEchoAgent', () => {
-  test('默认自动接入服务端（空库首设备走 bootstrap）', async () => {
-    const { app, stop } = await startEchoAgent({ serverUrl: serverUrl(), home });
+  test('默认自动接入服务端（首设备使用邀请）', async () => {
+    const { app, stop } = await startEchoAgent({ getInvitation: async () => createInvitation(server.store).token, serverUrl: serverUrl(), home });
     try {
       await settle();
       expect(app.node.online).toBe(true);
@@ -61,7 +62,7 @@ describe('startEchoAgent', () => {
 
   test('autoStart:false 只装配不接入，交给调用方自己 start', async () => {
     const { app, stop } = await startEchoAgent({
-      serverUrl: serverUrl(),
+      getInvitation: async () => createInvitation(server.store).token, serverUrl: serverUrl(),
       home,
       autoStart: false,
     });
@@ -78,7 +79,7 @@ describe('startEchoAgent', () => {
 
   test('可覆盖 machineId / name / claudeVersion', async () => {
     const { app, stop } = await startEchoAgent({
-      serverUrl: serverUrl(),
+      getInvitation: async () => createInvitation(server.store).token, serverUrl: serverUrl(),
       home,
       machineId: 'vps-1',
       name: 'My VPS',
@@ -100,7 +101,7 @@ describe('startEchoAgent', () => {
     // detectClaudeVersion 自身对「没装」有兜底（返回 'unknown'），但那样断言
     // 就得跟着环境变。助手写死默认值，测试结果与本机装没装 claude 无关。
     const { app, stop } = await startEchoAgent({
-      serverUrl: serverUrl(),
+      getInvitation: async () => createInvitation(server.store).token, serverUrl: serverUrl(),
       home,
       autoStart: false,
     });
@@ -112,7 +113,7 @@ describe('startEchoAgent', () => {
   });
 
   test('stop() 之后连接关闭，服务端不再认为该机器在线', async () => {
-    const { app, stop } = await startEchoAgent({ serverUrl: serverUrl(), home });
+    const { app, stop } = await startEchoAgent({ getInvitation: async () => createInvitation(server.store).token, serverUrl: serverUrl(), home });
     await settle();
     expect(app.node.online).toBe(true);
     await stop();

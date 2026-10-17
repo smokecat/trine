@@ -1,3 +1,4 @@
+import { createInvitation } from './invitations.ts';
 import { beforeAll, beforeEach, describe, expect, test } from 'bun:test';
 import {
   authChallengeMessage,
@@ -45,7 +46,7 @@ function fullAuth(
   role: 'client' | 'agent' = 'agent',
   source = SRC,
 ) {
-  auth.register(deviceId, role, keys.publicKey, 'open');
+  store.registerDevice(deviceId, role, keys.publicKey);
   const ch = auth.issueChallenge(deviceId, source);
   if (!ch.ok) throw new Error(`challenge failed: ${ch.error}`);
   const sig = signDetached(
@@ -67,63 +68,63 @@ function challengeFor(deviceId: string, source = SRC): string {
 
 describe('注册', () => {
   test('首次注册成功', () => {
-    const r = auth.register('mbp', 'agent', kp.publicKey, 'open');
+    const r = auth.register('mbp', 'agent', kp.publicKey, 'invitation', Date.now(), createInvitation(store).token);
     expect(r).toEqual({ ok: true, value: { created: true } });
   });
 
   test('同 deviceId 同公钥重复注册幂等', () => {
-    auth.register('mbp', 'agent', kp.publicKey, 'open');
-    expect(auth.register('mbp', 'agent', kp.publicKey, 'open')).toEqual({
+    auth.register('mbp', 'agent', kp.publicKey, 'invitation', Date.now(), createInvitation(store).token);
+    expect(auth.register('mbp', 'agent', kp.publicKey, 'invitation', Date.now(), createInvitation(store).token)).toEqual({
       ok: true,
       value: { created: false },
     });
   });
 
   test('同 deviceId 换公钥被拒（防设备接管）', () => {
-    auth.register('mbp', 'agent', kp.publicKey, 'open');
+    auth.register('mbp', 'agent', kp.publicKey, 'invitation', Date.now(), createInvitation(store).token);
     const attacker = generateSignKeyPair();
-    expect(auth.register('mbp', 'agent', attacker.publicKey, 'open')).toEqual({
+    expect(auth.register('mbp', 'agent', attacker.publicKey, 'invitation')).toEqual({
       ok: false,
       error: 'device_exists_with_other_key',
     });
   });
 
   test('同 deviceId 换角色被拒', () => {
-    auth.register('mbp', 'agent', kp.publicKey, 'open');
-    expect(auth.register('mbp', 'client', kp.publicKey, 'open')).toEqual({
+    auth.register('mbp', 'agent', kp.publicKey, 'invitation', Date.now(), createInvitation(store).token);
+    expect(auth.register('mbp', 'client', kp.publicKey, 'invitation')).toEqual({
       ok: false,
       error: 'role_mismatch',
     });
   });
 
   test('非法公钥被拒', () => {
-    expect(auth.register('mbp', 'agent', 'not-a-key', 'open').ok).toBe(false);
-    expect(auth.register('mbp', 'agent', 'not-a-key', 'open')).toEqual({
+    expect(auth.register('mbp', 'agent', 'not-a-key', 'invitation').ok).toBe(false);
+    expect(auth.register('mbp', 'agent', 'not-a-key', 'invitation')).toEqual({
       ok: false,
       error: 'invalid_public_key',
     });
   });
 
   test('已吊销设备重新注册被拒', () => {
-    auth.register('mbp', 'agent', kp.publicKey, 'open');
+    auth.register('mbp', 'agent', kp.publicKey, 'invitation', Date.now(), createInvitation(store).token);
     store.revokeDevice('mbp', Date.now());
-    expect(auth.register('mbp', 'agent', kp.publicKey, 'open')).toEqual({
+    expect(auth.register('mbp', 'agent', kp.publicKey, 'invitation', Date.now(), createInvitation(store).token)).toEqual({
       ok: false,
       error: 'device_revoked',
     });
   });
 
-  test('关闭开放注册后：空库仍允许 bootstrap，之后一律拒绝', () => {
+  test('空库也拒绝无邀请注册', () => {
     const closed = new AuthService(
       store,
       loadConfig({ allowOpenRegistration: false }),
       () => {},
     );
-    // 空库 bootstrap
-    expect(closed.register('mbp', 'agent', kp.publicKey, 'open').ok).toBe(true);
+    // 空库也没有自助注册旁路
+    expect(closed.register('mbp', 'agent', kp.publicKey, 'invitation')).toEqual({ ok: false, error: 'registration_closed' });
     // 第二台设备就得走配对流程了
     const second = generateSignKeyPair();
-    expect(closed.register('phone', 'client', second.publicKey, 'open')).toEqual({
+    expect(closed.register('phone', 'client', second.publicKey, 'invitation')).toEqual({
       ok: false,
       error: 'registration_closed',
     });
@@ -135,13 +136,13 @@ describe('注册', () => {
       loadConfig({ allowOpenRegistration: false }),
       () => {},
     );
-    // 先占掉 bootstrap 名额，确保后面走的不是空库特例
-    expect(closed.register('mbp', 'agent', kp.publicKey, 'bootstrap').ok).toBe(
+    // 先用邀请注册 agent
+    expect(closed.register('mbp', 'agent', kp.publicKey, 'invitation', Date.now(), createInvitation(store).token).ok).toBe(
       true,
     );
     const phone = generateSignKeyPair();
-    // 同一台设备：open 路径被拒，pairing 路径放行——两者的信任来源不同
-    expect(closed.register('phone', 'client', phone.publicKey, 'open')).toEqual({
+    // 同一台设备：invitation 无凭据路径被拒，pairing 路径放行——两者的信任来源不同
+    expect(closed.register('phone', 'client', phone.publicKey, 'invitation')).toEqual({
       ok: false,
       error: 'registration_closed',
     });
@@ -164,7 +165,7 @@ describe('注册', () => {
     const audited = new AuthService(store, config, (l) => lines.push(l));
     audited.register('phone', 'client', kp.publicKey, 'pairing');
     expect(lines.some((l) => l.includes('via=pairing'))).toBe(true);
-    expect(lines.some((l) => l.includes('device=phone'))).toBe(true);
+    expect(lines.some((l) => l.includes('device="phone"'))).toBe(true);
   });
 });
 
@@ -191,7 +192,7 @@ describe('挑战-应答', () => {
   });
 
   test('错误签名被拒', () => {
-    auth.register('mbp', 'agent', kp.publicKey, 'open');
+    auth.register('mbp', 'agent', kp.publicKey, 'invitation', Date.now(), createInvitation(store).token);
     const ch = auth.issueChallenge('mbp');
     if (!ch.ok) throw new Error('setup');
     const wrong = generateSignKeyPair();
@@ -206,7 +207,7 @@ describe('挑战-应答', () => {
   });
 
   test('挑战串一次性：同一应答不能用第二次（防重放）', () => {
-    auth.register('mbp', 'agent', kp.publicKey, 'open');
+    auth.register('mbp', 'agent', kp.publicKey, 'invitation', Date.now(), createInvitation(store).token);
     const ch = auth.issueChallenge('mbp');
     if (!ch.ok) throw new Error('setup');
     const sig = signDetached(
@@ -221,7 +222,7 @@ describe('挑战-应答', () => {
   });
 
   test('验签失败后该挑战串同样作废（不能反复试）', () => {
-    auth.register('mbp', 'agent', kp.publicKey, 'open');
+    auth.register('mbp', 'agent', kp.publicKey, 'invitation', Date.now(), createInvitation(store).token);
     const ch = auth.issueChallenge('mbp');
     if (!ch.ok) throw new Error('setup');
     expect(auth.verify('mbp', ch.value.challenge, 'garbage').ok).toBe(false);
@@ -238,8 +239,8 @@ describe('挑战-应答', () => {
 
   test('A 设备的挑战串不能被 B 设备应答', () => {
     const other = generateSignKeyPair();
-    auth.register('mbp', 'agent', kp.publicKey, 'open');
-    auth.register('phone', 'client', other.publicKey, 'open');
+    auth.register('mbp', 'agent', kp.publicKey, 'invitation', Date.now(), createInvitation(store).token);
+    auth.register('phone', 'client', other.publicKey, 'pairing');
     const ch = auth.issueChallenge('mbp');
     if (!ch.ok) throw new Error('setup');
     const sig = signDetached(
@@ -253,7 +254,7 @@ describe('挑战-应答', () => {
   });
 
   test('过期挑战串被拒', () => {
-    auth.register('mbp', 'agent', kp.publicKey, 'open');
+    auth.register('mbp', 'agent', kp.publicKey, 'invitation', Date.now(), createInvitation(store).token);
     const now = Date.now();
     const ch = auth.issueChallenge('mbp', SRC, now);
     if (!ch.ok) throw new Error('setup');
@@ -310,7 +311,7 @@ describe('token 校验', () => {
 
 describe('限流：签名失败计数', () => {
   test('同一来源连续签名失败达阈值后被拒', () => {
-    auth.register('mbp', 'agent', kp.publicKey, 'open');
+    auth.register('mbp', 'agent', kp.publicKey, 'invitation', Date.now(), createInvitation(store).token);
     for (let i = 0; i < config.authFailMaxAttempts; i++) {
       auth.verify('mbp', challengeFor('mbp'), 'bad-sig', SRC);
     }
@@ -321,7 +322,7 @@ describe('限流：签名失败计数', () => {
   });
 
   test('认证成功清零该来源的计数', () => {
-    auth.register('mbp', 'agent', kp.publicKey, 'open');
+    auth.register('mbp', 'agent', kp.publicKey, 'invitation', Date.now(), createInvitation(store).token);
     auth.verify('mbp', challengeFor('mbp'), 'bad-sig', SRC);
     expect(
       store.authFailureCount(rateLimitKey('mbp', SRC), config.authFailWindowMs),
@@ -343,7 +344,7 @@ describe('S1 回归：攻击者无法用限流把真设备挡在门外', () => {
   const ATTACKER = '203.0.113.66';
 
   test('攻击者狂刷垃圾 verify，真设备从自己的来源照常认证', () => {
-    auth.register('mbp', 'agent', kp.publicKey, 'open');
+    auth.register('mbp', 'agent', kp.publicKey, 'invitation', Date.now(), createInvitation(store).token);
 
     // 攻击者知道 deviceId（本就不是秘密），用最有效的打法把配额烧光：
     // 自己取合法挑战串，再拿它发错签名——这是唯一会计数的路径
@@ -370,7 +371,7 @@ describe('S1 回归：攻击者无法用限流把真设备挡在门外', () => {
   });
 
   test('挑战串对不上不计数（正常竞态不该消耗配额）', () => {
-    auth.register('mbp', 'agent', kp.publicKey, 'open');
+    auth.register('mbp', 'agent', kp.publicKey, 'invitation', Date.now(), createInvitation(store).token);
     for (let i = 0; i < config.authFailMaxAttempts * 3; i++) {
       expect(auth.verify('mbp', 'no-such-challenge', 'sig', SRC)).toEqual({
         ok: false,
@@ -385,8 +386,8 @@ describe('S1 回归：攻击者无法用限流把真设备挡在门外', () => {
   });
 
   test('限流 key 按 deviceId + 来源隔离', () => {
-    auth.register('mbp', 'agent', kp.publicKey, 'open');
-    auth.register('phone', 'client', clientKp.publicKey, 'open');
+    auth.register('mbp', 'agent', kp.publicKey, 'invitation', Date.now(), createInvitation(store).token);
+    auth.register('phone', 'client', clientKp.publicKey, 'pairing');
 
     // 同一来源刷 mbp 刷到死
     for (let i = 0; i < config.authFailMaxAttempts; i++) {
@@ -416,7 +417,7 @@ describe('S1 回归：攻击者无法用限流把真设备挡在门外', () => {
 
 describe('S2 回归：挑战表有界', () => {
   test('反复取挑战，每设备只驻留最新一个', () => {
-    auth.register('mbp', 'agent', kp.publicKey, 'open');
+    auth.register('mbp', 'agent', kp.publicKey, 'invitation', Date.now(), createInvitation(store).token);
     // 取到取挑战限流阈值为止（本测试配置下是 3×5=15）
     let last = '';
     let rounds = 0;
@@ -435,8 +436,8 @@ describe('S2 回归：挑战表有界', () => {
   });
 
   test('多设备各留一个，互不覆盖', () => {
-    auth.register('mbp', 'agent', kp.publicKey, 'open');
-    auth.register('phone', 'client', clientKp.publicKey, 'open');
+    auth.register('mbp', 'agent', kp.publicKey, 'invitation', Date.now(), createInvitation(store).token);
+    auth.register('phone', 'client', clientKp.publicKey, 'pairing');
     challengeFor('mbp');
     challengeFor('phone');
     challengeFor('mbp');
@@ -444,7 +445,7 @@ describe('S2 回归：挑战表有界', () => {
   });
 
   test('发新挑战会作废该设备的旧挑战', () => {
-    auth.register('mbp', 'agent', kp.publicKey, 'open');
+    auth.register('mbp', 'agent', kp.publicKey, 'invitation', Date.now(), createInvitation(store).token);
     const old = challengeFor('mbp');
     challengeFor('mbp');
     const sig = signDetached(authChallengeMessage('mbp', old), kp.secretKey);
@@ -455,7 +456,7 @@ describe('S2 回归：挑战表有界', () => {
   });
 
   test('取挑战端点本身有频率上限（成功也计数）', () => {
-    auth.register('mbp', 'agent', kp.publicKey, 'open');
+    auth.register('mbp', 'agent', kp.publicKey, 'invitation', Date.now(), createInvitation(store).token);
     // 阈值是验签阈值的若干倍，刷够了照样被挡
     let limited = false;
     for (let i = 0; i < config.authFailMaxAttempts * 10; i++) {

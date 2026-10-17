@@ -12,7 +12,8 @@
     "typecheck": "bun run --filter '*' typecheck",
     "test": "bun test",
     "build": "bun run --filter @trine/web build",
-    "check": "bun run typecheck && bun test && bun run build"
+    "check": "bun run typecheck && bun test && bun run build",
+    "agent:invite": "bun run apps/server/src/invite-cli.ts"
   },
   "devDependencies": {
     "typescript": "^5.9.2"

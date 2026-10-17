@@ -1,3 +1,4 @@
+import { createInvitation } from '../../../server/src/auth/invitations.ts';
 /**
  * 集成测试（方案 §7）：进程内真服务端 + 真 AgentNode + 真 SessionManager（假
  * ClaudeSession）+ 模拟 client，走完整条链：
@@ -78,6 +79,7 @@ async function createApp(
   const { app: created } = await startEchoAgent({
     ...extra,
     serverUrl: `http://127.0.0.1:${server.port}`,
+    getInvitation: async () => createInvitation(server.store).token,
     home,
     machineId: 'mbp',
     log: (l) => logs.push(l),

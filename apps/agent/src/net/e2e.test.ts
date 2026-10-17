@@ -1,3 +1,4 @@
+import { createInvitation } from '../../../server/src/auth/invitations.ts';
 /**
  * 三端贯通测试：真服务端进程内实例 + 真 WebSocket + 真 AgentNode +
  * 用 core 原语手搓的模拟 client。
@@ -62,6 +63,7 @@ beforeEach(async () => {
   });
   agent = await AgentNode.create({
     serverUrl: `http://127.0.0.1:${server.port}`,
+    getInvitation: async () => createInvitation(server.store).token,
     identityPath: join(dir, 'identity.json'),
     recipientsPath: join(dir, 'recipients.json'),
     machineId: 'mbp',
@@ -115,7 +117,7 @@ describe('三端贯通：配对 → 登记 → 接入 → 密文往返', () => {
   test('走完整条路，双端 SAS 一致且消息双向可解', async () => {
     await agent.connect();
     await settle();
-    // agent bootstrap 成功接入（空库首设备）
+    // agent 通过邀请成功接入
     expect(agent.online).toBe(true);
     expect(server.registry.isAgentOnline('mbp')).toBe(true);
 
@@ -515,6 +517,7 @@ describe('接线层依赖的钩子', () => {
     const opens: number[] = [];
     const node = await AgentNode.create({
       serverUrl: `http://127.0.0.1:${server.port}`,
+      getInvitation: async () => createInvitation(server.store).token,
       identityPath: join(dir, 'identity.json'),
       recipientsPath: join(dir, 'recipients.json'),
       machineId: 'mbp',
@@ -735,6 +738,7 @@ describe('异常路径', () => {
     const dropped: string[] = [];
     const node = await AgentNode.create({
       serverUrl: `http://127.0.0.1:${server.port}`,
+      getInvitation: async () => createInvitation(server.store).token,
       identityPath: join(dir, 'identity.json'),
       recipientsPath: join(dir, 'recipients.json'),
       onInboundDropped: (failure) => dropped.push(failure),

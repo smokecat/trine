@@ -67,6 +67,7 @@ export interface AgentAppDeps {
   /** 注入斜杠命令探测用的 query（测试）；默认走 SDK query */
   commandsQueryFn?: typeof query;
   createSocket?: (url: string) => SocketLike;
+  getInvitation?: () => Promise<string>;
   fetchImpl?: typeof fetch;
   backoff?: BackoffOptions;
   /** 跳过 `claude --version` 探测（测试 / 无 claude 的机器） */
@@ -168,6 +169,7 @@ export class AgentApp {
     node = await AgentNode.create({
       serverUrl: config.serverUrl,
       identityPath: paths.identity,
+      ...(deps.getInvitation === undefined ? {} : { getInvitation: deps.getInvitation }),
       recipientsPath: paths.recipients,
       ...(config.name === undefined ? {} : { name: config.name }),
       ...(deps.machineId === undefined ? {} : { machineId: deps.machineId }),

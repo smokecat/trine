@@ -750,6 +750,7 @@ export class Store {
   // -------------------------------------------------------------------------
 
   sweepExpiredAuth(now = Date.now()): { challenges: number; tokens: number } {
+    this.db.query('DELETE FROM agent_invitations WHERE expires_at <= ?').run(now);
     const challenges = this.db
       .query('DELETE FROM auth_challenges WHERE expires_at <= ?')
       .run(now).changes;

@@ -24,7 +24,7 @@ export interface ServerConfig {
   challengeTtlMs: number;
   /** 认证 token 有效期；过期需重新走挑战-应答 */
   tokenTtlMs: number;
-  /** 首个设备自助注册开关（bootstrap 用，生产应关闭） */
+  /** 已废弃：兼容旧配置，不能开放注册；新 agent 必须有邀请 */
   allowOpenRegistration: boolean;
 
   /** 心跳间隔：服务端主动 ping 的周期 */

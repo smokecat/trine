@@ -6,6 +6,7 @@
  */
 import { Hono } from 'hono';
 import { serveStatic } from 'hono/bun';
+import { bodyLimit } from 'hono/body-limit';
 import { cors } from 'hono/cors';
 import { z } from 'zod';
 import { ANONYMOUS_SOURCE, type AuthService } from './auth/index.ts';
@@ -15,6 +16,7 @@ const RegisterBody = z.object({
   deviceId: z.string().min(1).max(128),
   role: z.enum(['client', 'agent']),
   signPubKey: z.string().min(1).max(128),
+  invitation: z.string().regex(/^[A-Za-z0-9_-]{43}$/).optional(),
 });
 
 const ChallengeBody = z.object({
@@ -36,6 +38,7 @@ const STATUS: Record<string, 400 | 401 | 403 | 404 | 409 | 429> = {
   rate_limited: 429,
   invalid_public_key: 400,
   registration_closed: 403,
+  invalid_invitation: 403,
   device_exists_with_other_key: 409,
   role_mismatch: 409,
 };
@@ -134,15 +137,20 @@ export function createHttpApp(deps: HttpDeps): Hono {
     c.json({ ok: true, version: deps.version, at: Date.now() }),
   );
 
+  app.use('/auth/*', bodyLimit({ maxSize: 4096, onError: (c) => c.json({ error: 'body_too_large' }, 413) }));
+  app.use('/auth/*', async (c, next) => {
+    c.header('cache-control', 'no-store');
+    await next();
+  });
   app.post('/auth/register', async (c) => {
+    if (!deps.auth.allowRegistrationAttempt(clientSource(c.req.raw, deps.trustProxyHeader))) {
+      c.header('retry-after', '60');
+      return c.json({ error: 'rate_limited' }, 429);
+    }
     const parsed = RegisterBody.safeParse(await safeJson(c.req.raw));
     if (!parsed.success) return c.json({ error: 'bad_request' }, 400);
-    const { deviceId, role, signPubKey } = parsed.data;
-    // HTTP 端点只承载 bootstrap 与手工开窗两条路径：空库首设备是 bootstrap，
-    // 其余一律记为 open（真放行与否由 auth.register 按 allowOpenRegistration 决定）。
-    // 配对登记不走这里——它由 hub 在 agent 背书后直接调 register(..., 'pairing')。
-    const via = deps.store.countDevices() === 0 ? 'bootstrap' : 'open';
-    const result = deps.auth.register(deviceId, role, signPubKey, via);
+    const { deviceId, role, signPubKey, invitation } = parsed.data;
+    const result = deps.auth.register(deviceId, role, signPubKey, 'invitation', undefined, invitation);
     if (!result.ok) return c.json({ error: result.error }, STATUS[result.error]!);
     return c.json({ deviceId, created: result.value.created });
   });

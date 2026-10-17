@@ -1,5 +1,6 @@
 /**
  * 网络层手工演示：接入服务端并发起一次配对，把 QR 打在终端上。
+ * 新身份先用 agent:invite 签发邀请；演示会在隐藏提示中读取。
  *
  * 跑法（先起一个本地服务端 `bun run --filter @trine/server dev`）：
  *
@@ -12,6 +13,7 @@
  * 本脚本**只做配对与收发骨架**，不驱动 claude（那是 bridge 层，
  * 两者的接线属后续任务）。收到 client 的密文时原样打印事件类型。
  */
+import { readInvitation } from './enrollment-input.ts';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { AgentNode } from './net/index.ts';
@@ -31,6 +33,7 @@ const color = {
 async function main(): Promise<void> {
   const node = await AgentNode.create({
     serverUrl: SERVER,
+    getInvitation: readInvitation,
     ...(HOME
       ? {
           identityPath: join(HOME, 'identity.json'),
