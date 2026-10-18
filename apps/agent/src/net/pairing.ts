@@ -74,6 +74,17 @@ export type BeginOutcome =
   | { kind: 'ignored'; reason: 'unknown_token' }
   | { kind: 'rejected'; reason: 'invalid_sign_key' | 'invalid_pub_key' };
 
+/** 用户比对 SAS 时看到的那个对端身份——confirm 据此核对 pending 没被换掉 */
+export type PeerIdentity = Pick<PendingPeer, 'clientDeviceId' | 'clientPubKey' | 'clientSignPubKey'>;
+
+export function samePeer(a: PeerIdentity, b: PeerIdentity): boolean {
+  return (
+    a.clientDeviceId === b.clientDeviceId &&
+    a.clientPubKey === b.clientPubKey &&
+    a.clientSignPubKey === b.clientSignPubKey
+  );
+}
+
 export interface ConfirmResult {
   frame: Extract<TransportFrame, { type: 'pair.confirm' }>;
   recipient: Recipient;
@@ -204,8 +215,12 @@ export class PairingManager {
    * 写名册与发帧的顺序：先写名册再返回帧，让调用方在「已经能给这台设备
    * 加密」的状态下才把 confirm 发出去。反过来的话，client 收到 confirm 后
    * 立刻接入并发帧，agent 却还不认识它，头几帧会被当成未知发送方丢掉。
+   *
+   * `expected`：用户比对 SAS 时看到的对端。后到的 pair.begin 会覆盖 pending
+   * （见 onBegin），若用户正在看 A 的校验码时 pending 被换成了 B，不带
+   * expected 的确认会把**没比对过的 B** 登记进名册。调用方应总是传入。
    */
-  async confirm(pairingToken: string): Promise<ConfirmResult> {
+  async confirm(pairingToken: string, expected?: PeerIdentity): Promise<ConfirmResult> {
     const session = this.#sessions.get(pairingToken);
     if (!session) {
       throw new Error('配对会话不存在或已失效，请重新扫码');
@@ -217,6 +232,9 @@ export class PairingManager {
     const peer = session.pending;
     if (!peer) {
       throw new Error('还没有收到对端的配对请求，无从确认');
+    }
+    if (expected !== undefined && !samePeer(peer, expected)) {
+      throw new Error('确认前收到了新的配对请求，对端已变化；请以最新显示的校验码重新比对');
     }
 
     const recipient: Recipient = {

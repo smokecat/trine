@@ -112,19 +112,53 @@ TRINE_DEFAULT_MODEL=sonnet bun run dev:agent -- --server https://trine.example.c
 Paste only the invitation at the hidden prompt, then press Enter. Never put the
 credential in a command argument, environment variable or URL. Keep terminal and
 clipboard history private. `--enroll` can also read one line from a private stdin
-pipe; such a run cannot manually confirm browser pairing, so restart interactively
-with `--pair` afterward. The invitation is not saved by the agent.
+pipe; such a run cannot manually confirm browser pairing, so pair afterward with
+the `pair` subcommand described below. The invitation is not saved by the agent.
 
 Open `https://trine.example.com`, scan/paste the pairing payload, compare both
 short authentication codes and approve in the agent terminal only if they match.
 Pairing still requires this separate human confirmation. Its payload expires after
 five minutes; never publish the QR or payload.
 
-For later starts, preserve the same `--home` and omit `--enroll`; omit `--pair`
-unless adding a browser. Even if `--enroll` remains, an existing identity does not
-prompt for or consume an invitation. Do not run two agents with the same identity.
+For later starts, preserve the same `--home` and omit `--enroll` and `--pair`.
+Even if `--enroll` remains, an existing identity does not prompt for or consume an
+invitation. Only one agent may run per `--home`: a second process exits at startup
+because of `<home>/agent.lock` (two processes sharing an identity would keep
+replacing each other on the relay, logged as close code `4005`).
 Background-service setup is OS-specific; preserve server URL, identity directory,
-PATH and provider configuration. Do initial pairing in a TTY.
+PATH and provider configuration.
+
+### Add a browser to a running agent
+
+Do not stop the background service or start a second `--pair` process. In an
+interactive terminal on the agent machine run:
+
+```bash
+bun run dev:agent -- pair --home ~/.trine
+```
+
+It connects to the running agent through `<home>/control.sock`, prints the QR code
+and payload, then shows the agent-side short code when the browser scans it. Type
+`y` only if it matches the browser exactly. The code expires after five minutes
+(with a one-minute reminder); press Enter to generate a new one after expiry or
+abort. Ctrl-C cancels the pending pairing. If another request arrives while you
+compare, the earlier one is discarded and you must compare the newest code.
+
+The control socket is a Unix socket for the same OS user only (mode 0600 inside the
+0700 agent home); it does not listen on the network. Access to it allows starting
+pairings and removing devices, equivalent to access to `identity.json`.
+
+Manage paired browsers with:
+
+```bash
+bun run dev:agent -- status --home ~/.trine
+bun run dev:agent -- devices --home ~/.trine
+bun run dev:agent -- devices revoke DEVICE_ID_OR_UNIQUE_PREFIX --home ~/.trine
+```
+
+`devices revoke` removes the browser from this agent's recipient list immediately
+(or edits `recipients.json` when the agent is stopped). The agent stops encrypting
+events for it and drops its messages; the relay's device record is unchanged.
 
 ## 5. Add machines, revoke invitations and recover
 

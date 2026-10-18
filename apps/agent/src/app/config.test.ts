@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { ConfigError, DEFAULT_MODEL, agentPaths, loadAgentConfig } from './config.ts';
+import { ConfigError, DEFAULT_MODEL, agentPaths, loadAgentConfig, parseSubcommand } from './config.ts';
 
 const env = { TRINE_SERVER: 'https://relay.example' };
 
@@ -89,5 +89,38 @@ describe('enrollment CLI configuration', () => {
         expect(String(error)).not.toContain('user:secret');
       }
     }
+  });
+});
+
+describe('parseSubcommand', () => {
+  test('-- 开头或空参数 → 不是子命令（常驻进程）', () => {
+    expect(parseSubcommand([], {})).toBeNull();
+    expect(parseSubcommand(['--pair', '--server', 'https://x'], {})).toBeNull();
+  });
+
+  test('识别 pair / status / devices [list] / devices revoke', () => {
+    const env = { TRINE_HOME: '/tmp/env-home' };
+    expect(parseSubcommand(['pair'], env)).toEqual({ command: { name: 'pair' }, home: '/tmp/env-home' });
+    expect(parseSubcommand(['status'], env)?.command).toEqual({ name: 'status' });
+    expect(parseSubcommand(['devices'], env)?.command).toEqual({ name: 'devices.list' });
+    expect(parseSubcommand(['devices', 'list'], env)?.command).toEqual({ name: 'devices.list' });
+    expect(parseSubcommand(['devices', 'revoke', 'web-1'], env)?.command).toEqual({
+      name: 'devices.revoke',
+      device: 'web-1',
+    });
+  });
+
+  test('--home 覆盖 TRINE_HOME，两种写法都收；默认 ~/.trine', () => {
+    expect(parseSubcommand(['pair', '--home', '/tmp/a'], { TRINE_HOME: '/x' })?.home).toBe('/tmp/a');
+    expect(parseSubcommand(['pair', '--home=/tmp/b'], {})?.home).toBe('/tmp/b');
+    expect(parseSubcommand(['pair'], {})?.home.endsWith('/.trine')).toBe(true);
+  });
+
+  test('拼错的子命令、多余参数、不支持的开关都报错', () => {
+    expect(() => parseSubcommand(['pari'], {})).toThrow(ConfigError);
+    expect(() => parseSubcommand(['pair', 'extra'], {})).toThrow(ConfigError);
+    expect(() => parseSubcommand(['devices', 'revoke'], {})).toThrow(ConfigError);
+    expect(() => parseSubcommand(['pair', '--server', 'https://x'], {})).toThrow(/不认识的开关/);
+    expect(() => parseSubcommand(['pair', '--home'], {})).toThrow(/需要一个值/);
   });
 });

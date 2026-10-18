@@ -8,6 +8,7 @@
 import { assertEnrollmentUrl, httpBase } from '@trine/core/net';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import type { Subcommand } from '../control/commands.ts';
 
 export interface AgentConfig {
   /** 服务端根地址（https:// 或 wss://；本地开发允许 http://） */
@@ -60,16 +61,69 @@ export function agentPaths(home: string): {
 }
 
 export const USAGE = `用法：trine-agent [--enroll] [--pair] [--server URL] [--home DIR] [--name NAME] [--claude-bin PATH]
+      trine-agent <pair | devices [list] | devices revoke DEVICE | status> [--home DIR]
 
   --enroll        未注册时从隐藏终端输入（或 stdin 一行）读取短期邀请，不保存
   --pair          启动后打出配对二维码，等 client 扫码并在终端确认 SAS
+                  （agent 已在运行时改用 pair 子命令，同一身份不能起两个进程）
   --server URL    服务端地址（或 env TRINE_SERVER；二者必填其一）
   --home DIR      身份/名册/状态目录（或 env TRINE_HOME；默认 ~/.trine）
   --name NAME     首次生成身份时的机器展示名（或 env TRINE_NAME）
   --claude-bin PATH  会话使用的 claude 可执行文件（或 env TRINE_CLAUDE_BIN；
                   默认 PATH 上的 claude，找不到则用 SDK 内置）
 
+子命令（操作同一 --home 下正在运行的 agent，无需停机）：
+  pair            给运行中的 agent 配对一个新浏览器，在本终端比对校验码
+  devices [list]  列出已配对设备
+  devices revoke DEVICE  移除一台已配对设备（完整 deviceId 或唯一前缀）
+  status          查看运行中的 agent
+
 env：TRINE_DEFAULT_MODEL  TRINE_MAX_SESSIONS  TRINE_IDLE_TIMEOUT_MS`;
+
+export interface SubcommandInvocation {
+  command: Subcommand;
+  home: string;
+}
+
+/**
+ * 识别子命令：第一个参数不是 `--` 开头就是子命令，否则返回 null（常驻进程）。
+ * 子命令只认 `--home`——它们操作的是本机某个身份目录下运行着的 agent，
+ * 服务端地址等由那个 agent 自己决定。
+ */
+export function parseSubcommand(
+  argv: readonly string[],
+  env: Readonly<Record<string, string | undefined>>,
+): SubcommandInvocation | null {
+  const first = argv[0];
+  if (first === undefined || first.startsWith('--')) return null;
+
+  const positional: string[] = [];
+  let home: string | undefined;
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i]!;
+    if (arg === '--home' || arg.startsWith('--home=')) {
+      home = arg === '--home' ? argv[++i] : arg.slice('--home='.length);
+      if (home === undefined || home === '') throw new ConfigError('--home 需要一个值');
+      continue;
+    }
+    if (arg.startsWith('--')) throw new ConfigError(`子命令不认识的开关：${arg}\n\n${USAGE}`);
+    positional.push(arg);
+  }
+
+  const [name, ...rest] = positional;
+  let command: Subcommand | undefined;
+  if (name === 'pair' && rest.length === 0) command = { name: 'pair' };
+  else if (name === 'status' && rest.length === 0) command = { name: 'status' };
+  else if (name === 'devices' && (rest.length === 0 || (rest.length === 1 && rest[0] === 'list'))) {
+    command = { name: 'devices.list' };
+  } else if (name === 'devices' && rest[0] === 'revoke' && rest.length === 2) {
+    command = { name: 'devices.revoke', device: rest[1]! };
+  }
+  if (command === undefined) {
+    throw new ConfigError(`不认识的子命令：${positional.join(' ')}\n\n${USAGE}`);
+  }
+  return { command, home: home ?? env['TRINE_HOME'] ?? join(homedir(), '.trine') };
+}
 
 export class ConfigError extends Error {
   constructor(message: string) {

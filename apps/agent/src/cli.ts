@@ -2,22 +2,31 @@
  * @trine/agent 入口：常驻进程。
  *
  *   trine-agent [--pair] [--server URL] [--home DIR] [--name NAME] [--claude-bin PATH]
+ *   trine-agent <pair | devices [list] | devices revoke ID | status> [--home DIR]
  *   env: TRINE_SERVER TRINE_HOME TRINE_NAME TRINE_DEFAULT_MODEL
  *        TRINE_MAX_SESSIONS TRINE_IDLE_TIMEOUT_MS TRINE_CLAUDE_BIN
+ *
+ * 常驻进程持有 `<home>/agent.lock`（同一身份只许一个进程）并在
+ * `<home>/control.sock` 上开控制通道；子命令经它操作运行中的进程，
+ * 配对新浏览器不必停机（见 control/）。
  *
  * 进程存活靠 WS 长连与 WsClient 的重连定时器；manager 的空闲回收定时器是
  * unref 的，不影响。SIGINT/SIGTERM → AgentApp.stop()，总上限 10s 兜底强退。
  *
  * `--pair`：连上后打 QR，**不退出**。收到配对请求时若 stdin 是 TTY 就问 SAS
  * 是否一致（y/n）→ confirm/abort；非 TTY 无法确认，只 log、不 abort（token 自然
- * 过期，用户可在有效期内以 TTY 重跑）。
+ * 过期，用户可在有效期内以 TTY 重跑）。agent 已在运行时用 `pair` 子命令。
  */
 import { AuthClientError } from '@trine/core/net';
 import { readInvitation } from './enrollment-input.ts';
 import { createInterface } from 'node:readline/promises';
 import { AgentApp } from './app/app.ts';
 import { installProcessGuards } from './app/process-guards.ts';
-import { ConfigError, loadAgentConfig, USAGE } from './app/config.ts';
+import { ConfigError, loadAgentConfig, parseSubcommand, USAGE } from './app/config.ts';
+import { acquireInstanceLock, InstanceLockError } from './app/instance-lock.ts';
+import { controlSocketPath, runSubcommand, type CommandIO } from './control/commands.ts';
+import { attachControlServer } from './control/host.ts';
+import type { ControlServer } from './control/server.ts';
 import type { PairingSession } from './net/pairing.ts';
 import { formatPairingPrompt, renderPairingPayload } from './net/qr.ts';
 import { logTime } from './log-time.ts';
@@ -39,9 +48,14 @@ function log(line: string): void {
 }
 
 async function main(): Promise<void> {
+  const argv = process.argv.slice(2);
   let config;
   try {
-    config = loadAgentConfig(process.argv.slice(2), process.env);
+    const sub = parseSubcommand(argv, process.env);
+    if (sub) {
+      process.exit(await runCommand(sub.command, sub.home));
+    }
+    config = loadAgentConfig(argv, process.env);
   } catch (err) {
     if (err instanceof ConfigError) {
       console.error(color.red(err.message));
@@ -51,11 +65,33 @@ async function main(): Promise<void> {
     throw err;
   }
 
+  // 先拿锁再碰身份文件：两个进程同时 --enroll 也不会各写一份身份
+  let lock;
+  try {
+    lock = acquireInstanceLock(config.home);
+  } catch (err) {
+    if (err instanceof InstanceLockError) {
+      console.error(color.red(err.message));
+      console.error(
+        color.yellow(
+          `要给运行中的 agent 配对新浏览器，不必停机：trine-agent pair --home ${config.home}\n` +
+            '（仓库里运行：bun run dev:agent -- pair --home ...）',
+        ),
+      );
+      process.exit(1);
+    }
+    throw err;
+  }
+  process.on('exit', () => lock.release());
+
   const app = await AgentApp.create(config, { log, ...(config.enroll ? { getInvitation: readInvitation } : {}) });
   log(
     `${color.bold('trine-agent')} machine=${app.node.machineId} name=${app.node.identity.name} ` +
       `${color.dim(`server=${config.serverUrl} home=${config.home} 已配对 ${app.node.recipients.size} 台`)}`,
   );
+
+  // 下面接上；先声明是因为退出处理要用到它，而信号可能在接上之前就到
+  let control: ControlServer | null = null;
 
   // ---- 退出 ----
   let exiting = false;
@@ -67,8 +103,8 @@ async function main(): Promise<void> {
       console.error(color.red(`退出超时 ${SHUTDOWN_HARD_LIMIT_MS}ms，强制结束（可能留有 claude 子进程）`));
       process.exit(1);
     }, SHUTDOWN_HARD_LIMIT_MS);
-    app
-      .stop()
+    (control?.close() ?? Promise.resolve())
+      .then(() => app.stop())
       .then(() => {
         clearTimeout(hard);
         log('已退出');
@@ -83,11 +119,18 @@ async function main(): Promise<void> {
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   installProcessGuards(process, (line) => console.error(color.red(line)));
 
-  // ---- 配对 ----
-  if (config.pair) {
-    app.onPairingRequest = (session) => {
-      void handlePairingRequest(app, session);
-    };
+  // ---- 控制通道 + 配对 ----
+  // 控制通道发起的配对由它接手；其余（本进程 --pair 打的码）交给本终端
+  try {
+    control = await attachControlServer(app, controlSocketPath(config.home), {
+      log,
+      onOtherPairingRequest: (session) => {
+        if (config.pair) void handlePairingRequest(app, session);
+      },
+    });
+  } catch (err) {
+    // 控制通道起不来不影响 agent 本职工作，只是 pair/devices 子命令用不了
+    log(color.yellow(`控制通道启动失败（pair/devices 子命令不可用）：${err instanceof Error ? err.message : String(err)}`));
   }
 
   await app.start();
@@ -103,6 +146,12 @@ async function main(): Promise<void> {
 async function handlePairingRequest(app: AgentApp, session: PairingSession): Promise<void> {
   const peer = session.pending;
   if (!peer) return;
+  // 用户比对的是**这一个**对端：确认时据此核对，期间被新请求覆盖则拒绝
+  const seen = {
+    clientDeviceId: peer.clientDeviceId,
+    clientPubKey: peer.clientPubKey,
+    clientSignPubKey: peer.clientSignPubKey,
+  };
   console.log(
     `\n${color.bold('配对请求')} 来自设备 ${color.cyan(peer.clientDeviceId)}\n` +
       `${color.bold('本端校验码')} ${color.cyan(peer.sas.digits)}  ${peer.sas.emoji.join(' ')}\n`,
@@ -129,12 +178,41 @@ async function handlePairingRequest(app: AgentApp, session: PairingSession): Pro
     return;
   }
   // 走 app 而不是 app.node：app 那层会顺带给新设备补一份 machine.info
-  const sent = await app.confirmPairing(session.pairingToken);
+  let sent: boolean;
+  try {
+    sent = await app.confirmPairing(session.pairingToken, seen);
+  } catch (err) {
+    log(color.yellow(`未能确认：${err instanceof Error ? err.message : String(err)}`));
+    return;
+  }
   log(
     sent
       ? color.green(`已配对 ${peer.clientDeviceId}，client 现在可以接入了`)
       : color.yellow('确认帧发送失败（连接中断？）名册已写入，请让 client 重试配对'),
   );
+}
+
+/** 子命令：终端 IO 接到 readline 上 */
+async function runCommand(command: Parameters<typeof runSubcommand>[0], home: string): Promise<number> {
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  // readline 接管终端后 Ctrl-C 不再产生进程级 SIGINT；不处理的话只会暂停输入
+  rl.on('SIGINT', () => {
+    rl.close();
+    process.exit(130);
+  });
+  // 输入结束（Ctrl-D / 管道读完）时，挂着的 question 一律当作没有回答
+  const closed = new Promise<null>((resolve) => rl.once('close', () => resolve(null)));
+  const io: CommandIO = {
+    print: (line) => console.log(line),
+    interactive: process.stdin.isTTY === true,
+    ask: (prompt, signal) =>
+      Promise.race([rl.question(prompt, signal ? { signal } : {}).catch(() => null), closed]),
+  };
+  try {
+    return await runSubcommand(command, home, io);
+  } finally {
+    rl.close();
+  }
 }
 
 main().catch((err: unknown) => {

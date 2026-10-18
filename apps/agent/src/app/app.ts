@@ -33,7 +33,7 @@ import type { ClaudeSession } from '../bridge/session.ts';
 import type { EventBody, OutboundEvent } from '../bridge/types.ts';
 import { writeIdentity } from '../net/identity.ts';
 import { AgentNode } from '../net/node.ts';
-import type { PairingSession } from '../net/pairing.ts';
+import type { PairingSession, PeerIdentity } from '../net/pairing.ts';
 import type { Recipient } from '../net/recipients.ts';
 import type { BackoffOptions, SocketLike } from '../net/ws-client.ts';
 import { agentPaths, type AgentConfig } from './config.ts';
@@ -87,6 +87,8 @@ export interface AgentAppDeps {
 export class AgentApp {
   /** 配对请求到达（只有本进程出过 QR 才可能匹配）——cli 据此展示 SAS 问用户 */
   onPairingRequest: ((session: PairingSession) => void) | undefined = undefined;
+  /** client 放弃了一次本机发起的配对 */
+  onPairingAborted: ((pairingToken: string) => void) | undefined = undefined;
 
   #firstOpen = true;
   #stopped = false;
@@ -184,6 +186,7 @@ export class AgentApp {
       onInboundDropped: (failure, detail) => log(`[app] 丢弃入站帧 ${failure}: ${detail}`),
       onTransportFrame: (frame) => app.#onTransportFrame(frame),
       onPairingRequest: (session) => app.onPairingRequest?.(session),
+      onPairingAborted: (token) => app.onPairingAborted?.(token),
       onOpen: () => app.#onOpen(),
     });
 
@@ -345,10 +348,21 @@ export class AgentApp {
    * 代价是已在线的设备会多收一份 machine.info。它是一份完整状态快照、
    * 处理是幂等的（client 拿它覆盖机器卡），重复一次无害。
    */
-  async confirmPairing(pairingToken: string): Promise<boolean> {
-    const sent = await this.node.confirmPairing(pairingToken);
+  async confirmPairing(pairingToken: string, expected?: PeerIdentity): Promise<boolean> {
+    const sent = await this.node.confirmPairing(pairingToken, expected);
     this.#emitMachine({ type: 'machine.info', info: this.machineInfo() });
     return sent;
+  }
+
+  /**
+   * 从本机名册移除一台已配对设备：之后出站不再给它加密，它发来的入站帧也
+   * 因找不到发送方而被丢弃（openInbound 只认名册里的设备）。立即生效，
+   * 不需要重启。服务端那侧的设备登记不受影响。
+   */
+  async revokeDevice(deviceId: string): Promise<boolean> {
+    const removed = await this.node.recipients.remove(deviceId);
+    if (removed) this.log(`[app] 已移除配对设备 ${deviceId}`);
+    return removed;
   }
 
   machineInfo(): MachineInfo {

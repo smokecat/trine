@@ -33,6 +33,9 @@ is not a substitute for those controls, backups or TLS.
 - A compromised frontend host can replace JavaScript and steal browser keys or plaintext.
   Same-origin hosting trusts the relay host to serve the correct frontend.
 - A compromised paired device or agent can read content and send authorized operations.
+- The agent's local control socket (`<home>/control.sock`, same OS user only) can
+  start pairings and remove paired devices. Anyone who can use it can already read
+  the agent identity; pairing still requires a human to compare the short code.
 - There is no forward-secrecy guarantee for long-term device key compromise.
 - Agent permission settings and project/user Claude configuration affect execution.
   Enabling bypass permissions increases the authority of every paired controller.
@@ -89,8 +92,11 @@ and [中文说明](docs/AGENT-ENROLLMENT.zh-CN.md).
 
 ## Lost devices and recovery
 
-Stop the agent and restrict relay access if a paired device is compromised. There
-is no complete end-user revocation/recovery workflow yet. Do not assume clearing
+Stop the agent and restrict relay access if a paired device is compromised.
+`trine-agent devices revoke <device>` removes a browser from one agent's recipient
+list (the agent stops encrypting for it and drops its messages), but does not
+revoke its relay registration or tokens. There is no complete end-user
+revocation/recovery workflow yet. Do not assume clearing
 a browser's storage revokes its old keys or tokens on the other endpoints.
 For a conservative reset: stop all components, back up state securely, replace
 the relay database and all trine agent identity/recipient state, clear each

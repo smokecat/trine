@@ -51,7 +51,7 @@ TRINE_DEFAULT_MODEL=sonnet bun run dev:agent --   --server http://localhost:5173
 
 按[部署指南](apps/server/deploy/README.md)配置 HTTPS/WSS。首台与新增 agent 均由 relay 管理员签发短期、单次邀请，然后用 `--enroll` 启动并隐藏输入邀请；不需要注册窗口、重启 relay 或切换 SSH 隧道地址。空库也拒绝无邀请注册，旧的 `TRINE_OPEN_REGISTRATION` 开关不再生效。
 
-以后保留同一 `--home`，启动时省略 `--enroll`；浏览器仍须单独配对并人工确认校验码。邀请管理、失败恢复、升级兼容和安全边界见[中文注册指南](docs/AGENT-ENROLLMENT.zh-CN.md)。
+以后保留同一 `--home`，启动时省略 `--enroll`；浏览器仍须单独配对并人工确认校验码。agent 已在运行（例如作为常驻服务）时，用 `bun run dev:agent -- pair --home <目录>` 增加浏览器，不要再起第二个 agent。邀请管理、失败恢复、升级兼容和安全边界见[中文注册指南](docs/AGENT-ENROLLMENT.zh-CN.md)。
 
 不要把它作为多人共享的中转服务。Web 私钥保存在 localStorage，缓存聊天在 IndexedDB；端到端加密不能防止恶意前端脚本或受控终端读取它们。完整边界见 [SECURITY.md](SECURITY.md)。
 

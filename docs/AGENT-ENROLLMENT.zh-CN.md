@@ -39,11 +39,41 @@ TRINE_DEFAULT_MODEL=sonnet bun run dev:agent -- --server https://trine.example.c
 ```
 
 输入邀请，完成浏览器配对。下一台机器重复这两步即可，无需改环境变量或重启 relay。
-后续启动保留同一 `--home`，省略 `--enroll`；只有增加浏览器时才需要 `--pair`。
-即使保留 `--enroll`，已注册身份也不会请求或消耗邀请。不要同时启动两个使用同一身份的 agent。
+后续启动保留同一 `--home`，省略 `--enroll`。即使保留 `--enroll`，已注册身份也不会请求或消耗邀请。
+同一 `--home` 只能运行一个 agent：第二个进程会因 `<home>/agent.lock` 直接报错退出，
+否则两边会在 relay 上互相顶替（日志里表现为 `code=4005` 和反复重连）。
 
 `--enroll` 也支持从私密 stdin 管道读取一行，便于 SSH 管道交付。不要把凭据作为参数、环境变量、
-URL 或持久配置传递。非交互管道无法人工确认浏览器配对；需要配对时，再以交互终端启动 `--pair`。
+URL 或持久配置传递。非交互管道无法人工确认浏览器配对；之后用下面的 `pair` 子命令配对即可。
+
+## 给运行中的 agent 增加浏览器（无需停机）
+
+agent 作为常驻服务（systemd、launchd 等）运行时，不要停服务，也不要用同一 `--home` 再起一个 `--pair`。
+在该机器的交互式终端里运行：
+
+```bash
+bun run dev:agent -- pair --home ~/.trine
+```
+
+命令通过 `<home>/control.sock` 连接运行中的 agent 并打出二维码和配对码。浏览器扫码后，终端显示本端校验码；
+**与浏览器上显示的完全一致才输入 `y`**。配对码 5 分钟内有效，到期前 1 分钟提醒，过期或中止后按 Enter 可生成新码；
+Ctrl-C 退出会同时作废未完成的配对。比对期间若又收到新的配对请求，旧的作废，须按最新显示的校验码重新比对。
+
+控制通道是只对本机同一用户开放的 Unix socket（文件 0600，位于 0700 的 home 目录下），不监听网络端口。
+能访问它的人可以发起配对和移除设备，权限与能读取 `identity.json` 私钥相同。
+只用 `--pair` 前台启动 agent 的旧方式仍然可用。
+
+## 管理已配对浏览器
+
+```bash
+bun run dev:agent -- status --home ~/.trine           # 运行状态、连接状态、已配对数量
+bun run dev:agent -- devices --home ~/.trine          # 列出已配对浏览器
+bun run dev:agent -- devices revoke web-1a2b --home ~/.trine   # 完整 deviceId 或唯一前缀
+```
+
+`devices revoke` 从 agent 的名册（`recipients.json`）移除该设备：agent 在运行时立即生效，不在运行时直接修改文件。
+之后 agent 不再为它加密事件，它发来的消息也会被丢弃。relay 上的设备登记不变；设备丢失或疑似受控时，
+仍按[设备恢复说明](../SECURITY.md#lost-devices-and-recovery)评估是否需要整体重置。要恢复使用须重新配对。
 
 ## 邀请有效期与撤销
 
@@ -58,7 +88,7 @@ sudo -u trine /usr/local/bin/bun run agent:invite revoke INVITATION_ID --db /var
 
 列表仅包含 ID 和到期时间。`INVITATION_ID` 来自签发提示或列表，不是邀请凭据。
 撤销只影响尚未使用的邀请，不能撤销已经注册的设备。设备丢失或受控请按
-[设备恢复说明](../SECURITY.md#lost-devices-and-recovery)处理；本次没有扩展为全面设备管理。
+[设备恢复说明](../SECURITY.md#lost-devices-and-recovery)处理；从单台 agent 移除某个浏览器见上文「管理已配对浏览器」。
 
 ## 失败恢复
 
@@ -72,6 +102,9 @@ sudo -u trine /usr/local/bin/bun run agent:invite revoke INVITATION_ID --db /var
 | 身份、公钥或角色冲突 | 检查正确的身份备份和 relay；不要覆盖私钥强行注册。 |
 | `device_revoked` | 邀请不能恢复已撤销身份，按设备恢复流程处理。 |
 | 签发命令失败 | 核对数据库是否已由匹配版本 relay 初始化、文件权限、TTL 和待使用邀请上限。 |
+| 启动报「已有 agent 在使用这个身份目录」 | 已有同身份进程在运行；配对用 `pair` 子命令。确认锁文件中的 PID 不是 agent 后才可删除该锁。 |
+| `pair` 提示 agent 在运行但连不上控制通道 | 运行中的是不带控制通道的旧版本；升级后重启该服务再试。 |
+| 日志出现 `code=4005` 被顶替 | 另一个进程或另一台机器在用同一份身份；只保留一个。被顶替的一方每 30 秒重试一次。 |
 
 身份文件在注册之前生成并保留。网络失败后不要删除它或改用新的 `--home`，否则会变成另一台设备，
 无法利用已提交注册的幂等恢复。邀请过期或撤销不会影响已注册设备的日常认证。

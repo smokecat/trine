@@ -37,7 +37,7 @@ import {
   loadOrCreateIdentity,
   type AgentIdentity,
 } from './identity.ts';
-import { PairingManager, type PairingSession } from './pairing.ts';
+import { PairingManager, type PairingSession, type PeerIdentity } from './pairing.ts';
 import { RecipientBookStore, type Recipient } from './recipients.ts';
 import { WsClient, type BackoffOptions, type SocketLike } from './ws-client.ts';
 
@@ -62,6 +62,8 @@ export interface AgentNodeOptions {
   onInboundDropped?: (failure: OpenFailure, detail: string) => void;
   /** 收到 pair.begin 且 token 对得上——上层据此展示 SAS 等用户确认 */
   onPairingRequest?: (session: PairingSession) => void;
+  /** 对端（client）发来 pair.abort 且本机确有这个配对会话 */
+  onPairingAborted?: (pairingToken: string) => void;
   /** 非 relay/pair 的 transport 帧（machine.status、relay.reject 等） */
   onTransportFrame?: (frame: TransportFrame) => void;
   /**
@@ -264,8 +266,8 @@ export class AgentNode {
    * 用不上的记录无害（对端连不上就是没配对成功，重来一次覆盖即可），
    * 而反过来「发出去了但没写名册」会让 client 接入后被当成陌生人。
    */
-  async confirmPairing(pairingToken: string): Promise<boolean> {
-    const { frame, recipient } = await this.pairing.confirm(pairingToken);
+  async confirmPairing(pairingToken: string, expected?: PeerIdentity): Promise<boolean> {
+    const { frame, recipient } = await this.pairing.confirm(pairingToken, expected);
     const sent = this.sendFrame(frame);
     this.log(
       `[pair] 已确认设备 ${recipient.deviceId}（confirm ${sent ? '已发出' : '发送失败，请重试'}）`,
@@ -323,7 +325,9 @@ export class AgentNode {
         return;
       case 'pair.abort':
         // 对端放弃了：核销掉本地会话（核销路径 2 的对端触发版）
-        this.pairing.abort(frame.pairingToken, 'aborted by peer');
+        if (this.pairing.abort(frame.pairingToken, 'aborted by peer')) {
+          this.options.onPairingAborted?.(frame.pairingToken);
+        }
         return;
       case 'pair.confirm':
         // agent 是发 confirm 的那一方，收到只可能是服务端把自己的帧回灌了

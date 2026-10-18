@@ -217,6 +217,30 @@ describe('SAS 与确认', () => {
   test('不认识的 token 确认会抛错', async () => {
     await expect(manager.confirm('made-up')).rejects.toThrow(/不存在/);
   });
+
+  test('用户比对 A 期间 pending 被 B 覆盖 → 带 expected 的确认被拒，名册不写 B', async () => {
+    const session = manager.begin();
+    const a = manager.onBegin(beginFrame(session.pairingToken));
+    if (a.kind !== 'awaiting_confirm') throw new Error('expected awaiting_confirm');
+    const seenByUser = { ...a.peer };
+
+    const intruderBox = generateKeyPair();
+    manager.onBegin(
+      beginFrame(session.pairingToken, { clientDeviceId: 'intruder', clientPubKey: intruderBox.publicKey }),
+    );
+    await expect(manager.confirm(session.pairingToken, seenByUser)).rejects.toThrow(/对端已变化/);
+    expect(recipients.has('intruder')).toBe(false);
+    // 会话仍在：用户可以就最新的对端重新比对
+    expect(manager.get(session.pairingToken)?.pending?.clientDeviceId).toBe('intruder');
+  });
+
+  test('expected 与 pending 一致 → 正常确认', async () => {
+    const session = manager.begin();
+    const outcome = manager.onBegin(beginFrame(session.pairingToken));
+    if (outcome.kind !== 'awaiting_confirm') throw new Error('expected awaiting_confirm');
+    const { recipient } = await manager.confirm(session.pairingToken, outcome.peer);
+    expect(recipient.deviceId).toBe('phone');
+  });
 });
 
 describe('pairingToken 三路径核销（D8 要求落码）', () => {

@@ -77,7 +77,9 @@ or history. Start with a disposable project and review permission requests.
 For a phone or an Internet-facing relay, follow the [deployment guide](apps/server/deploy/README.md).
 First and additional agents use the same one-time invitation flow; no registration
 window or relay restart is needed. Keep the same `--home` and omit `--enroll` on
-subsequent starts. Browser pairing still requires manual confirmation.
+subsequent starts. Browser pairing still requires manual confirmation; to add a
+browser to an agent that is already running (for example as a service), run
+`bun run dev:agent -- pair --home <dir>` instead of starting a second agent.
 See [enrollment and recovery](apps/server/deploy/README.md#4-enroll-the-first-agent-and-pair-a-browser).
 
 ## Architecture
