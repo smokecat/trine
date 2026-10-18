@@ -60,6 +60,7 @@ TRINE_DEFAULT_MODEL=sonnet bun run dev:agent --   --server http://localhost:5173
 - agent：`--server` / `TRINE_SERVER` 必填；`--home` / `TRINE_HOME` 指定状态目录，默认 `~/.trine`；`--claude-bin` 选择 CLI；`TRINE_DEFAULT_MODEL` 指定兜底模型（默认 `opus[1m]`）。
 - 模型：可以填 Claude Code 的家族别名（`fable`、`opus`、`sonnet`、`haiku`，以及 `opus[1m]` 这类带后缀的写法），由 Claude Code 解析到该家族最新版本；也可以填具体模型 ID。Web 端的预置模型只有别名。
 - 新会话默认值：新建会话时预选的模型和权限模式在「设置 → 新会话默认值」里改，初值是 `opus[1m]` 和 `bypassPermissions`；会话建好后各自记住自己的模型和权限。不希望新会话跳过工具审批的话，请把默认权限改掉。
+- 发送键：手机、平板等触屏设备上，键盘回车总是换行，点发送按钮发送；电脑键盘在「设置 → 发送键」里二选一：Enter 发送、Shift+Enter 换行（默认），或 Cmd/Ctrl+Enter 发送、Enter 换行。两种模式下 Cmd/Ctrl+Enter 都能发送。
 - relay：[配置模板](apps/server/deploy/trine-server.env.example)，复制到仓库外再填写真实值。
 - 验证：`bun run typecheck`、`bun test`、`bun run build`，或 `bun run check`。
 - 架构：[STRUCTURE](docs/STRUCTURE.md)；决策：[DECISIONS](docs/DECISIONS.md)；协议：[PROTOCOL-REQUIREMENTS](docs/PROTOCOL-REQUIREMENTS.md)。

@@ -112,6 +112,17 @@ describe('storage · peer 落盘取 max', () => {
     expect(loadPrefs(kv)).toMatchObject({ defaultModel: 'sonnet[1m]', defaultPermissionMode: 'plan' });
   });
 
+  test('sendKey：老 prefs 缺字段 / 坏值落默认 enter，合法值保留', () => {
+    const kv = new MemoryKv();
+    const base = { v: 1, theme: 'system', promptSnippets: [], knownModels: [], knownModelsSeed: KNOWN_MODELS_SEED };
+    kv.set('trine.prefs', JSON.stringify(base));
+    expect(loadPrefs(kv).sendKey).toBe('enter');
+    kv.set('trine.prefs', JSON.stringify({ ...base, sendKey: 'space' }));
+    expect(loadPrefs(kv).sendKey).toBe('enter');
+    kv.set('trine.prefs', JSON.stringify({ ...base, sendKey: 'mod-enter' }));
+    expect(loadPrefs(kv).sendKey).toBe('mod-enter');
+  });
+
   test('listGroupBy：老 prefs 缺字段落默认 workspace，且不重置其它字段（M7）', () => {
     const kv = new MemoryKv();
     kv.set(

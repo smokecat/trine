@@ -143,6 +143,12 @@ export const PrefsSchema = z.object({
   defaultModel: z.string().min(1).catch(DEFAULT_SESSION_MODEL),
   /** 新建会话预选的权限模式（设置页可改，选 bypass 同样要两击确认） */
   defaultPermissionMode: PermissionModeSchema.catch(DEFAULT_SESSION_PERMISSION_MODE),
+  /**
+   * PC 上的发送键（见 components/composer/composer-keys.ts）：`enter` = Enter 发送、
+   * Shift+Enter 换行；`mod-enter` = Cmd/Ctrl+Enter 发送、Enter 换行。触屏设备不看它，
+   * 回车永远换行。`.catch` 同 listGroupBy
+   */
+  sendKey: z.enum(['enter', 'mod-enter']).catch('enter'),
 });
 export type Prefs = z.infer<typeof PrefsSchema>;
 
@@ -176,6 +182,7 @@ export function defaultPrefs(): Prefs {
     listGroupBy: 'workspace',
     defaultModel: DEFAULT_SESSION_MODEL,
     defaultPermissionMode: DEFAULT_SESSION_PERMISSION_MODE,
+    sendKey: 'enter',
   };
 }
 

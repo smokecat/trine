@@ -15,11 +15,17 @@
  * ## 自增高
  *
  * textarea 高度跟内容走，最多 6 行——再高就把时间线挤没了，手机上尤其。
+ *
+ * ## 回车：换行还是发送
+ *
+ * 见 composer-keys.ts：触屏设备回车只换行、靠按钮发送；PC 按 prefs.sendKey。
  */
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { ArrowUpIcon, SquareIcon } from 'lucide-react';
 import { Button } from '@/components/ui/button.tsx';
+import { useMediaQuery } from '@/components/shell/use-media-query.ts';
 import { cn } from '@/lib/utils.ts';
+import { IS_MAC, isSendKey, sendKeyLabel, TOUCH_QUERY, type SendKey } from './composer-keys.ts';
 import { SlashMenu } from './SlashMenu.tsx';
 import {
   buildSlashMenu,
@@ -43,6 +49,7 @@ export function Composer({
   running,
   offlineHint,
   sources,
+  sendKey,
 }: {
   value: string;
   onChange: (text: string) => void;
@@ -55,8 +62,12 @@ export function Composer({
   /** 机器离线时的提示文案；null = 在线 */
   offlineHint: string | null;
   sources: SlashSources;
+  /** PC 上的发送键（prefs.sendKey）；触屏设备忽略 */
+  sendKey: SendKey;
 }): React.JSX.Element {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const touch = useMediaQuery(TOUCH_QUERY);
+  const keyHint = sendKeyLabel(sendKey, touch, IS_MAC);
   const [activeIndex, setActiveIndex] = useState(0);
   const [menuDismissed, setMenuDismissed] = useState(false);
 
@@ -120,7 +131,7 @@ export function Composer({
         setActiveIndex((i) => moveSlashIndex(i, -1, items.length));
         return;
       }
-      if (e.key === 'Enter' && !e.shiftKey) {
+      if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
         e.preventDefault();
         const item = items[activeIndex];
         if (item !== undefined) pick(item);
@@ -132,8 +143,17 @@ export function Composer({
         return;
       }
     }
-    // 输入法组合中的 Enter 是「选词」，不是「发送」
-    if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+    // 不是发送键就什么都不做，textarea 自己插入换行
+    const keyEvent = {
+      key: e.key,
+      shiftKey: e.shiftKey,
+      metaKey: e.metaKey,
+      ctrlKey: e.ctrlKey,
+      altKey: e.altKey,
+      isComposing: e.nativeEvent.isComposing,
+      keyCode: e.keyCode,
+    };
+    if (isSendKey(keyEvent, sendKey, touch)) {
       e.preventDefault();
       submit();
     }
@@ -155,6 +175,8 @@ export function Composer({
           ref={textareaRef}
           data-testid="composer"
           rows={1}
+          // 软键盘右下角显示「换行」而不是「发送 / 前往」
+          enterKeyHint="enter"
           className={cn(
             'border-border-strong bg-surface text-text flex-1 resize-none rounded-xl border',
             'min-h-[38px] px-3 py-2 text-[14px] leading-[21px]',
@@ -183,7 +205,7 @@ export function Composer({
         <Button
           size="icon"
           data-testid="send"
-          title={running ? '排队发送' : '发送'}
+          title={(running ? '排队发送' : '发送') + (keyHint === null ? '' : `（${keyHint}）`)}
           aria-label={running ? '排队发送' : '发送'}
           className="size-[38px]"
           disabled={value.trim() === ''}

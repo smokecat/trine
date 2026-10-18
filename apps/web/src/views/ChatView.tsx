@@ -555,6 +555,7 @@ export function ChatView(): React.JSX.Element {
           promptSnippets: prefs.promptSnippets,
           ...(onRename === undefined ? { unavailable: ['rename'] as const } : {}),
         }}
+        sendKey={prefs.sendKey}
       />
 
       <SessionSettingsSheet

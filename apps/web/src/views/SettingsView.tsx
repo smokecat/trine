@@ -1,5 +1,5 @@
 /**
- * 设置（方案 §4.1 / §5）：主题、prompt 片段、已知模型、新会话默认值、设备信息、两级重置。
+ * 设置（方案 §4.1 / §5）：主题、发送键、prompt 片段、已知模型、新会话默认值、设备信息、两级重置。
  *
  * ## 两级重置的区别必须写清楚
  *
@@ -30,6 +30,8 @@ import {
   pendingWarning,
   type ModePickerState,
 } from '@/components/sheets/permission-mode.ts';
+import { IS_MAC, TOUCH_QUERY, type SendKey } from '@/components/composer/composer-keys.ts';
+import { useMediaQuery } from '@/components/shell/use-media-query.ts';
 import { ConfirmDialog } from '@/components/machines/ConfirmDialog.tsx';
 import { machineTone } from '@/components/machines/machine-text.ts';
 import { useClient, useTrine } from '@/app/runtime.ts';
@@ -225,6 +227,40 @@ function KnownModels(): React.JSX.Element {
   );
 }
 
+/** 发送键：只管 PC（实体键盘）；触屏设备回车永远换行，见 composer-keys.ts */
+function SendKeySetting(): React.JSX.Element {
+  const client = useClient();
+  const sendKey = useTrine((s) => s.prefs.sendKey);
+  const touch = useMediaQuery(TOUCH_QUERY);
+  const mod = IS_MAC ? '⌘' : 'Ctrl';
+  const options: { value: SendKey; label: string }[] = [
+    { value: 'enter', label: 'Enter 发送 · Shift+Enter 换行' },
+    { value: 'mod-enter', label: `${mod}+Enter 发送 · Enter 换行` },
+  ];
+
+  return (
+    <section className="flex flex-col gap-2" data-testid="send-key-setting">
+      <h2 className="font-medium">发送键</h2>
+      <p className="text-text-3 text-xs">
+        电脑键盘上的发送方式。手机、平板等触屏设备上回车总是换行，点发送按钮发送
+        {touch ? '（本设备即触屏设备）' : ''}。
+      </p>
+      <div className="flex flex-wrap gap-1.5">
+        {options.map((opt) => (
+          <Chip
+            key={opt.value}
+            data-testid={`send-key-${opt.value}`}
+            selected={sendKey === opt.value}
+            onClick={() => client?.updatePrefs({ sendKey: opt.value })}
+          >
+            {opt.label}
+          </Chip>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 /** 新会话默认值：新建会话 sheet 预选的模型与权限模式 */
 function SessionDefaults(): React.JSX.Element {
   const client = useClient();
@@ -331,6 +367,9 @@ export function SettingsView(): React.JSX.Element {
           <h2 className="font-medium">主题</h2>
           <ThemeSwitcher />
         </section>
+
+        <Separator />
+        <SendKeySetting />
 
         <Separator />
         <PromptSnippets />

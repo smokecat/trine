@@ -114,6 +114,11 @@ session defaults (initially `opus[1m]` and `bypassPermissions`); each session ke
 model and permission mode afterwards. Change the default permission mode if you do not
 want new sessions to skip tool approval.
 
+In the message box, the Return key on touch devices (phones, tablets) always inserts a
+new line; tap the send button to send. With a physical keyboard, Settings → Send key
+chooses between Enter to send (Shift+Enter for a new line, the default) and Cmd/Ctrl+Enter
+to send (Enter for a new line). Cmd/Ctrl+Enter sends in both modes.
+
 The relay reads environment variables. Copy the
 [environment template](apps/server/deploy/trine-server.env.example) outside the
 checkout and edit that copy. Keep the listener on loopback behind your TLS proxy.
