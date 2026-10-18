@@ -15,6 +15,14 @@
  * 服务端以 4001（UNAUTHENTICATED）关连接。此时重连也没用——手里的 token
  * 已经废了。所以重连前会调 `refreshToken`（由调用方注入，走挑战-应答），
  * 拿到新 token 再连。
+ *
+ * ## 被顶替（4005）
+ *
+ * 服务端对同一 machineId 只留一条 agent 连接，新连接进来就以 4005 踢掉旧的。
+ * 本进程自己的重连不会撞上它（旧 socket 早已断开），撞上几乎总是**另一个
+ * 进程/机器在用同一身份**。这时照常 1s 退避重连只会和对方每秒互踢一次，
+ * 所以改用固定的长间隔并明确告警；仍然重连而不是放弃——对方可能只是短暂
+ * 出现（例如误起的前台进程），放弃会让常驻 agent 永久离线。
  */
 import {
   decodeTransportFrame,
@@ -24,6 +32,12 @@ import {
 
 /** 服务端的 UNAUTHENTICATED 关闭码（与 apps/server 的 CLOSE 对齐） */
 export const CLOSE_UNAUTHENTICATED = 4001;
+
+/** 服务端的 REPLACED 关闭码：同一 machineId 的新连接顶替了本连接 */
+export const CLOSE_REPLACED = 4005;
+
+/** 被顶替后的重连间隔（见文件头） */
+export const REPLACED_RECONNECT_MS = 30_000;
 
 /**
  * `stop()` 等 socket 真正 close 的上限。退出路径在 stop 之后紧接 process.exit，
@@ -105,6 +119,8 @@ export interface WsClientOptions {
   /** 注入 WebSocket 构造，测试用 */
   createSocket?: (url: string) => SocketLike;
   backoff?: BackoffOptions;
+  /** 被 4005 顶替后的重连间隔，默认 REPLACED_RECONNECT_MS */
+  replacedReconnectMs?: number;
   /** 注入定时器，测试用 */
   setTimeoutImpl?: (fn: () => void, ms: number) => unknown;
   clearTimeoutImpl?: (handle: unknown) => void;
@@ -270,6 +286,15 @@ export class WsClient {
         this.#state = 'stopped';
         return;
       }
+      this.log(`[ws] 连接关闭 code=${ev.code}${ev.reason ? ` reason=${ev.reason}` : ''}`);
+      if (ev.code === CLOSE_REPLACED) {
+        this.log(
+          '[ws] 被同一身份的另一条连接顶替：是否有另一个 agent 进程（或另一台机器）' +
+            '在用同一份身份？两边会在服务端互相顶替，请只保留一个',
+        );
+        this.#scheduleReconnect(this.options.replacedReconnectMs ?? REPLACED_RECONNECT_MS);
+        return;
+      }
       // 4001：手里的 token 已经不管用了，丢掉它，重连前重新换一个。
       // 不丢的话会拿着同一个废 token 无限重连、无限被 4001 踢掉。
       if (ev.code === CLOSE_UNAUTHENTICATED) {
@@ -280,10 +305,11 @@ export class WsClient {
     });
   }
 
-  #scheduleReconnect(): void {
+  /** `fixedDelayMs`：不走指数退避，用指定间隔（被顶替时） */
+  #scheduleReconnect(fixedDelayMs?: number): void {
     if (this.#stopped) return;
     this.#state = 'reconnecting';
-    const delay = backoffDelay(this.#attempt, this.backoff);
+    const delay = fixedDelayMs ?? backoffDelay(this.#attempt, this.backoff);
     this.#attempt++;
     this.log(`[ws] ${delay}ms 后重连（第 ${this.#attempt} 次）`);
     this.#retryHandle = this.setTimeoutImpl(() => {

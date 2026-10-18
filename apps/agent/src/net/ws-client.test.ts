@@ -3,8 +3,10 @@ import { sodiumReady } from '@trine/core/crypto';
 import { decodeTransportFrame, type TransportFrame } from '@trine/core/protocol';
 import {
   backoffDelay,
+  CLOSE_REPLACED,
   CLOSE_UNAUTHENTICATED,
   DEFAULT_BACKOFF,
+  REPLACED_RECONNECT_MS,
   WsClient,
   type SocketLike,
 } from './ws-client.ts';
@@ -66,6 +68,7 @@ interface Harness {
   timers: FakeTimers;
   tokens: string[];
   frames: TransportFrame[];
+  logs: string[];
 }
 
 function harness(over: { token?: string } = {}): Harness {
@@ -73,6 +76,7 @@ function harness(over: { token?: string } = {}): Harness {
   const timers = new FakeTimers();
   const tokens: string[] = [];
   const frames: TransportFrame[] = [];
+  const logs: string[] = [];
   let issued = 0;
 
   const client = new WsClient({
@@ -92,8 +96,9 @@ function harness(over: { token?: string } = {}): Harness {
     },
     setTimeoutImpl: timers.setTimeout,
     clearTimeoutImpl: timers.clearTimeout,
+    log: (line) => logs.push(line),
   });
-  return { client, sockets, timers, tokens, frames };
+  return { client, sockets, timers, tokens, frames, logs };
 }
 
 describe('指数退避', () => {
@@ -224,6 +229,32 @@ describe('重连', () => {
     await Promise.resolve();
     h.sockets[1]!.emit('open');
     expect(h.sockets[1]!.frames()[0]).toMatchObject({ authToken: 'token-1' });
+  });
+
+  test('断开时记下 close code 与 reason', async () => {
+    const h = harness({ token: 'T' });
+    await h.client.start();
+    h.sockets[0]!.emit('open');
+    h.sockets[0]!.emit('close', { code: 1006, reason: '' });
+    h.timers.runAll();
+    h.sockets[1]!.emit('open');
+    h.sockets[1]!.emit('close', { code: 4003, reason: 'idle' });
+    expect(h.logs).toContain('[ws] 连接关闭 code=1006');
+    expect(h.logs).toContain('[ws] 连接关闭 code=4003 reason=idle');
+  });
+
+  test('4005 被顶替 → 告警并按固定长间隔重连，不走 1s 退避', async () => {
+    const h = harness({ token: 'T' });
+    await h.client.start();
+    h.sockets[0]!.emit('open');
+    h.sockets[0]!.emit('close', { code: CLOSE_REPLACED, reason: 'replaced by new connection' });
+
+    expect(h.timers.delays).toEqual([REPLACED_RECONNECT_MS]);
+    expect(h.logs.some((l) => l.includes('被同一身份的另一条连接顶替'))).toBe(true);
+    // 仍然重连：对方可能只是短暂出现，放弃会让常驻 agent 永久离线
+    h.timers.runAll();
+    await Promise.resolve();
+    expect(h.sockets).toHaveLength(2);
   });
 
   test('主动 stop() 之后不再重连', async () => {
