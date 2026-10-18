@@ -113,6 +113,20 @@ export function shortModel(model: string): string {
   return minor === undefined ? `${family} ${major}` : `${family} ${major}.${minor}`;
 }
 
+/**
+ * 别名会话（`opus` / `opus[1m]` 等）实际跑的具体模型；不是别名、或对不上则 undefined。
+ *
+ * `reported` 取自 session.capabilities.models（SDK init 时的模型），会话中途
+ * `/model` 切换后它不会刷新——所以要求家族与 `[…]` 后缀都对得上才认，切到别的
+ * 家族后宁可不显示，也不显示一个过时的值。
+ */
+export function resolvedAliasModel(model: string, reported: readonly string[] | undefined): string | undefined {
+  const alias = /^(fable|opus|sonnet|haiku)(\[[^\]]*\])?$/.exec(model.trim());
+  if (!alias) return undefined;
+  const [, family, suffix = ''] = alias;
+  return reported?.find((r) => r.startsWith(`claude-${family}-`) && (/\[[^\]]*\]$/.exec(r)?.[0] ?? '') === suffix);
+}
+
 /** 机器过滤 chip 的一项数据 */
 export interface MachineFilterItem {
   machineId: string;

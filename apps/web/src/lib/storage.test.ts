@@ -62,23 +62,54 @@ describe('storage · peer 落盘取 max', () => {
     expect(() => loadIdentity(kv)).toThrow(/损坏/);
   });
 
-  test('prefs 缺省带默认模型列表', () => {
+  test('prefs 缺省：预置模型只有别名，默认 opus + bypass', () => {
     const prefs = loadPrefs(new MemoryKv());
-    expect(prefs.knownModels).toContain('claude-fable-5-1');
-    expect(prefs.knownModels).toContain('claude-opus-5-5');
+    expect(prefs.knownModels).toEqual(['fable', 'fable[1m]', 'opus', 'opus[1m]', 'sonnet', 'sonnet[1m]', 'haiku']);
     expect(prefs.knownModelsSeed).toBe(KNOWN_MODELS_SEED);
+    expect(prefs.defaultModel).toBe('opus[1m]');
+    expect(prefs.defaultPermissionMode).toBe('bypassPermissions');
   });
 
-  test('老 prefs（无 seed 字段）加载时补进新增默认模型，且只补一次', () => {
+  test('老 prefs（无 seed 字段）：旧预置的具体 ID 换成别名，用户自己加的保留，且只迁移一次', () => {
     const kv = new MemoryKv();
-    kv.set('trine.prefs', JSON.stringify({ v: 1, theme: 'dark', promptSnippets: [], knownModels: ['claude-opus-5', 'my-model'] }));
+    kv.set(
+      'trine.prefs',
+      JSON.stringify({ v: 1, theme: 'dark', promptSnippets: [], knownModels: ['claude-opus-5', 'my-model', 'claude-opus-5-5[1m]'] }),
+    );
     const first = loadPrefs(kv);
-    expect(first.knownModels).toEqual(['claude-opus-5', 'my-model', 'claude-fable-5-1', 'claude-opus-5-5', 'claude-sonnet-5', 'claude-haiku-4-5-20251001']);
+    expect(first.knownModels).toEqual(['fable', 'fable[1m]', 'opus', 'opus[1m]', 'sonnet', 'sonnet[1m]', 'haiku', 'my-model']);
     expect(first.knownModelsSeed).toBe(KNOWN_MODELS_SEED);
     expect(first.theme).toBe('dark');
-    // 用户删掉一个默认模型后再加载，不会被复活
-    savePrefs(kv, { ...first, knownModels: first.knownModels.filter((m) => m !== 'claude-sonnet-5') });
-    expect(loadPrefs(kv).knownModels).not.toContain('claude-sonnet-5');
+    // 老 prefs 没有默认值字段：落默认，不重置其它字段
+    expect(first.defaultModel).toBe('opus[1m]');
+    expect(first.defaultPermissionMode).toBe('bypassPermissions');
+    // 用户删掉一个预置别名后再加载，不会被复活
+    savePrefs(kv, { ...first, knownModels: first.knownModels.filter((m) => m !== 'sonnet') });
+    expect(loadPrefs(kv).knownModels).not.toContain('sonnet');
+  });
+
+  test('v2 prefs（已补种过具体 ID）迁到 v3', () => {
+    const kv = new MemoryKv();
+    kv.set(
+      'trine.prefs',
+      JSON.stringify({
+        v: 1,
+        theme: 'system',
+        promptSnippets: [],
+        knownModels: ['claude-fable-5-1', 'claude-opus-5-5', 'claude-sonnet-5', 'claude-haiku-4-5-20251001', 'claude-opus-4-8'],
+        knownModelsSeed: 2,
+      }),
+    );
+    expect(loadPrefs(kv).knownModels).toEqual(['fable', 'fable[1m]', 'opus', 'opus[1m]', 'sonnet', 'sonnet[1m]', 'haiku', 'claude-opus-4-8']);
+  });
+
+  test('默认模型 / 权限模式坏值落默认，合法值保留', () => {
+    const kv = new MemoryKv();
+    const base = { v: 1, theme: 'system', promptSnippets: [], knownModels: [], knownModelsSeed: KNOWN_MODELS_SEED };
+    kv.set('trine.prefs', JSON.stringify({ ...base, defaultModel: '', defaultPermissionMode: 'yolo' }));
+    expect(loadPrefs(kv)).toMatchObject({ defaultModel: 'opus[1m]', defaultPermissionMode: 'bypassPermissions' });
+    kv.set('trine.prefs', JSON.stringify({ ...base, defaultModel: 'sonnet[1m]', defaultPermissionMode: 'plan' }));
+    expect(loadPrefs(kv)).toMatchObject({ defaultModel: 'sonnet[1m]', defaultPermissionMode: 'plan' });
   });
 
   test('listGroupBy：老 prefs 缺字段落默认 workspace，且不重置其它字段（M7）', () => {

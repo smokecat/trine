@@ -49,7 +49,6 @@ import {
   mergeCommandDescriptions,
   mergeHistory,
   mergeSubagentHistory,
-  mergeKnownModels,
   nextParkedExpiry,
   setLocalStatus,
   type Capabilities,
@@ -631,8 +630,8 @@ export class TrineClient {
         };
         this.#capabilities.set(key, caps);
         this.#emit('capabilities', machineId, sessionId, caps);
-        const merged = mergeKnownModels(this.#prefs.knownModels, event.models);
-        if (merged.length !== this.#prefs.knownModels.length) this.updatePrefs({ knownModels: merged });
+        // models 不并入 knownModels：init 上报的是别名解析后的具体 ID，并进去
+        // 预置列表又会长回具体版本（别名的意义就没了）。会话设置里单独显示。
       }
     } else {
       switch (event.type) {

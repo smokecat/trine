@@ -36,9 +36,11 @@ export interface AgentConfig {
  * 未指明模型时的兜底。历史会话经 SDK `listSessions` 列出来时**不带模型**
  * （bridge/manager.ts list() 里 model 是 `cached?.model ?? ''`），远端点开
  * 一个老会话总得给 SDK 一个模型名。可用 env TRINE_DEFAULT_MODEL 覆盖。
- * 2026-09-25 从 claude-sonnet-4-5 升为 claude-opus-5-5（当前 Opus 线最新）。
+ * 用家族别名而不是具体 ID：由 Claude Code 解析到该家族最新版本，模型升级后
+ * 不用改这里（SDK 的 `supportedModels()` 里能看到 `opus` → 具体 ID 的映射）。
+ * `[1m]` = 1M 上下文窗口：兜底场景多是重开老会话，转录可能已经很长。
  */
-export const DEFAULT_MODEL = 'claude-opus-5-5';
+export const DEFAULT_MODEL = 'opus[1m]';
 
 /** home 目录下各文件的固定名字 */
 export function agentPaths(home: string): {

@@ -1,5 +1,5 @@
 /**
- * 设置（方案 §4.1 / §5）：主题、prompt 片段、已知模型、设备信息、两级重置。
+ * 设置（方案 §4.1 / §5）：主题、prompt 片段、已知模型、新会话默认值、设备信息、两级重置。
  *
  * ## 两级重置的区别必须写清楚
  *
@@ -10,8 +10,9 @@
  * - **忘记服务端并清除身份**：连 deviceId 与密钥一起删。这是换设备身份，
  *   agent 侧的旧登记作废，必须在 agent 上重新出配对码。
  *
- * prompt 片段与 knownModels 存本地 prefs（决策：片段存 client 本地；常用目录
- * 才存 agent 端）。
+ * prompt 片段、knownModels 与新会话默认模型 / 权限模式存本地 prefs（决策：
+ * 片段存 client 本地；常用目录才存 agent 端）。默认值只决定新建会话 sheet 的
+ * 预选；会话建好后各自的模型 / 权限由 agent 记住，改默认值不影响已有会话。
  */
 import { useEffect, useState } from 'react';
 import { NavLink, useNavigate } from 'react-router';
@@ -22,7 +23,13 @@ import { Input } from '@/components/ui/input.tsx';
 import { Separator } from '@/components/ui/separator.tsx';
 import { Textarea } from '@/components/ui/textarea.tsx';
 import { AppHead } from '@/components/shell/AppHead.tsx';
-import { StatusDot } from '@/components/shell/StatusDot.tsx';
+import { Chip, StatusDot } from '@/components/shell/StatusDot.tsx';
+import {
+  clickMode,
+  PERMISSION_MODE_OPTIONS,
+  pendingWarning,
+  type ModePickerState,
+} from '@/components/sheets/permission-mode.ts';
 import { ConfirmDialog } from '@/components/machines/ConfirmDialog.tsx';
 import { machineTone } from '@/components/machines/machine-text.ts';
 import { useClient, useTrine } from '@/app/runtime.ts';
@@ -158,7 +165,7 @@ function PromptSnippets(): React.JSX.Element {
   );
 }
 
-/** 已知模型列表：新建会话的候选 chips（agent 上报的会自动并入） */
+/** 已知模型列表：新建会话 / 会话设置里的候选 chips */
 function KnownModels(): React.JSX.Element {
   const client = useClient();
   const models = useTrine((s) => s.prefs.knownModels);
@@ -169,7 +176,7 @@ function KnownModels(): React.JSX.Element {
     <section className="flex flex-col gap-2" data-testid="known-models">
       <h2 className="font-medium">已知模型</h2>
       <p className="text-text-3 text-xs">
-        新建会话时的候选。agent 通过 session.capabilities 上报的模型会自动并入这个列表。
+        模型选择的候选。用家族别名（如 opus、opus[1m]）会自动指向该家族最新版本，模型升级后不用改。
       </p>
       <ul className="flex flex-wrap gap-1.5">
         {models.map((m) => (
@@ -196,7 +203,7 @@ function KnownModels(): React.JSX.Element {
         <Input
           data-testid="model-input"
           className="h-8 font-mono text-xs"
-          placeholder="claude-opus-5"
+          placeholder="opus[1m]"
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
         />
@@ -214,6 +221,90 @@ function KnownModels(): React.JSX.Element {
           添加
         </Button>
       </div>
+    </section>
+  );
+}
+
+/** 新会话默认值：新建会话 sheet 预选的模型与权限模式 */
+function SessionDefaults(): React.JSX.Element {
+  const client = useClient();
+  const models = useTrine((s) => s.prefs.knownModels);
+  const defaultModel = useTrine((s) => s.prefs.defaultModel);
+  const defaultMode = useTrine((s) => s.prefs.defaultPermissionMode);
+  const [draft, setDraft] = useState('');
+  // 选 bypass 作为默认值同样两击确认（同一个状态机，见 permission-mode.ts）
+  const [pending, setPending] = useState<ModePickerState['pending']>(null);
+  const modeState: ModePickerState = { value: defaultMode, pending };
+  const chips = models.includes(defaultModel) ? models : [...models, defaultModel];
+
+  const applyDraft = (): void => {
+    if (draft.trim() === '') return;
+    client?.updatePrefs({ defaultModel: draft.trim() });
+    setDraft('');
+  };
+
+  return (
+    <section className="flex flex-col gap-2" data-testid="session-defaults">
+      <h2 className="font-medium">新会话默认值</h2>
+      <p className="text-text-3 text-xs">新建会话时预选的模型与权限模式。已有会话各自记住自己的设置，不受影响。</p>
+      <div className="text-text-3 text-[11px] tracking-[0.05em] uppercase">模型</div>
+      <div className="flex flex-wrap gap-1.5">
+        {chips.map((m) => (
+          <Chip
+            key={m}
+            data-testid="default-model"
+            selected={defaultModel === m}
+            onClick={() => client?.updatePrefs({ defaultModel: m })}
+            className="font-mono"
+          >
+            {m}
+          </Chip>
+        ))}
+      </div>
+      <div className="flex gap-1.5">
+        <Input
+          className="h-8 font-mono text-xs"
+          placeholder="自定义模型名"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key !== 'Enter') return;
+            e.preventDefault();
+            applyDraft();
+          }}
+        />
+        <Button size="sm" variant="outline" type="button" disabled={draft.trim() === ''} onClick={applyDraft}>
+          使用
+        </Button>
+      </div>
+      <div className="text-text-3 mt-1 text-[11px] tracking-[0.05em] uppercase">权限模式</div>
+      <div className="flex flex-wrap gap-1.5">
+        {PERMISSION_MODE_OPTIONS.map((opt) => {
+          const danger = pending === opt.value;
+          return (
+            <Chip
+              key={opt.value}
+              data-testid="default-mode"
+              data-mode={opt.value}
+              data-pending={String(danger)}
+              selected={defaultMode === opt.value}
+              className={cn(danger && 'border-red bg-red-soft text-red font-medium')}
+              onClick={() => {
+                const next = clickMode(modeState, opt.value);
+                setPending(next.pending);
+                if (next.pending === null && next.value !== defaultMode) {
+                  client?.updatePrefs({ defaultPermissionMode: next.value });
+                }
+              }}
+            >
+              {opt.label}
+            </Chip>
+          );
+        })}
+      </div>
+      {pendingWarning(modeState) !== '' && (
+        <p className="text-red text-[11.5px]">{pendingWarning(modeState)}</p>
+      )}
     </section>
   );
 }
@@ -246,6 +337,9 @@ export function SettingsView(): React.JSX.Element {
 
         <Separator />
         <KnownModels />
+
+        <Separator />
+        <SessionDefaults />
 
         <Separator />
 

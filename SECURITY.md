@@ -36,6 +36,8 @@ is not a substitute for those controls, backups or TLS.
 - There is no forward-secrecy guarantee for long-term device key compromise.
 - Agent permission settings and project/user Claude configuration affect execution.
   Enabling bypass permissions increases the authority of every paired controller.
+  The web app preselects `bypassPermissions` for new sessions by default; change it in
+  Settings → New session defaults if you want tool approval prompts.
 
 ## First registration and additional machines
 

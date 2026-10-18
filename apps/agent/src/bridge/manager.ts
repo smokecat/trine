@@ -90,6 +90,12 @@ export interface SessionManagerOptions {
   /** 会话标记；不给则不合并 archived / pendingTitle、不过滤墓碑 */
   flags?: SessionFlags;
   /**
+   * 本地记住的会话参数（app 接 state.json）。listSessions 不带模型 / 权限模式，
+   * 内存缓存又随重启清空——不查这里，重启后列表里的会话全显示成「默认模型 /
+   * default」，与下次 resume 实际用的参数对不上。
+   */
+  rememberedParams?: (sessionId: string) => { model: string; permissionMode: PermissionMode } | undefined;
+  /**
    * 一轮跑完（running / waiting_permission → 其他状态）时回调。router 在这里
    * 补写 pendingTitle：首条消息的 jsonl 要等子进程处理后才落盘，input.send
    * 那一刻往往还没有文件。
@@ -158,6 +164,7 @@ export class SessionManager {
   readonly #createSession: (options: CreateSessionArgs) => ClaudeSession;
   readonly #claudeExecutable: string | undefined;
   readonly #flags: SessionFlags | undefined;
+  readonly #rememberedParams: SessionManagerOptions['rememberedParams'];
   readonly #onRunEnd: ((sessionId: string) => void) | undefined;
   readonly #onPermissionModeChange: ((sessionId: string, mode: PermissionMode) => void) | undefined;
   readonly #log: ((line: string) => void) | undefined;
@@ -179,6 +186,7 @@ export class SessionManager {
     this.#renameSession = options.renameSessionFn ?? renameSession;
     this.#deleteSession = options.deleteSessionFn ?? deleteSession;
     this.#flags = options.flags;
+    this.#rememberedParams = options.rememberedParams;
     this.#claudeExecutable = options.claudeExecutable;
     this.#onRunEnd = options.onRunEnd;
     this.#onPermissionModeChange = options.onPermissionModeChange;
@@ -532,6 +540,7 @@ export class SessionManager {
   #fromInfo(info: SDKSessionInfo): SessionMeta {
     const live = this.#sessions.get(info.sessionId);
     const cached = this.#meta.get(info.sessionId);
+    const remembered = cached === undefined ? this.#rememberedParams?.(info.sessionId) : undefined;
     const state = live?.state ?? cached?.state ?? 'idle';
     return {
       sessionId: info.sessionId,
@@ -539,8 +548,8 @@ export class SessionManager {
       state,
       lastActivityAt: live?.lastActivityAt ?? info.lastModified,
       cwd: info.cwd ?? cached?.cwd ?? '',
-      model: cached?.model ?? '',
-      permissionMode: cached?.permissionMode ?? 'default',
+      model: cached?.model ?? remembered?.model ?? '',
+      permissionMode: cached?.permissionMode ?? remembered?.permissionMode ?? 'default',
       costUsd: live?.costUsd ?? cached?.costUsd ?? 0,
       // 缓存里的 waitingFor 由 #onMeta 随每次状态迁移 / 挂起项变化刷新，与 live 同步
       ...waitingForOf({ state, waitingFor: cached?.waitingFor }),

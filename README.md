@@ -102,7 +102,15 @@ comments are primarily in Chinese.
 
 The agent requires `--server` or `TRINE_SERVER`. Its default state directory is
 `~/.trine`; `--home`/`TRINE_HOME` overrides it. `TRINE_DEFAULT_MODEL` selects the
-fallback model. `TRINE_MAX_SESSIONS` and `TRINE_IDLE_TIMEOUT_MS` control active sessions.
+fallback model (default `opus[1m]`). `TRINE_MAX_SESSIONS` and `TRINE_IDLE_TIMEOUT_MS` control active sessions.
+
+Model fields accept Claude Code family aliases (`fable`, `opus`, `sonnet`, `haiku`, and
+suffixed forms such as `opus[1m]`), which Claude Code resolves to the latest model in
+that family, as well as full model IDs. The web app's preset model list contains only
+aliases. New sessions preselect the model and permission mode from Settings → New
+session defaults (initially `opus[1m]` and `bypassPermissions`); each session keeps its own
+model and permission mode afterwards. Change the default permission mode if you do not
+want new sessions to skip tool approval.
 
 The relay reads environment variables. Copy the
 [environment template](apps/server/deploy/trine-server.env.example) outside the

@@ -4,6 +4,7 @@ import {
   compareSessions,
   countActiveSessions,
   displayModel,
+  resolvedAliasModel,
   shortModel,
   lastEventPrefix,
   selectMachineFilterItems,
@@ -107,6 +108,19 @@ describe('sessionTitle / shortCwd / displayModel', () => {
     expect(shortModel('claude-sonnet-4-5-20250929')).toBe('sonnet 4.5');
     expect(shortModel('opus')).toBe('opus');
     expect(shortModel('my-custom-model')).toBe('my-custom-model');
+  });
+
+  test('resolvedAliasModel：别名对上家族与 [1m] 后缀才给出具体模型', () => {
+    expect(resolvedAliasModel('opus', ['claude-opus-5-5'])).toBe('claude-opus-5-5');
+    expect(resolvedAliasModel('opus[1m]', ['claude-opus-5-5[1m]'])).toBe('claude-opus-5-5[1m]');
+    // 中途 /model 切换后 capabilities 不刷新：对不上就不显示过时值
+    expect(resolvedAliasModel('sonnet', ['claude-opus-5-5'])).toBeUndefined();
+    expect(resolvedAliasModel('opus[1m]', ['claude-opus-5-5'])).toBeUndefined();
+    expect(resolvedAliasModel('opus', ['claude-opus-5-5[1m]'])).toBeUndefined();
+    // 不是别名（具体 ID / 空）不需要解析
+    expect(resolvedAliasModel('claude-opus-5-5', ['claude-opus-5-5'])).toBeUndefined();
+    expect(resolvedAliasModel('', ['claude-opus-5-5'])).toBeUndefined();
+    expect(resolvedAliasModel('opus', undefined)).toBeUndefined();
   });
 });
 

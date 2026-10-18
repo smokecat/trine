@@ -19,7 +19,7 @@ import type { OutboundEvent } from './bridge/types.ts';
 
 /** 演示用的工作目录：临时目录，避免污染真实仓库 */
 const DEMO_CWD = process.env['TRINE_DEMO_CWD'] ?? process.cwd();
-const MODEL = process.env['TRINE_DEMO_MODEL'] ?? 'claude-sonnet-4-5';
+const MODEL = process.env['TRINE_DEMO_MODEL'] ?? 'sonnet';
 
 const color = {
   dim: (s: string) => `\x1b[2m${s}\x1b[0m`,

@@ -82,7 +82,7 @@
 - `session.list`（client→agent 请求 / agent 推增量）— 每条：
   `{ sessionId, title, state, lastEvent（单行摘要）, lastActivityAt, cwd, model, permissionMode, costUsd }`
 - `session.created` / `session.updated` — 列表增量更新（标题生成、状态迁移、成本累计）
-- `session.create`（client→agent）— `{ cwd, model, permissionMode }`（新建表单字段；cwd 默认值 = 该机器 defaultCwd，见 §6；permissionMode 含 bypassPermissions 档，UI 两击确认）
+- `session.create`（client→agent）— `{ cwd, model, permissionMode }`（新建表单字段；cwd 默认值 = 该机器 defaultCwd，见 §6；model / permissionMode 默认值取 client 设置「新会话默认值」，初值 opus[1m] / bypassPermissions；model 可为家族别名如 opus、opus[1m]；permissionMode 含 bypassPermissions 档，UI 改选时两击确认）
 - 标题：MVP = 首条用户消息截断；`session.title` 字段留好，后续 agent 生成摘要
 
 ### 2.1 会话元数据字段扩展（session-list-v2，2026-09-25）

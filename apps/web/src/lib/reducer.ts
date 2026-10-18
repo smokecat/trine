@@ -1148,9 +1148,3 @@ export function applyParkedCount(machine: MachineState, parkedCount: number): Ma
   return machine.parkedCount === parkedCount ? machine : { ...machine, parkedCount };
 }
 
-/** capabilities.models 并入 knownModels（去重、保序） */
-export function mergeKnownModels(known: string[], models: string[]): string[] {
-  const out = known.slice();
-  for (const m of models) if (m !== '' && !out.includes(m)) out.push(m);
-  return out;
-}

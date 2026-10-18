@@ -157,6 +157,8 @@ export class AgentApp {
       ...(deps.createSession === undefined ? {} : { createSession: deps.createSession }),
       ...(claude.path === undefined ? {} : { claudeExecutable: claude.path }),
       flags,
+      // state 晚于 manager 加载；只在列会话时查，那时早已就位
+      rememberedParams: (sessionId) => state?.sessionParams(sessionId),
       // router 晚于 manager 构造；回调只在会话跑完一轮时触发，那时早已就位
       onRunEnd: (sessionId) => router.onRunEnd(sessionId),
       // 权限模式变化（含 CLI 自行切换）落盘到 state.json，下次 resume 按它起

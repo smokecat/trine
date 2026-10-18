@@ -43,7 +43,7 @@ import { BgTaskBar } from '@/components/chat/BgTaskBar.tsx';
 import { Timeline, type TimelineHandlers } from '@/components/chat/Timeline.tsx';
 import type { PermissionDecision } from '@/components/chat/PermissionCard.tsx';
 import { heartbeatView } from '@/components/chat/heartbeat-model.ts';
-import { shortModel } from '@/components/list/sorting.ts';
+import { resolvedAliasModel, shortModel } from '@/components/list/sorting.ts';
 import { Composer } from '@/components/composer/Composer.tsx';
 import type { SlashItem } from '@/components/composer/slash-model.ts';
 import {
@@ -439,7 +439,11 @@ export function ChatView(): React.JSX.Element {
       : null;
   const runningElapsedMs = hbView?.currentTool?.elapsedMs ?? 0;
 
-  const knownModels = Array.from(new Set([...prefs.knownModels, ...(caps?.models ?? [])]));
+  // capabilities.models 是别名解析后的具体 ID，不当候选（否则预置别名旁边又冒出具体版本）
+  const knownModels = Array.from(
+    new Set([...prefs.knownModels, ...(meta !== undefined && meta.model !== '' ? [meta.model] : [])]),
+  );
+  const resolvedModel = meta === undefined ? undefined : resolvedAliasModel(meta.model, caps?.models);
   const offline = machine !== undefined && machine.online === false;
   const emptyAndSyncing = timeline.entries.length === 0 && syncing !== undefined;
 
@@ -559,6 +563,7 @@ export function ChatView(): React.JSX.Element {
         section={settingsSection}
         meta={meta}
         knownModels={knownModels}
+        resolvedModel={resolvedModel}
         cwd={machine?.cwd ?? null}
         actions={settingsActions}
       />

@@ -2,9 +2,9 @@
  * 会话设置 sheet（头部元信息行点开，原型 `openSessionSheet`）。
  *
  * 三件事 + 一个高级区：
- * - **模型**：`prefs.knownModels ∪ capabilities.models` 的 chips + 自由输入
- *   （方案 §0 行 h：agent 的 capabilities.models 只含当前模型，本地列表才是
- *   选择器的主体，所以必须允许打字输入没列出来的）。
+ * - **模型**：`prefs.knownModels`（预置为家族别名）+ 当前会话模型的 chips +
+ *   自由输入（本地列表才是选择器的主体，所以必须允许打字输入没列出来的）。
+ *   别名会话额外显示它当前指向的具体模型（取自 capabilities.models）。
  * - **权限模式**：4 档 chips；`bypassPermissions` **两击确认**——首击 chip
  *   变红并出警告文案，再击才真的发。这是原型拍板的（NOTES.chat 问题 4）：
  *   它等同 `claude --permission-mode bypassPermissions`，一旦切过去所有工具
@@ -58,6 +58,7 @@ export function SessionSettingsSheet({
   section,
   meta,
   knownModels,
+  resolvedModel,
   cwd,
   actions,
 }: {
@@ -67,6 +68,8 @@ export function SessionSettingsSheet({
   section: SettingsSection | null;
   meta: SessionMeta | undefined;
   knownModels: string[];
+  /** 当前别名实际对应的具体模型（见 resolvedAliasModel）；未知不显示 */
+  resolvedModel?: string | undefined;
   /** agent 端的目录 favorites（`cwd.list.response`），null = 还没拿到 */
   cwd: { favorites: string[]; defaultCwd: string } | null;
   actions: SessionSettingsActions;
@@ -156,6 +159,11 @@ export function SessionSettingsSheet({
             </div>
             {meta?.model === '' && (
               <div className="text-text-3 mt-1.5 text-[11.5px]">当前：默认（agent 未上报模型）</div>
+            )}
+            {resolvedModel !== undefined && (
+              <div data-testid="model-resolved" className="text-text-3 mt-1.5 text-[11.5px]">
+                {meta?.model} 当前指向 <span className="font-mono">{resolvedModel}</span>
+              </div>
             )}
           </Section>
 

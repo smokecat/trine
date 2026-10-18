@@ -19,7 +19,6 @@ import {
   expireParked,
   expireParkedBySeq,
   markSendingAsFailed,
-  mergeKnownModels,
   nextParkedExpiry,
   setLocalStatus,
   transitionLocalStatus,
@@ -320,7 +319,6 @@ describe('reducer · sessions / machine / prefs', () => {
     expect(m.name).toBe('MBP');
     m = applyMachineEvent(m, ev({ type: 'cwd.updated', favorites: ['/a'], defaultCwd: '/a' }));
     expect(m.cwd).toEqual({ favorites: ['/a'], defaultCwd: '/a' });
-    expect(mergeKnownModels(['x', 'y'], ['y', 'z', ''])).toEqual(['x', 'y', 'z']);
   });
 });
 

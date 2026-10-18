@@ -34,8 +34,10 @@
 // libsodium 钉进 entry 的必下集合。types 子路径只有 zod schema。
 import {
   MachineInfoSchema,
+  PermissionModeSchema,
   SessionMetaSchema,
   type MachineInfo,
+  type PermissionMode,
   type SessionMeta,
 } from '@trine/core/types';
 import { z } from 'zod';
@@ -115,6 +117,10 @@ export const PeerStateSchema = z.object({
 });
 export type PeerState = z.infer<typeof PeerStateSchema>;
 
+/** 新建会话的默认模型 / 权限模式（用户可在设置页改，存 prefs） */
+export const DEFAULT_SESSION_MODEL = 'opus[1m]';
+export const DEFAULT_SESSION_PERMISSION_MODE: PermissionMode = 'bypassPermissions';
+
 export const PrefsSchema = z.object({
   v: z.literal(1),
   theme: z.enum(['system', 'light', 'dark']),
@@ -133,18 +139,32 @@ export const PrefsSchema = z.object({
    * 而不是让整份 prefs 解析失败被重置。标量缺失即默认，不需要 seed 版本号。
    */
   listGroupBy: z.enum(['none', 'workspace']).catch('workspace'),
+  /** 新建会话预选的模型（设置页可改）。`.catch` 同 listGroupBy：缺字段 / 坏值落默认 */
+  defaultModel: z.string().min(1).catch(DEFAULT_SESSION_MODEL),
+  /** 新建会话预选的权限模式（设置页可改，选 bypass 同样要两击确认） */
+  defaultPermissionMode: PermissionModeSchema.catch(DEFAULT_SESSION_PERMISSION_MODE),
 });
 export type Prefs = z.infer<typeof PrefsSchema>;
 
-export const DEFAULT_KNOWN_MODELS = [
+/**
+ * 预置模型只放家族别名，由 Claude Code 解析到该家族最新版本（`[1m]` 后缀 =
+ * 1M 上下文；haiku 没有 1M 形式，CLI 会拒收 `haiku[1m]`）。不放具体 ID：那样
+ * 每次模型升级都得改这里并补种。
+ */
+export const DEFAULT_KNOWN_MODELS = ['fable', 'fable[1m]', 'opus', 'opus[1m]', 'sonnet', 'sonnet[1m]', 'haiku'];
+/**
+ * 与 DEFAULT_KNOWN_MODELS 同步递增：v1 首发四款；v2 加 claude-opus-5-5（2026-09-25）；
+ * v3 换成别名，并移除 v1/v2 预置的具体 ID（2026-10-18）。
+ */
+export const KNOWN_MODELS_SEED = 3;
+/** v3 之前预置过的具体 ID：补种 v3 时从老 prefs 里移除（用户自己加的不动） */
+const LEGACY_KNOWN_MODELS = [
   'claude-fable-5-1',
   'claude-opus-5-5',
   'claude-opus-5',
   'claude-sonnet-5',
   'claude-haiku-4-5-20251001',
 ];
-/** 与 DEFAULT_KNOWN_MODELS 同步递增：v1 首发四款；v2 加 claude-opus-5-5（2026-09-25） */
-export const KNOWN_MODELS_SEED = 2;
 
 export function defaultPrefs(): Prefs {
   return {
@@ -154,15 +174,22 @@ export function defaultPrefs(): Prefs {
     knownModels: [...DEFAULT_KNOWN_MODELS],
     knownModelsSeed: KNOWN_MODELS_SEED,
     listGroupBy: 'workspace',
+    defaultModel: DEFAULT_SESSION_MODEL,
+    defaultPermissionMode: DEFAULT_SESSION_PERMISSION_MODE,
   };
 }
 
 /** 把新增的默认模型补进已存的 prefs（只做一次，见 knownModelsSeed 注释） */
 export function seedKnownModels(prefs: Prefs): Prefs {
   if (prefs.knownModelsSeed >= KNOWN_MODELS_SEED) return prefs;
-  const known = new Set(prefs.knownModels);
+  // v3：旧预置的具体 ID（含 agent 上报并入的 `[1m]` 变体）由别名取代
+  const kept =
+    prefs.knownModelsSeed < 3
+      ? prefs.knownModels.filter((m) => !LEGACY_KNOWN_MODELS.includes(m.replace(/\[[^\]]*\]$/, '')))
+      : prefs.knownModels;
+  const known = new Set(kept);
   const added = DEFAULT_KNOWN_MODELS.filter((m) => !known.has(m));
-  return { ...prefs, knownModels: [...prefs.knownModels, ...added], knownModelsSeed: KNOWN_MODELS_SEED };
+  return { ...prefs, knownModels: [...added, ...kept], knownModelsSeed: KNOWN_MODELS_SEED };
 }
 
 const TimelineDocSchema = z.object({

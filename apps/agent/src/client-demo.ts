@@ -15,7 +15,7 @@
  *     其他任意文本 → input.send 到当前会话
  *
  *   env: TRINE_CLIENT_HOME（默认 ~/.trine-client）TRINE_CLIENT_DEVICE（默认 demo-client）
- *        TRINE_DEMO_MODEL（默认 claude-sonnet-4-5）
+ *        TRINE_DEMO_MODEL（默认 sonnet）
  *
  * ## 与 agent 侧对称的三件事（web-mvp 也得做）
  *
@@ -55,7 +55,7 @@ import { AuthClient, httpBase, wsEndpoint } from '@trine/core/net';
 
 const HOME = process.env['TRINE_CLIENT_HOME'] ?? join(homedir(), '.trine-client');
 const DEVICE_ID = process.env['TRINE_CLIENT_DEVICE'] ?? 'demo-client';
-const MODEL = process.env['TRINE_DEMO_MODEL'] ?? 'claude-sonnet-4-5';
+const MODEL = process.env['TRINE_DEMO_MODEL'] ?? 'sonnet';
 const IDENTITY_PATH = join(HOME, 'identity.json');
 const PEER_PATH = join(HOME, 'peer.json');
 /** 出站缓冲每 scope 条数（与 agent outbox 同量级） */

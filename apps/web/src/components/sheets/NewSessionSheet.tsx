@@ -5,8 +5,11 @@
  * 都预填。默认值来源依次是：
  *   机器   — 在线的第一台（在线优先排序），没有在线机器就第一台
  *   目录   — 该机器的 `defaultCwd`（agent 端存），没有就上一次用过的
- *   模型   — 上次用过的 → 该机器最近一个会话的 model → knownModels[0]
- *   权限   — default
+ *   模型   — 设置页的「新会话默认值」（prefs.defaultModel，初值 opus[1m]）
+ *   权限   — 同上（prefs.defaultPermissionMode，初值 bypass）
+ *
+ * 默认值是用户在设置页明确选的（bypass 在那里已两击确认过），所以这里直接
+ * 预选、不再要求确认；在本 sheet 里**改选** bypass 仍走两击确认。
  *
  * cwd 列表是 agent 端数据，打开 sheet 时对在线机器发一次 `cwd.list.request`
  * （不轮询；离线机器不发——评审 C4「离线机器的机器级请求静默无回执」）。
@@ -50,6 +53,8 @@ export function NewSessionSheet({
   const machines = useTrine((s) => s.machines);
   const sessions = useTrine((s) => s.sessions);
   const knownModels = useTrine((s) => s.prefs.knownModels);
+  const defaultModel = useTrine((s) => s.prefs.defaultModel);
+  const defaultMode = useTrine((s) => s.prefs.defaultPermissionMode);
 
   const machineList = useMemo(
     () =>
@@ -62,7 +67,7 @@ export function NewSessionSheet({
   const [machineId, setMachineId] = useState('');
   const [cwd, setCwd] = useState('');
   const [model, setModel] = useState('');
-  const [modeState, setModeState] = useState<ModePickerState>(() => initialModeState('default'));
+  const [modeState, setModeState] = useState<ModePickerState>(() => initialModeState(defaultMode));
   const [customModel, setCustomModel] = useState('');
   const [creating, setCreating] = useState(false);
   const [cwdRequested, setCwdRequested] = useState<string | null>(null);
@@ -99,15 +104,12 @@ export function NewSessionSheet({
     setCwd((cur) => (cur === '' ? next : cur));
   }, [open, machineId, machines, sessions]);
 
-  // 默认模型：该机器最近一个会话的 model，其次 knownModels[0]
+  // 每次打开按设置页的默认值预选（上次没建成的选择不留到下次）
   useEffect(() => {
-    if (!open || machineId === '') return;
-    const recent = Object.values(sessions[machineId] ?? {})
-      .filter((s) => s.model.trim() !== '')
-      .sort((a, b) => b.lastActivityAt - a.lastActivityAt)[0];
-    const next = recent?.model ?? knownModels[0] ?? '';
-    setModel((cur) => (cur === '' ? next : cur));
-  }, [open, machineId, sessions, knownModels]);
+    if (!open) return;
+    setModel(defaultModel);
+    setModeState(initialModeState(defaultMode));
+  }, [open, defaultModel, defaultMode]);
 
   const modelChips = useMemo(() => {
     const set = new Set(knownModels);
@@ -164,7 +166,6 @@ export function NewSessionSheet({
                       onClick={() => {
                         setMachineId(m.machineId);
                         setCwd('');
-                        setModel('');
                       }}
                     >
                       <StatusDot tone={m.online === true ? 'on' : 'off'} />

@@ -9,6 +9,7 @@ import { EventEmitter } from './emitter.ts';
 import {
   ConcurrencyLimitError,
   SessionManager,
+  type SessionManagerOptions,
   type CreateSessionArgs,
   type SessionFlags,
 } from './manager.ts';
@@ -39,6 +40,7 @@ function makeHarness(options?: {
   flags?: SessionFlags;
   onRunEnd?: (sessionId: string) => void;
   claudeExecutable?: string;
+  rememberedParams?: SessionManagerOptions['rememberedParams'];
 }) {
   const events: OutboundEvent[] = [];
   const created: FakeSession[] = [];
@@ -59,6 +61,7 @@ function makeHarness(options?: {
     ...(options?.flags === undefined ? {} : { flags: options.flags }),
     ...(options?.onRunEnd === undefined ? {} : { onRunEnd: options.onRunEnd }),
     ...(options?.claudeExecutable === undefined ? {} : { claudeExecutable: options.claudeExecutable }),
+    ...(options?.rememberedParams === undefined ? {} : { rememberedParams: options.rememberedParams }),
     createSession: (args: CreateSessionArgs) => {
       const fake: FakeSession = {
         args,
@@ -350,6 +353,35 @@ describe('SessionManager · 列表', () => {
       cwd: '/repo',
       state: 'idle',
     });
+  });
+
+  test('重启后（无内存缓存）历史会话的模型 / 权限模式取自本地记住的参数', async () => {
+    const { manager } = makeHarness({
+      sessions: [
+        { sessionId: 'known', summary: '', lastModified: 2, cwd: '/repo' },
+        { sessionId: 'unknown', summary: '', lastModified: 1, cwd: '/repo' },
+      ] as Awaited<ReturnType<typeof listSessions>>,
+      rememberedParams: (sid) =>
+        sid === 'known' ? { model: 'opus[1m]', permissionMode: 'bypassPermissions' } : undefined,
+    });
+
+    const list = await manager.list();
+    expect(list[0]).toMatchObject({ sessionId: 'known', model: 'opus[1m]', permissionMode: 'bypassPermissions' });
+    // 本地没记录的不猜：模型留空（router resume 时补默认），权限保守取 default
+    expect(list[1]).toMatchObject({ sessionId: 'unknown', model: '', permissionMode: 'default' });
+  });
+
+  test('活跃会话的内存 meta 优先于本地记住的参数', async () => {
+    const { manager } = makeHarness({
+      sessions: [{ sessionId: 's1', summary: '', lastModified: 1, cwd: '/tmp' }] as Awaited<
+        ReturnType<typeof listSessions>
+      >,
+      rememberedParams: () => ({ model: 'haiku', permissionMode: 'plan' }),
+    });
+    manager.acquire({ sessionId: 's1', ...base });
+
+    const list = await manager.list();
+    expect(list[0]).toMatchObject({ model: base.model, permissionMode: base.permissionMode });
   });
 
   test('本进程新建但未落盘的会话也进列表', async () => {
