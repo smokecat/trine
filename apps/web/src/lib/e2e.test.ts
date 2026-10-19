@@ -34,6 +34,9 @@ import {
   type SocketLike,
 } from './adapters.ts';
 import { DEFAULT_LIST_QUERY, filterSessions } from '../components/list/filtering.ts';
+
+// 会话 cwd 在系统临时目录下（测试约定），默认会被当成临时会话隐藏
+const LIST_QUERY = { ...DEFAULT_LIST_QUERY, showTemp: true };
 import { supportsSessionMutations } from '../components/list/session-actions.ts';
 import { SessionMutateError, TrineClient } from './client.ts';
 import { LeaderElector } from './leader.ts';
@@ -657,7 +660,7 @@ describe('web lib · 会话重命名 / 归档 / 永久删除（session-list-v2�
     // 应答之前 agent 已在同一条机器级流上广播 session.updated：resolve 时已落地
     expect(client.sessions('mbp')[sid]?.title).toBe('新的标题');
     expect(transcripts.info(sid)?.customTitle).toBe('新的标题');
-    const rows = filterSessions({ mbp: client.sessions('mbp') }, DEFAULT_LIST_QUERY).rows;
+    const rows = filterSessions({ mbp: client.sessions('mbp') }, LIST_QUERY).rows;
     expect(rows.map((r) => r.meta.title)).toEqual(['新的标题']);
 
     // 规范化后为空 → agent 的 invalid 原话
@@ -673,14 +676,14 @@ describe('web lib · 会话重命名 / 归档 / 永久删除（session-list-v2�
     await chat(sid, 'hello');
     await client.listSessions('mbp');
     await b.listSessions('mbp');
-    expect(filterSessions({ mbp: b.sessions('mbp') }, DEFAULT_LIST_QUERY).rows).toHaveLength(1);
+    expect(filterSessions({ mbp: b.sessions('mbp') }, LIST_QUERY).rows).toHaveLength(1);
 
     await client.archiveSession('mbp', sid, true);
     await waitFor(() => b.sessions('mbp')[sid]?.archived === true, '另一台设备收到归档');
     const view = (archived: boolean) =>
-      filterSessions({ mbp: b.sessions('mbp') }, { ...DEFAULT_LIST_QUERY, archived }).rows.map((r) => r.meta.sessionId);
+      filterSessions({ mbp: b.sessions('mbp') }, { ...LIST_QUERY, archived }).rows.map((r) => r.meta.sessionId);
     expect(view(false)).toEqual([]);
-    expect(filterSessions({ mbp: b.sessions('mbp') }, DEFAULT_LIST_QUERY).empty).toBe('all-archived');
+    expect(filterSessions({ mbp: b.sessions('mbp') }, LIST_QUERY).empty).toBe('all-archived');
     expect(view(true)).toEqual([sid]);
 
     await client.archiveSession('mbp', sid, false);

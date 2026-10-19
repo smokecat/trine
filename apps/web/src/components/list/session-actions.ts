@@ -1,5 +1,5 @@
 /**
- * 会话 rename / archive / delete 动作的纯逻辑（session-list-v2 §4.1，评审 B1 / S2）：
+ * 会话 rename / archive / delete（含批量归档）与复制工作目录动作的纯逻辑（session-list-v2 §4.1，评审 B1 / S2）：
  * agent 版本能力探测 + 把 client 的三条命令包成 `SessionRowActions` 回调（含
  * toast）。React 胶水在 `use-session-actions.ts`，这里零 React 依赖、可直接单测。
  *
@@ -76,6 +76,11 @@ export function supportedMachinesKey(machines: Record<string, { info: Pick<Machi
     .join(',');
 }
 
+export interface SessionTarget {
+  machineId: string;
+  sessionId: string;
+}
+
 export interface SessionMutationClient {
   renameSession(machineId: string, sessionId: string, title: string): Promise<void>;
   archiveSession(machineId: string, sessionId: string, archived: boolean): Promise<void>;
@@ -132,12 +137,61 @@ export function buildSessionActions(args: {
           : notify.success('已取消归档'),
     );
 
+  /**
+   * 批量（多选）：逐条发 archive 命令（并行），全部落定后只出一条汇总 toast。
+   * 不支持的机器上的会话直接算失败；部分失败时成功的照样生效，「撤销」只撤成功的。
+   * 有失败就 reject（选择保留，方便用户看清哪些没动）。
+   */
+  const onArchiveMany = async (targets: readonly SessionTarget[], archived: boolean): Promise<void> => {
+    const results = await Promise.allSettled(
+      targets.map(async (t) => {
+        if (!supportedMachineIds.has(t.machineId)) throw new Error('这台机器的 agent 版本过旧');
+        await client.archiveSession(t.machineId, t.sessionId, archived);
+        return t;
+      }),
+    );
+    const done = results.flatMap((r) => (r.status === 'fulfilled' ? [r.value] : []));
+    const failed = results.flatMap((r) => (r.status === 'rejected' ? [r.reason as unknown] : []));
+    const verb = archived ? '归档' : '取消归档';
+    if (done.length > 0) {
+      notify.success(
+        `已${verb} ${done.length} 个会话`,
+        archived
+          ? { action: { label: '撤销', onClick: () => void onArchiveMany(done, false).catch(() => {}) } }
+          : undefined,
+      );
+    }
+    if (failed.length > 0) {
+      const first = failed[0];
+      const err = new Error(first instanceof Error ? first.message : String(first));
+      notify.error(`${failed.length} 个会话${verb}失败`, { description: err.message });
+      throw err;
+    }
+  };
+
   return {
     supports: (machineId) => supportedMachineIds.has(machineId),
     onRename: (machineId, sessionId, title) =>
       run('重命名失败', () => client.renameSession(machineId, sessionId, title), () => notify.success('已重命名')),
     onArchive,
+    onArchiveMany,
     onDelete: (machineId, sessionId) =>
       run('永久删除失败', () => client.deleteSession(machineId, sessionId), () => notify.success('已永久删除')),
+  };
+}
+
+/**
+ * 复制会话工作目录。不依赖 agent 版本与 client（从标签页也能用），所以不进
+ * buildSessionActions 的能力探测，由 useSessionActions 另外拼上。
+ */
+export function buildCopyCwd(copy: (text: string) => Promise<void>, notify: Notifier): (cwd: string) => Promise<void> {
+  return async (cwd) => {
+    try {
+      await copy(cwd);
+    } catch (err) {
+      notify.error('复制失败', { description: err instanceof Error ? err.message : String(err) });
+      throw err;
+    }
+    notify.success('已复制工作目录');
   };
 }

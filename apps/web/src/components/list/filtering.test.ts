@@ -9,6 +9,8 @@ import {
   groupLabel,
   groupRows,
   isGroupExpanded,
+  isTempCwd,
+  isTempSession,
   matchesStatus,
   normalizeCwd,
   type ListQuery,
@@ -226,5 +228,53 @@ describe('工作空间分组', () => {
     expect(isGroupExpanded(h!, collapsed, { search: 'x', status: 'all' })).toBe(true);
     expect(isGroupExpanded(h!, collapsed, { search: '', status: 'active' })).toBe(true);
     expect(collapsed.has(h!.key)).toBe(true);
+  });
+});
+
+describe('临时会话', () => {
+  test('isTempCwd：系统临时目录按路径段判', () => {
+    for (const cwd of ['/tmp', '/tmp/', '/tmp/x/y', '/private/tmp/a', '/var/tmp/a', '/var/folders/ab/xyz/T/run', '/private/var/folders/ab/T']) {
+      expect(isTempCwd(cwd)).toBe(true);
+    }
+    for (const cwd of ['', '/', '/tmpfoo', '/home/me/tmp', '/home/me/.local/tmp/x', '/var/foldersx', '/var/log']) {
+      expect(isTempCwd(cwd)).toBe(false);
+    }
+  });
+
+  test('isTempSession：临时目录 ∪ 非交互（headless）', () => {
+    expect(isTempSession({ cwd: '/home/me/repo' })).toBe(false);
+    expect(isTempSession({ cwd: '/home/me/repo', headless: true })).toBe(true);
+    expect(isTempSession({ cwd: '/home/me/repo', headless: false })).toBe(false);
+    expect(isTempSession({ cwd: '/tmp/x' })).toBe(true);
+  });
+
+  const sessions = {
+    m: {
+      a: meta({ sessionId: 'a', lastActivityAt: 3 }),
+      t: meta({ sessionId: 't', cwd: '/tmp/scratch', lastActivityAt: 2 }),
+      h: meta({ sessionId: 'h', headless: true, lastActivityAt: 1 }),
+      x: meta({ sessionId: 'x', headless: true, archived: true }),
+    },
+  };
+
+  test('默认隐藏并计数；showTemp 时全显示、计数为 0', () => {
+    const hidden = filterSessions(sessions, q());
+    expect(ids(hidden.rows)).toEqual(['a']);
+    expect(hidden.tempHidden).toBe(2);
+    const shown = filterSessions(sessions, q({ showTemp: true }));
+    expect(ids(shown.rows)).toEqual(['a', 't', 'h']);
+    expect(shown.tempHidden).toBe(0);
+  });
+
+  test('计数只看当前视图（归档视图数归档里的），不受状态 / 搜索影响', () => {
+    expect(filterSessions(sessions, q({ archived: true })).tempHidden).toBe(1);
+    expect(filterSessions(sessions, q({ search: 'zzz' })).tempHidden).toBe(2);
+  });
+
+  test('只剩临时会话 → all-temp 空态', () => {
+    const only = { m: { t: sessions.m.t, h: sessions.m.h } };
+    const result = filterSessions(only, q());
+    expect(result.empty).toBe('all-temp');
+    expect(emptyText('all-temp', { compact: true, archivedCount: 0, tempHidden: 2, search: '' })).toContain('2 个');
   });
 });

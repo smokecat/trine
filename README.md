@@ -13,7 +13,10 @@ the agent runs on your own computer.
 ## What it does
 
 - Streams assistant messages, tool activity and subagent history.
-- Lists, resumes, renames and archives sessions across paired machines.
+- Lists, resumes, renames and archives sessions across paired machines; right-click or
+  multi-select (Ctrl/Cmd/Shift-click) to archive in bulk, and copy a session's working directory.
+- Hides temporary sessions by default (working directory under a system temp directory, or
+  non-interactive runs such as `claude -p`); a list filter shows them again.
 - Relays tool approval requests and interactive questions to your browser.
 - Pairs devices with a QR code or text payload and a manually verified short authentication code.
 - Encrypts session payloads between the browser and agent; the relay stores ciphertext and routing metadata.

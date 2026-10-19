@@ -32,6 +32,7 @@ import { countActiveSessions } from '@/components/list/sorting.ts';
 import { countArchived, DEFAULT_LIST_QUERY, type ListQuery } from '@/components/list/filtering.ts';
 import { useNow } from '@/components/list/use-session-refresh.ts';
 import { useSessionActions } from '@/components/list/use-session-actions.ts';
+import { useListShowTemp } from '@/components/list/use-list-query.ts';
 import { useClient, useTrine } from '@/app/runtime.ts';
 
 export function MachineDetailView(): React.JSX.Element {
@@ -49,9 +50,10 @@ export function MachineDetailView(): React.JSX.Element {
   const [busy, setBusy] = useState(false);
   // 稳定引用：SessionList 内 useMemo 以 query 为依赖，每次渲染新建对象会让它失效（评审 minor 7）。
   // 放在早退之前（hooks 规则）
+  const [showTemp, setShowTemp] = useListShowTemp();
   const listQuery: ListQuery = useMemo(
-    () => ({ ...DEFAULT_LIST_QUERY, machine: machineId, groupBy: 'none' }),
-    [machineId],
+    () => ({ ...DEFAULT_LIST_QUERY, machine: machineId, groupBy: 'none', showTemp }),
+    [machineId, showTemp],
   );
 
   if (!machine) {
@@ -169,6 +171,7 @@ export function MachineDetailView(): React.JSX.Element {
             machines={machines}
             query={listQuery}
             actions={sessionActions}
+            onShowTemp={() => setShowTemp(true)}
             variant="compact"
             now={now}
           />

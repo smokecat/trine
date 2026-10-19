@@ -16,8 +16,17 @@
  * 内容嵌套（读屏把整卡读成一个链接），而且 Radix 菜单项虽然渲染在 portal
  * 里，React 合成事件仍沿**组件树**冒泡——嵌在 NavLink 里就会冒到它的
  * onClick 触发导航。做成兄弟后，菜单事件冒泡到的是没有任何处理器的容器。
+ *
+ * 右键菜单（SessionRowContextMenu）以 Trigger asChild 包住容器：其余 DOM 属性
+ * （ref、onContextMenu、长按用的 pointer 事件）原样落到容器 div 上。
+ *
+ * ## 多选
+ *
+ * `selected` 只管样式；点击怎么解释（Ctrl/Cmd/Shift 点、选择模式下的普通点）由
+ * SessionList 的 `onLinkClick` 决定——它 preventDefault 就不导航。
  */
 import { NavLink } from 'react-router';
+import { CheckIcon } from 'lucide-react';
 import type { SessionMeta } from '@trine/core';
 import { StatePill } from '@/components/shell/StatusDot.tsx';
 import { formatCost, formatRelativeTime, truncate } from '@/lib/format.ts';
@@ -34,7 +43,11 @@ export function SessionRow({
   now,
   menu,
   linkState,
-}: {
+  selected = false,
+  onLinkClick,
+  className,
+  ...domProps
+}: Omit<React.ComponentProps<'div'>, 'children' | 'onClick'> & {
   machineId: string;
   machineName: string;
   meta: SessionMeta;
@@ -49,6 +62,10 @@ export function SessionRow({
   menu?: React.ReactNode;
   /** 跳转时带的 location.state（归档视图带 `{from:'/archived'}`，聊天页据此决定返回到哪） */
   linkState?: { from: string };
+  /** 多选中被选中 */
+  selected?: boolean;
+  /** 卡片链接的点击（多选用；preventDefault 即不导航） */
+  onLinkClick?: (event: React.MouseEvent<HTMLAnchorElement>) => void;
 }): React.JSX.Element {
   const compact = variant === 'compact';
   const attn = meta.state === 'waiting_permission';
@@ -56,21 +73,27 @@ export function SessionRow({
 
   return (
     <div
+      {...domProps}
       data-testid="session-row"
       data-session-id={meta.sessionId}
       data-state={meta.state}
       data-archived={meta.archived === true || undefined}
+      data-selected={selected || undefined}
+      aria-selected={selected || undefined}
       className={cn(
         'border-border bg-surface hover:border-border-strong relative rounded-[14px] border transition-colors',
         // 等待批准：amber 描边 + 软底（原型 .sess.attn）
         attn && 'border-amber-border bg-amber-soft',
         active && 'border-brand-border bg-brand-soft',
+        selected && 'border-brand bg-brand-soft ring-brand/40 ring-2',
+        className,
       )}
     >
       <NavLink
         to={`/s/${machineId}/${meta.sessionId}`}
         {...(linkState === undefined ? {} : { state: linkState })}
         data-testid="session-row-link"
+        {...(onLinkClick === undefined ? {} : { onClick: onLinkClick })}
         className={cn(
           'focus-visible:ring-ring/50 block rounded-[14px] outline-none focus-visible:ring-3',
           compact ? 'px-2.5 py-2' : 'px-3.5 py-3',
@@ -79,6 +102,9 @@ export function SessionRow({
         )}
       >
         <div className={cn('flex items-center gap-2', compact ? 'mb-0.5' : 'mb-1')}>
+          {selected && (
+            <CheckIcon aria-label="已选中" className="text-brand-ink size-3.5 shrink-0" data-testid="session-row-check" />
+          )}
           <StatePill state={meta.state} waitingFor={meta.waitingFor} />
           {/* 空闲但子进程里还有后台任务在跑（agent ≥ 0.7.0 的 bgRunning）：弱提示，不当成运行中 */}
           {meta.bgRunning !== undefined && meta.bgRunning > 0 && meta.state !== 'running' && meta.state !== 'waiting_permission' && (

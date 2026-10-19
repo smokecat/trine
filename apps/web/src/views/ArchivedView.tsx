@@ -18,7 +18,7 @@ import { ListControls } from '@/components/list/ListControls.tsx';
 import { SessionList } from '@/components/list/SessionList.tsx';
 import { countArchived } from '@/components/list/filtering.ts';
 import { selectMachineFilterItems } from '@/components/list/sorting.ts';
-import { useListGroupBy, useListQuery } from '@/components/list/use-list-query.ts';
+import { useListGroupBy, useListQuery, useListShowTemp } from '@/components/list/use-list-query.ts';
 import { useNow } from '@/components/list/use-session-refresh.ts';
 import { useSessionActions } from '@/components/list/use-session-actions.ts';
 import { useListFilters, useMachineFilter } from '@/app/Layout.tsx';
@@ -30,6 +30,7 @@ export function ArchivedView(): React.JSX.Element {
   const [filter, setFilter] = useMachineFilter();
   const { search, setSearch, status, setStatus } = useListFilters();
   const [groupBy, setGroupBy] = useListGroupBy();
+  const [showTemp, setShowTemp] = useListShowTemp();
   const query = useListQuery({ archived: true });
   const actions = useSessionActions();
   const now = useNow();
@@ -57,6 +58,8 @@ export function ArchivedView(): React.JSX.Element {
             onStatus={setStatus}
             groupBy={groupBy}
             onGroupBy={setGroupBy}
+            showTemp={showTemp}
+            onShowTemp={setShowTemp}
             className="px-3.5 pt-1.5 pb-1"
           />
         </>
@@ -66,7 +69,14 @@ export function ArchivedView(): React.JSX.Element {
         <p className="text-text-3 px-1 text-xs">
           归档只是从列表里收起，随时可以取消归档；会话一旦再次运行会自动取消归档。
         </p>
-        <SessionList sessions={sessions} machines={machines} query={query} now={now} actions={actions} />
+        <SessionList
+          sessions={sessions}
+          machines={machines}
+          query={query}
+          now={now}
+          actions={actions}
+          onShowTemp={() => setShowTemp(true)}
+        />
       </div>
     </div>
   );

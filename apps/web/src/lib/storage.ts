@@ -139,6 +139,8 @@ export const PrefsSchema = z.object({
    * 而不是让整份 prefs 解析失败被重置。标量缺失即默认，不需要 seed 版本号。
    */
   listGroupBy: z.enum(['none', 'workspace']).catch('workspace'),
+  /** 会话列表是否显示临时会话（临时目录 / 非交互，见 list/filtering.ts isTempSession）。`.catch` 同 listGroupBy */
+  listShowTemp: z.boolean().catch(false),
   /** 新建会话预选的模型（设置页可改）。`.catch` 同 listGroupBy：缺字段 / 坏值落默认 */
   defaultModel: z.string().min(1).catch(DEFAULT_SESSION_MODEL),
   /** 新建会话预选的权限模式（设置页可改，选 bypass 同样要两击确认） */
@@ -180,6 +182,7 @@ export function defaultPrefs(): Prefs {
     knownModels: [...DEFAULT_KNOWN_MODELS],
     knownModelsSeed: KNOWN_MODELS_SEED,
     listGroupBy: 'workspace',
+    listShowTemp: false,
     defaultModel: DEFAULT_SESSION_MODEL,
     defaultPermissionMode: DEFAULT_SESSION_PERMISSION_MODE,
     sendKey: 'enter',

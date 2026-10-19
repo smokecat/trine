@@ -7,13 +7,24 @@
  * 空态按「在管线哪一步被筛空」区分（评审 S4）：没有会话 / 该机器没有会话 /
  * 全部已归档 / 归档视图为空 / 被状态筛空 / 被搜索筛空——用户下一步该做的
  * 事不同，别让人以为列表坏了。「没配对机器」由调用方处理。
+ *
+ * 临时会话（filtering.ts isTempSession）默认隐藏，列表底部注明藏了几个，给了
+ * `onShowTemp` 就带一个「显示」按钮。
+ *
+ * ## 右键菜单与多选
+ *
+ * 每行包一层 SessionRowContextMenu（菜单项同「⋯」）。`actions.onArchiveMany`
+ * 给了就开放多选（规则见 selection.ts）：选中后顶部出现吸顶操作条
+ * 「已选 N 个 · 归档 / 取消」，Esc 清空。只有能归档（或在归档视图里能取消归档）
+ * 的行可选。
  */
-import { useMemo } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useLocation } from 'react-router';
 import { ChevronRightIcon } from 'lucide-react';
 import type { SessionMeta } from '@trine/core';
 import type { MachineState } from '@/store/types.ts';
 import { cn } from '@/lib/utils.ts';
+import { Button } from '@/components/ui/button.tsx';
 import { SessionRow } from './SessionRow.tsx';
 import {
   emptyText,
@@ -25,7 +36,23 @@ import {
   type SessionGroup,
 } from './filtering.ts';
 import { useCollapsedGroups } from './collapsed-groups.ts';
-import { hasRowMenu, SessionRowMenu, useRowActionDialogs, type SessionRowActions } from './SessionRowMenu.tsx';
+import {
+  hasRowMenu,
+  rowMenuItems,
+  SessionRowContextMenu,
+  SessionRowMenu,
+  useRowActionDialogs,
+  type RowSelection,
+  type SessionRowActions,
+} from './SessionRowMenu.tsx';
+import {
+  applyClick,
+  EMPTY_SELECTION,
+  isSelectionClick,
+  selectionKey,
+  toggleKey,
+  type SelectionState,
+} from './selection.ts';
 import { shortCwd, type SessionRowData } from './sorting.ts';
 
 export function SessionList({
@@ -36,6 +63,7 @@ export function SessionList({
   now,
   className,
   actions,
+  onShowTemp,
 }: {
   sessions: Record<string, Record<string, SessionMeta>>;
   machines: Record<string, MachineState>;
@@ -45,6 +73,8 @@ export function SessionList({
   className?: string;
   /** 行「⋯」菜单的动作；缺省的回调对应的菜单项隐藏（见 SessionRowMenu） */
   actions?: SessionRowActions;
+  /** 「已隐藏 N 个临时会话」旁的「显示」按钮；不给就只有文字 */
+  onShowTemp?: () => void;
 }): React.JSX.Element {
   const location = useLocation();
   const compact = variant === 'compact';
@@ -60,6 +90,81 @@ export function SessionList({
   );
   const { requestRename, requestDelete, dialogs } = useRowActionDialogs(actions);
 
+  // ---- 多选 ----
+  const onArchiveMany = actions?.onArchiveMany;
+  const [selection, setSelection] = useState<SelectionState>(EMPTY_SELECTION);
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const canSelect = useCallback(
+    ({ machineId, meta }: SessionRowData): boolean => {
+      if (onArchiveMany === undefined) return false;
+      const items = rowMenuItems(actions, meta, machineId);
+      return query.archived ? items.unarchive : items.archive;
+    },
+    [actions, onArchiveMany, query.archived],
+  );
+  // 当前可见（展开的组里）、可选的行，自上而下——Shift 范围选与「已选 N 个」都按它算
+  const selectableRows = useMemo(() => {
+    const visible =
+      result.groups === null
+        ? result.rows
+        : result.groups.flatMap((g) => (isGroupExpanded(g, collapsed, query) ? g.rows : []));
+    return visible.filter(canSelect);
+  }, [result, collapsed, query, canSelect]);
+  const order = useMemo(
+    () => selectableRows.map((r) => selectionKey(r.machineId, r.meta.sessionId)),
+    [selectableRows],
+  );
+  // 选中但已不可见（被归档走 / 被筛掉）的不算数
+  const selectedRows = useMemo(
+    () => selectableRows.filter((r) => selection.keys.has(selectionKey(r.machineId, r.meta.sessionId))),
+    [selectableRows, selection],
+  );
+  const selectedCount = selectedRows.length;
+  const clearSelection = useCallback(() => setSelection(EMPTY_SELECTION), []);
+  const applyToSelected = useCallback(() => {
+    if (onArchiveMany === undefined || selectedRows.length === 0) return;
+    const result = onArchiveMany(
+      selectedRows.map((r) => ({ machineId: r.machineId, sessionId: r.meta.sessionId })),
+      !query.archived,
+    );
+    if (!(result instanceof Promise)) {
+      clearSelection();
+      return;
+    }
+    setBulkBusy(true);
+    // 成功清空选择；失败保留（错误提示由回调自己 toast），方便看清哪些没动
+    result.then(clearSelection, () => {}).finally(() => setBulkBusy(false));
+  }, [onArchiveMany, selectedRows, query.archived, clearSelection]);
+
+  useEffect(() => {
+    if (selectedCount === 0) return;
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') clearSelection();
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [selectedCount, clearSelection]);
+
+  const tempNote =
+    result.tempHidden > 0 ? (
+      <p
+        data-testid="temp-hidden-note"
+        className={cn('text-text-3 flex items-center justify-center gap-1.5 px-2 text-center', compact ? 'text-[11.5px]' : 'text-xs')}
+      >
+        已隐藏 {result.tempHidden} 个临时会话
+        {onShowTemp !== undefined && (
+          <button
+            type="button"
+            data-testid="temp-show"
+            className="text-brand-ink hover:underline"
+            onClick={onShowTemp}
+          >
+            显示
+          </button>
+        )}
+      </p>
+    ) : null;
+
   if (result.empty !== null) {
     return (
       <>
@@ -68,8 +173,14 @@ export function SessionList({
           data-reason={result.empty}
           className={cn('text-text-3 px-4 text-center', compact ? 'py-6 text-xs' : 'py-10 text-sm')}
         >
-          {emptyText(result.empty, { compact, archivedCount: result.archivedCount, search: query.search })}
+          {emptyText(result.empty, {
+            compact,
+            archivedCount: result.archivedCount,
+            tempHidden: result.tempHidden,
+            search: query.search,
+          })}
         </p>
+        {tempNote}
         {dialogs}
       </>
     );
@@ -78,31 +189,63 @@ export function SessionList({
   const showMachine = query.machine === null;
   // 从归档视图点进会话：带上来源，手机上「返回」回到 /archived 而不是列表（评审 minor 9）
   const linkState = location.pathname === '/archived' ? { from: '/archived' } : undefined;
-  const renderRow = ({ machineId, meta }: SessionRowData): React.JSX.Element => (
-    <SessionRow
-      key={`${machineId}/${meta.sessionId}`}
-      machineId={machineId}
-      machineName={machineNames[machineId] ?? machineId}
-      meta={meta}
-      variant={variant}
-      showMachine={showMachine}
-      active={location.pathname === `/s/${machineId}/${meta.sessionId}`}
-      {...(linkState === undefined ? {} : { linkState })}
-      {...(now === undefined ? {} : { now })}
-      {...(actions !== undefined && hasRowMenu(actions, meta, machineId)
-        ? {
-            menu: (
-              <SessionRowMenu
-                target={{ machineId, meta }}
-                actions={actions}
-                onRequestRename={requestRename}
-                onRequestDelete={requestDelete}
-              />
-            ),
-          }
-        : {})}
-    />
-  );
+  const renderRow = (row: SessionRowData): React.JSX.Element => {
+    const { machineId, meta } = row;
+    const key = selectionKey(machineId, meta.sessionId);
+    const selectable = canSelect(row);
+    const selected = selectable && selection.keys.has(key);
+    const rowSelection: RowSelection | undefined = selectable
+      ? {
+          selected,
+          count: selectedCount,
+          toggle: () => setSelection((s) => toggleKey(s, key)),
+          applyToSelected,
+          clear: clearSelection,
+        }
+      : undefined;
+    const menuProps = {
+      target: { machineId, meta },
+      actions: actions ?? {},
+      onRequestRename: requestRename,
+      onRequestDelete: requestDelete,
+      selection: rowSelection,
+    };
+    const onLinkClick = (e: React.MouseEvent<HTMLAnchorElement>): void => {
+      const mods = { toggle: e.metaKey || e.ctrlKey, range: e.shiftKey };
+      if (!isSelectionClick(mods, selectedCount)) return;
+      // 不可选的行（旧 agent 等）不参与多选：照常走浏览器默认（导航 / 新标签页）
+      if (!selectable) {
+        if (selectedCount > 0) clearSelection();
+        return;
+      }
+      e.preventDefault();
+      setSelection((s) => applyClick(s, key, mods, order));
+    };
+    const card = (
+      <SessionRow
+        key={`${machineId}/${meta.sessionId}`}
+        machineId={machineId}
+        machineName={machineNames[machineId] ?? machineId}
+        meta={meta}
+        variant={variant}
+        showMachine={showMachine}
+        active={location.pathname === `/s/${machineId}/${meta.sessionId}`}
+        {...(linkState === undefined ? {} : { linkState })}
+        {...(now === undefined ? {} : { now })}
+        selected={selected}
+        onLinkClick={onLinkClick}
+        {...(actions !== undefined && hasRowMenu(actions, meta, machineId)
+          ? { menu: <SessionRowMenu {...menuProps} /> }
+          : {})}
+      />
+    );
+    if (actions === undefined || !hasRowMenu(actions, meta, machineId)) return card;
+    return (
+      <SessionRowContextMenu key={`${machineId}/${meta.sessionId}`} {...menuProps}>
+        {card}
+      </SessionRowContextMenu>
+    );
+  };
 
   /*
    * `w-0 min-w-full`：侧栏用的是 Radix ScrollArea，它 viewport 内层是
@@ -117,6 +260,24 @@ export function SessionList({
         data-testid="session-list"
         className={cn('flex w-0 min-w-full flex-col', result.groups ? 'gap-3' : 'gap-2', className)}
       >
+        {selectedCount > 0 && (
+          <div
+            data-testid="bulk-bar"
+            role="toolbar"
+            aria-label="批量操作"
+            className="border-brand-border bg-surface sticky top-0 z-20 flex items-center gap-2 rounded-lg border px-2.5 py-1.5 text-xs shadow-sm"
+          >
+            <span className="text-text-2 tabular min-w-0 flex-1 truncate" data-testid="bulk-count">
+              已选 {selectedCount} 个
+            </span>
+            <Button size="xs" data-testid="bulk-apply" disabled={bulkBusy} onClick={applyToSelected}>
+              {bulkBusy ? '处理中…' : query.archived ? '取消归档' : '归档'}
+            </Button>
+            <Button size="xs" variant="ghost" data-testid="bulk-clear" disabled={bulkBusy} onClick={clearSelection}>
+              取消
+            </Button>
+          </div>
+        )}
         {result.groups === null
           ? result.rows.map(renderRow)
           : result.groups.map((group) => (
@@ -132,6 +293,7 @@ export function SessionList({
                 {group.rows.map(renderRow)}
               </GroupSection>
             ))}
+        {tempNote}
       </div>
       {dialogs}
     </>

@@ -19,7 +19,7 @@ import { SessionList } from '@/components/list/SessionList.tsx';
 import { ListControls } from '@/components/list/ListControls.tsx';
 import { countArchived } from '@/components/list/filtering.ts';
 import { selectMachineFilterItems } from '@/components/list/sorting.ts';
-import { useListGroupBy, useListQuery } from '@/components/list/use-list-query.ts';
+import { useListGroupBy, useListQuery, useListShowTemp } from '@/components/list/use-list-query.ts';
 import { useSessionActions } from '@/components/list/use-session-actions.ts';
 import { useNow, useSessionRefresh } from '@/components/list/use-session-refresh.ts';
 import { NewSessionSheet } from '@/components/sheets/NewSessionSheet.tsx';
@@ -35,6 +35,7 @@ export function SessionListView(): React.JSX.Element {
   const [filter, setFilter] = useMachineFilter();
   const { search, setSearch, status, setStatus } = useListFilters();
   const [groupBy, setGroupBy] = useListGroupBy();
+  const [showTemp, setShowTemp] = useListShowTemp();
   const query = useListQuery({ archived: false });
   const actions = useSessionActions();
   const [sheetOpen, setSheetOpen] = useNewSessionSheet();
@@ -112,6 +113,8 @@ export function SessionListView(): React.JSX.Element {
         onStatus={setStatus}
         groupBy={groupBy}
         onGroupBy={setGroupBy}
+        showTemp={showTemp}
+        onShowTemp={setShowTemp}
         archivedCount={countArchived(sessions, filter)}
         className="px-3.5 pt-1.5 pb-1"
       />
@@ -125,7 +128,14 @@ export function SessionListView(): React.JSX.Element {
             拉取会话列表失败：{error}
           </div>
         )}
-        <SessionList sessions={sessions} machines={machines} query={query} now={now} actions={actions} />
+        <SessionList
+          sessions={sessions}
+          machines={machines}
+          query={query}
+          now={now}
+          actions={actions}
+          onShowTemp={() => setShowTemp(true)}
+        />
       </div>
 
       <Button

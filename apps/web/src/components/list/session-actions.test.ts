@@ -3,6 +3,7 @@
  */
 import { describe, expect, test } from 'bun:test';
 import {
+  buildCopyCwd,
   buildSessionActions,
   compareVersions,
   supportedMachinesKey,
@@ -139,5 +140,75 @@ describe('buildSessionActions', () => {
       'err:归档失败:会话运行中、等待批准或有排队消息',
       'err:永久删除失败:会话运行中、等待批准或有排队消息',
     ]);
+  });
+});
+
+describe('批量归档 onArchiveMany', () => {
+  test('逐条发、一条汇总 toast；撤销只撤成功的', async () => {
+    const client = fakeClient();
+    const notify = fakeNotify();
+    const actions = buildSessionActions({ client, supportedMachineIds: new Set(['m']), notify });
+    await actions.onArchiveMany!(
+      [
+        { machineId: 'm', sessionId: 'a' },
+        { machineId: 'm', sessionId: 'b' },
+      ],
+      true,
+    );
+    expect(client.calls).toEqual(['archive m/a true', 'archive m/b true']);
+    expect(notify.log).toEqual(['ok:已归档 2 个会话']);
+    notify.actions[0]!();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(client.calls.slice(2)).toEqual(['archive m/a false', 'archive m/b false']);
+  });
+
+  test('部分失败：成功的照样提示，失败的汇总报错并 reject；不支持的机器算失败', async () => {
+    const calls: string[] = [];
+    const client: SessionMutationClient = {
+      renameSession: async () => {},
+      deleteSession: async () => {},
+      archiveSession: async (m, s) => {
+        calls.push(`${m}/${s}`);
+        if (s === 'busy') throw new Error('会话运行中');
+      },
+    };
+    const notify = fakeNotify();
+    const actions = buildSessionActions({ client, supportedMachineIds: new Set(['m']), notify });
+    await expect(
+      Promise.resolve(
+        actions.onArchiveMany!(
+          [
+            { machineId: 'm', sessionId: 'ok' },
+            { machineId: 'm', sessionId: 'busy' },
+            { machineId: 'old', sessionId: 'x' },
+          ],
+          true,
+        ),
+      ),
+    ).rejects.toThrow('会话运行中');
+    expect(calls).toEqual(['m/ok', 'm/busy']);
+    expect(notify.log).toEqual(['ok:已归档 1 个会话', 'err:2 个会话归档失败:会话运行中']);
+  });
+
+  test('取消归档不带撤销', async () => {
+    const notify = fakeNotify();
+    const actions = buildSessionActions({ client: fakeClient(), supportedMachineIds: new Set(['m']), notify });
+    await actions.onArchiveMany!([{ machineId: 'm', sessionId: 'a' }], false);
+    expect(notify.log).toEqual(['ok:已取消归档 1 个会话']);
+    expect(notify.actions).toHaveLength(0);
+  });
+});
+
+describe('buildCopyCwd', () => {
+  test('成功提示；失败报错并 reject', async () => {
+    const copied: string[] = [];
+    const notify = fakeNotify();
+    await buildCopyCwd(async (t) => void copied.push(t), notify)('/home/me/repo');
+    expect(copied).toEqual(['/home/me/repo']);
+    const failing = buildCopyCwd(async () => {
+      throw new Error('denied');
+    }, notify);
+    await expect(failing('/x')).rejects.toThrow('denied');
+    expect(notify.log).toEqual(['ok:已复制工作目录', 'err:复制失败:denied']);
   });
 });

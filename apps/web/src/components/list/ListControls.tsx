@@ -1,6 +1,6 @@
 /**
  * 会话列表控制行（session-list-v2 §4.2 / §4.5）：搜索框、状态 chips、
- * 「按工作空间」开关、「已归档 (n)」入口。
+ * 「按工作空间」开关、「临时会话」开关、「已归档 (n)」入口。
  *
  * 两种排布，同一组零件：
  * - **列表页 / 归档视图**（`ListControls`）：搜索框一行 + chips 一行，直接铺开；
@@ -8,7 +8,7 @@
  *   其余收进「筛选」弹出层（评审 M4：PC 上没有列表页，这是归档视图与分组
  *   开关唯一的入口）。有非默认筛选时按钮高亮，免得用户忘了自己筛过。
  *
- * 值都不在这里持有：搜索词 / 状态在 Layout，分组在 prefs，由调用方传入。
+ * 值都不在这里持有：搜索词 / 状态在 Layout，分组与临时会话开关在 prefs，由调用方传入。
  */
 import { useState } from 'react';
 import { NavLink } from 'react-router';
@@ -114,6 +114,30 @@ export function GroupToggle({
   );
 }
 
+export function TempToggle({
+  value,
+  onChange,
+}: {
+  value: boolean;
+  onChange: (value: boolean) => void;
+}): React.JSX.Element {
+  return (
+    <Chip
+      data-testid="temp-toggle"
+      aria-pressed={value}
+      selected={value}
+      onClick={() => onChange(!value)}
+      title={
+        value
+          ? '正在显示临时会话（临时目录下的、claude -p 等脚本跑出来的），点击隐藏'
+          : '临时会话（临时目录下的、claude -p 等脚本跑出来的）已隐藏，点击显示'
+      }
+    >
+      临时会话
+    </Chip>
+  );
+}
+
 export function ArchivedEntry({
   count,
   className,
@@ -146,6 +170,8 @@ export interface ListControlsProps {
   onStatus: (value: StatusFilter) => void;
   groupBy: ListGroupBy;
   onGroupBy: (value: ListGroupBy) => void;
+  showTemp: boolean;
+  onShowTemp: (value: boolean) => void;
   /** 不传 = 不显示「已归档」入口（归档视图自己） */
   archivedCount?: number;
   className?: string;
@@ -159,6 +185,8 @@ export function ListControls({
   onStatus,
   groupBy,
   onGroupBy,
+  showTemp,
+  onShowTemp,
   archivedCount,
   className,
 }: ListControlsProps): React.JSX.Element {
@@ -173,6 +201,7 @@ export function ListControls({
         <StatusChips value={status} onChange={onStatus} className="flex-wrap" />
         <span className="bg-border mx-0.5 h-4 w-px shrink-0" aria-hidden />
         <GroupToggle value={groupBy} onChange={onGroupBy} />
+        <TempToggle value={showTemp} onChange={onShowTemp} />
       </div>
     </div>
   );
@@ -186,10 +215,13 @@ export function SidebarListControls({
   onStatus,
   groupBy,
   onGroupBy,
+  showTemp,
+  onShowTemp,
   archivedCount,
   className,
 }: ListControlsProps): React.JSX.Element {
-  const filtered = status !== 'all';
+  // 非默认筛选：状态不是「全部」，或打开了临时会话
+  const filtered = status !== 'all' || showTemp;
   const [open, setOpen] = useState(false);
   return (
     <div data-testid="sidebar-list-controls" className={cn('flex items-center gap-1.5', className)}>
@@ -214,9 +246,10 @@ export function SidebarListControls({
             <StatusChips value={status} onChange={onStatus} className="flex-wrap" />
           </section>
           <section className="flex flex-col gap-1.5">
-            <h3 className="text-text-3 text-xs">分组</h3>
-            <div>
+            <h3 className="text-text-3 text-xs">显示</h3>
+            <div className="flex flex-wrap gap-1.5">
               <GroupToggle value={groupBy} onChange={onGroupBy} />
+              <TempToggle value={showTemp} onChange={onShowTemp} />
             </div>
           </section>
           {archivedCount !== undefined && (

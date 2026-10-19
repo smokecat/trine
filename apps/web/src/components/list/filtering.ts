@@ -1,7 +1,7 @@
 /**
  * 会话列表的过滤管线（session-list-v2 方案 §4.2 / §4.3，评审 S4 / M5）。
  *
- * 顺序固定：**机器 → 归档视图 → 状态 → 搜索 → 分组 → compareSessions**。
+ * 顺序固定：**机器 → 归档视图 → 临时会话 → 状态 → 搜索 → 分组 → compareSessions**。
  * 顺序本身是语义：空态要按「在哪一步被筛空」给出不同的下一步提示
  * （搜索无结果 / 筛选无结果 / 全部已归档），所以每一步之后都要能数得出剩多少。
  *
@@ -48,6 +48,8 @@ export interface ListQuery {
   machine: string | null;
   /** 看未归档的（默认视图）还是归档视图 */
   archived: boolean;
+  /** 是否显示临时会话（isTempSession）；默认不显示 */
+  showTemp: boolean;
   status: StatusFilter;
   /** 原始输入；内部 trim + 不分大小写 */
   search: string;
@@ -57,6 +59,7 @@ export interface ListQuery {
 export const DEFAULT_LIST_QUERY: ListQuery = {
   machine: null,
   archived: false,
+  showTemp: false,
   status: 'all',
   search: '',
   groupBy: 'workspace',
@@ -84,6 +87,7 @@ export interface SessionGroup {
  * - `machine-empty`：选中的机器上没有会话
  * - `all-archived`：有会话，但全都归档了
  * - `archived-empty`：归档视图里没有东西
+ * - `all-temp`：剩下的全是被隐藏的临时会话
  * - `status`：被状态 chip 筛空
  * - `search`：被搜索词筛空
  */
@@ -92,6 +96,7 @@ export type EmptyReason =
   | 'machine-empty'
   | 'all-archived'
   | 'archived-empty'
+  | 'all-temp'
   | 'status'
   | 'search';
 
@@ -102,6 +107,8 @@ export interface FilterResult {
   groups: SessionGroup[] | null;
   /** 机器范围内的已归档会话数（「已归档 (n)」入口的 n），不受状态/搜索影响 */
   archivedCount: number;
+  /** 当前视图里因「不显示临时会话」被藏起来的数量（showTemp 时为 0），不受状态/搜索影响 */
+  tempHidden: number;
   /** 非空时为 null */
   empty: EmptyReason | null;
 }
@@ -203,6 +210,22 @@ export function isFiltering(query: Pick<ListQuery, 'search' | 'status'>): boolea
   return query.search.trim() !== '' || query.status !== 'all';
 }
 
+/**
+ * cwd 是否在系统临时目录下：Linux `/tmp`、`/var/tmp`，macOS 的 `/private/tmp` 与
+ * `$TMPDIR`（`/var/folders/…`、`/private/var/folders/…`）。按路径段比，`/tmpfoo` 不算。
+ */
+export function isTempCwd(cwd: string): boolean {
+  return /^(?:\/private)?(?:\/var)?\/tmp(?:\/|$)|^(?:\/private)?\/var\/folders\//.test(cwd);
+}
+
+/**
+ * 临时会话：工作目录在临时目录下，或是脚本跑出来的非交互会话（agent 报的
+ * `headless`，即 `claude -p` / Python SDK）。列表默认不显示。
+ */
+export function isTempSession(meta: Pick<SessionMeta, 'cwd' | 'headless'>): boolean {
+  return meta.headless === true || isTempCwd(meta.cwd);
+}
+
 export function isArchived(meta: SessionMeta): boolean {
   return meta.archived === true;
 }
@@ -242,16 +265,26 @@ export function filterSessions(
     if (archived === query.archived) viewRows.push(row);
   }
 
-  // 3. 状态
-  const statusRows = viewRows.filter((r) => matchesStatus(r.meta.state, query.status));
+  // 3. 临时会话
+  let tempHidden = 0;
+  const kept = query.showTemp
+    ? viewRows
+    : viewRows.filter((r) => {
+        const temp = isTempSession(r.meta);
+        if (temp) tempHidden += 1;
+        return !temp;
+      });
 
-  // 4. 搜索（机器名只在「全部机器」视图下参与——选定机器时每行机器名都一样）
+  // 4. 状态
+  const statusRows = kept.filter((r) => matchesStatus(r.meta.state, query.status));
+
+  // 5. 搜索（机器名只在「全部机器」视图下参与——选定机器时每行机器名都一样）
   const needle = query.search.trim().toLowerCase();
   const searched = statusRows.filter((r) =>
     matchesSearch(r, needle, query.machine === null ? machineNames[r.machineId] : undefined),
   );
 
-  // 5 + 6. 分组 / 排序
+  // 6 + 7. 分组 / 排序
   const rows = searched.sort(compareSessions);
   const groups = query.groupBy === 'workspace' ? groupRows(rows) : null;
 
@@ -259,11 +292,12 @@ export function filterSessions(
   if (rows.length === 0) {
     if (scoped.length === 0) empty = query.machine === null ? 'no-sessions' : 'machine-empty';
     else if (viewRows.length === 0) empty = query.archived ? 'archived-empty' : 'all-archived';
+    else if (kept.length === 0) empty = 'all-temp';
     else if (statusRows.length === 0) empty = 'status';
     else empty = 'search';
   }
 
-  return { rows, groups, archivedCount, empty };
+  return { rows, groups, archivedCount, tempHidden, empty };
 }
 
 /**
@@ -272,7 +306,7 @@ export function filterSessions(
  */
 export function emptyText(
   reason: EmptyReason,
-  opts: { compact: boolean; archivedCount: number; search: string },
+  opts: { compact: boolean; archivedCount: number; tempHidden?: number; search: string },
 ): string {
   switch (reason) {
     case 'no-sessions':
@@ -285,6 +319,8 @@ export function emptyText(
       return `会话都已归档（有 ${opts.archivedCount} 个已归档会话）。`;
     case 'archived-empty':
       return '没有已归档的会话。';
+    case 'all-temp':
+      return `只有临时会话（${opts.tempHidden ?? 0} 个，已隐藏）。`;
     case 'status':
       return '没有符合筛选条件的会话。';
     case 'search':

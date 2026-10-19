@@ -1,5 +1,5 @@
 /**
- * 会话级 rename / archive / delete 动作的**唯一接线点**（session-list-v2 §4.1 / §4.4 / §4.6）。
+ * 会话级 rename / archive / delete / 复制工作目录动作的**唯一接线点**（session-list-v2 §4.1 / §4.4 / §4.6）。
  *
  * 列表页、PC 侧栏、归档视图、机器详情把它的返回值原样传给
  * `<SessionList actions>`；聊天页的 `/rename` 与头部菜单传 `machineId` 只看那一台。
@@ -11,7 +11,8 @@
 import { useMemo } from 'react';
 import { toast } from 'sonner';
 import { useClient, useTrine } from '@/app/runtime.ts';
-import { buildSessionActions, supportedMachinesKey } from './session-actions.ts';
+import { copyText } from '@/lib/clipboard.ts';
+import { buildCopyCwd, buildSessionActions, supportedMachinesKey } from './session-actions.ts';
 import type { SessionRowActions } from './SessionRowMenu.tsx';
 
 export function useSessionActions(machineId?: string): SessionRowActions {
@@ -19,13 +20,16 @@ export function useSessionActions(machineId?: string): SessionRowActions {
   // 标量 selector：机器的 online / lastSeenAt 翻转不会让回调换引用
   const supportedKey = useTrine((s) => supportedMachinesKey(s.machines));
   return useMemo(
-    () =>
-      buildSessionActions({
+    () => ({
+      ...buildSessionActions({
         client,
         supportedMachineIds: new Set(supportedKey === '' ? [] : supportedKey.split(',')),
         onlyMachine: machineId,
         notify: toast,
       }),
+      // 复制不经 agent：与能力探测无关，总是给
+      onCopyCwd: buildCopyCwd(copyText, toast),
+    }),
     [client, supportedKey, machineId],
   );
 }

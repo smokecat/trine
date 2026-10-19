@@ -26,7 +26,7 @@ import { SessionList } from '@/components/list/SessionList.tsx';
 import { SidebarListControls } from '@/components/list/ListControls.tsx';
 import { countArchived } from '@/components/list/filtering.ts';
 import { selectMachineFilterItems } from '@/components/list/sorting.ts';
-import { useListGroupBy, useListQuery } from '@/components/list/use-list-query.ts';
+import { useListGroupBy, useListQuery, useListShowTemp } from '@/components/list/use-list-query.ts';
 import { useSessionActions } from '@/components/list/use-session-actions.ts';
 import { useListFilters } from '@/app/Layout.tsx';
 import { useNow, useSessionRefresh } from '@/components/list/use-session-refresh.ts';
@@ -99,6 +99,7 @@ function ListControlsSlot({ filter }: { filter: string | null }): React.JSX.Elem
   const sessions = useTrine((s) => s.sessions);
   const { search, setSearch, status, setStatus } = useListFilters();
   const [groupBy, setGroupBy] = useListGroupBy();
+  const [showTemp, setShowTemp] = useListShowTemp();
   return (
     <SidebarListControls
       search={search}
@@ -107,6 +108,8 @@ function ListControlsSlot({ filter }: { filter: string | null }): React.JSX.Elem
       onStatus={setStatus}
       groupBy={groupBy}
       onGroupBy={setGroupBy}
+      showTemp={showTemp}
+      onShowTemp={setShowTemp}
       archivedCount={countArchived(sessions, filter)}
       className="px-3 pb-2"
     />
@@ -122,6 +125,7 @@ function SessionListSlot(): React.JSX.Element {
   const sessions = useTrine((s) => s.sessions);
   const machines = useTrine((s) => s.machines);
   const query = useListQuery({ archived: false });
+  const [, setShowTemp] = useListShowTemp();
   const actions = useSessionActions();
   const now = useNow();
   return (
@@ -131,6 +135,7 @@ function SessionListSlot(): React.JSX.Element {
         machines={machines}
         query={query}
         actions={actions}
+        onShowTemp={() => setShowTemp(true)}
         variant="compact"
         now={now}
         className="px-2.5 pb-3"

@@ -333,3 +333,166 @@ describe('工作空间分组', () => {
     expect($('session-list-empty')!.dataset['reason']).toBe('all-archived');
   });
 });
+
+describe('复制工作目录', () => {
+  test('只给 onCopyCwd（旧 agent / 从标签页）也出「⋯」；supports 为 false 的机器同样能复制', () => {
+    const onCopyCwd = mock((_cwd: string) => {});
+    render({ m: { a: meta({ sessionId: 'a' }) } }, { actions: { onCopyCwd, supports: () => false, onRename: () => {} } });
+    openMenu($('session-row-menu')!);
+    expect($('menu-rename')).toBeNull();
+    click($('menu-copy-cwd')!);
+    expect(onCopyCwd).toHaveBeenCalledWith('/home/me/repo');
+    expect(router!.state.location.pathname).toBe('/');
+  });
+
+  test('cwd 未知时不给', () => {
+    render({ m: { a: meta({ sessionId: 'a', cwd: '' }) } }, { actions: { onCopyCwd: () => {} } });
+    expect($('session-row-menu')).toBeNull();
+  });
+});
+
+describe('右键菜单', () => {
+  test('右键卡片弹出同一组菜单项，点了不导航', () => {
+    const onArchive = mock((_m: string, _s: string, _a: boolean) => {});
+    render({ m: { a: meta({ sessionId: 'a' }) } }, { actions: { onArchive, onCopyCwd: () => {} } });
+    act(() => {
+      $('session-row')!.dispatchEvent(new window.MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 5, clientY: 5 }));
+    });
+    expect($('session-row-context-content')).not.toBeNull();
+    expect($('menu-copy-cwd')).not.toBeNull();
+    click($('menu-archive')!);
+    expect(onArchive).toHaveBeenCalledWith('m', 'a', true);
+    expect(router!.state.location.pathname).toBe('/');
+  });
+});
+
+describe('多选批量归档', () => {
+  const three = {
+    m: {
+      a: meta({ sessionId: 'a', lastActivityAt: 3 }),
+      b: meta({ sessionId: 'b', lastActivityAt: 2 }),
+      c: meta({ sessionId: 'c', lastActivityAt: 1 }),
+    },
+  };
+  function link(id: string): HTMLElement {
+    return document.body.querySelector<HTMLElement>(`[data-session-id="${id}"] [data-testid="session-row-link"]`)!;
+  }
+  function clickWith(el: HTMLElement, init: MouseEventInit): void {
+    act(() => {
+      el.dispatchEvent(new window.MouseEvent('click', { bubbles: true, cancelable: true, button: 0, ...init }));
+    });
+  }
+  function selectedIds(): string[] {
+    return $$('session-row')
+      .filter((r) => r.dataset['selected'] === 'true')
+      .map((r) => r.dataset['sessionId']!);
+  }
+
+  test('Ctrl 点选、Shift 范围选、选择模式下普通点击切换；都不导航；操作条批量归档', async () => {
+    const onArchiveMany = mock(async (_t: readonly { machineId: string; sessionId: string }[], _a: boolean) => {});
+    render(three, { actions: { onArchive: () => {}, onArchiveMany } });
+    expect($('bulk-bar')).toBeNull();
+
+    clickWith(link('a'), { ctrlKey: true });
+    expect(selectedIds()).toEqual(['a']);
+    clickWith(link('c'), { shiftKey: true });
+    expect(selectedIds()).toEqual(['a', 'b', 'c']);
+    clickWith(link('b'), {});
+    expect(selectedIds()).toEqual(['a', 'c']);
+    expect(router!.state.location.pathname).toBe('/');
+    expect($('bulk-count')!.textContent).toBe('已选 2 个');
+
+    await act(async () => {
+      $('bulk-apply')!.click();
+    });
+    expect(onArchiveMany).toHaveBeenCalledWith(
+      [
+        { machineId: 'm', sessionId: 'a' },
+        { machineId: 'm', sessionId: 'c' },
+      ],
+      true,
+    );
+    // 成功后清空选择
+    expect($('bulk-bar')).toBeNull();
+  });
+
+  test('Esc / 「取消」清空；清空后普通点击照常导航', () => {
+    render(three, { actions: { onArchive: () => {}, onArchiveMany: () => {} } });
+    clickWith(link('a'), { metaKey: true });
+    act(() => {
+      document.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    });
+    expect($('bulk-bar')).toBeNull();
+    clickWith(link('b'), { ctrlKey: true });
+    click($('bulk-clear')!);
+    expect(selectedIds()).toEqual([]);
+    click(link('c'));
+    expect(router!.state.location.pathname).toBe('/s/m/c');
+  });
+
+  test('右键已选中的行（选了多个）→ 菜单作用于整批', () => {
+    const onArchiveMany = mock((_t: readonly unknown[], _a: boolean) => {});
+    render(three, { actions: { onArchive: () => {}, onArchiveMany } });
+    clickWith(link('a'), { ctrlKey: true });
+    clickWith(link('b'), { ctrlKey: true });
+    act(() => {
+      document.body
+        .querySelector('[data-session-id="b"]')!
+        .dispatchEvent(new window.MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+    });
+    expect($('menu-archive')).toBeNull();
+    expect($('menu-bulk-apply')!.textContent).toBe('归档已选 2 个');
+    click($('menu-bulk-apply')!);
+    expect(onArchiveMany).toHaveBeenCalledTimes(1);
+  });
+
+  test('单行菜单的「选择」进入选择模式；没有 onArchiveMany 就不开放多选', () => {
+    render(three, { actions: { onArchive: () => {}, onArchiveMany: () => {} } });
+    openMenu(document.body.querySelector<HTMLElement>('[data-session-id="b"] [data-testid="session-row-menu"]')!);
+    click($('menu-select')!);
+    expect(selectedIds()).toEqual(['b']);
+    act(() => root?.unmount());
+    document.body.innerHTML = '';
+
+    render(three, { actions: { onArchive: () => {} } });
+    clickWith(link('a'), { ctrlKey: true });
+    expect(selectedIds()).toEqual([]);
+    expect($('bulk-bar')).toBeNull();
+  });
+
+  test('归档视图里批量是取消归档', async () => {
+    const onArchiveMany = mock(async (_t: readonly unknown[], _a: boolean) => {});
+    render(
+      { m: { a: meta({ sessionId: 'a', archived: true }) } },
+      { actions: { onArchive: () => {}, onArchiveMany }, query: { archived: true }, at: '/archived' },
+    );
+    clickWith(link('a'), { ctrlKey: true });
+    expect($('bulk-apply')!.textContent).toBe('取消归档');
+    await act(async () => {
+      $('bulk-apply')!.click();
+    });
+    expect(onArchiveMany.mock.calls[0]![1]).toBe(false);
+  });
+});
+
+describe('临时会话提示', () => {
+  test('底部注明隐藏了几个，「显示」回调调用方', () => {
+    const onShowTemp = mock(() => {});
+    const sessions = {
+      m: { a: meta({ sessionId: 'a' }), t: meta({ sessionId: 't', cwd: '/tmp/x' }), h: meta({ sessionId: 'h', headless: true }) },
+    };
+    const query: Query = { ...DEFAULT_LIST_QUERY, groupBy: 'none' };
+    router = createMemoryRouter(
+      [{ path: '/', element: <SessionList sessions={sessions} machines={machines} query={query} now={2} onShowTemp={onShowTemp} /> }],
+      { initialEntries: ['/'] },
+    );
+    host = document.createElement('div');
+    document.body.appendChild(host);
+    root = createRoot(host);
+    act(() => root!.render(<RouterProvider router={router!} />));
+    expect($$('session-row').map((r) => r.dataset['sessionId'])).toEqual(['a']);
+    expect($('temp-hidden-note')!.textContent).toContain('已隐藏 2 个临时会话');
+    click($('temp-show')!);
+    expect(onShowTemp).toHaveBeenCalledTimes(1);
+  });
+});

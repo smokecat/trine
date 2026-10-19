@@ -97,4 +97,16 @@ describe('SessionHeadMenu', () => {
     expect($('head-menu-archive')).toBeNull();
     expect($('head-menu-unarchive')).toBeNull();
   });
+
+  test('复制工作目录：只有 onCopyCwd 也出按钮；cwd 为空不给', async () => {
+    const onCopyCwd = mock((_cwd: string) => {});
+    render({ onCopyCwd }, meta({ cwd: '/home/me/repo' }));
+    await open();
+    expect($('head-menu-rename')).toBeNull();
+    act(() => $('head-menu-copy-cwd')!.click());
+    expect(onCopyCwd).toHaveBeenCalledWith('/home/me/repo');
+    act(() => root?.unmount());
+    render({ onCopyCwd }, meta({ cwd: '' }));
+    expect($('session-head-menu')).toBeNull();
+  });
 });

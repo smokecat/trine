@@ -1,5 +1,6 @@
 /**
- * 聊天页头部的「⋯」会话菜单（session-list-v2 §4.4 末句）：重命名、归档 / 取消归档。
+ * 聊天页头部的「⋯」会话菜单（session-list-v2 §4.4 末句）：复制工作目录、重命名、
+ * 归档 / 取消归档。
  *
  * 动作与列表行菜单同源（`useSessionActions(machineId)`），缺哪个回调隐藏哪项，
  * 一项都没有时整个按钮不渲染。永久删除刻意不放这里：它只在归档视图里给，
@@ -14,6 +15,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu.tsx';
 import { archiveLikelyBusy, type SessionRowActions } from '@/components/list/SessionRowMenu.tsx';
@@ -35,7 +37,9 @@ export function SessionHeadMenu({
 }): React.JSX.Element | null {
   const canRename = actions.onRename !== undefined;
   const canArchive = actions.onArchive !== undefined && meta !== undefined;
-  if (!canRename && !canArchive) return null;
+  const cwd = meta?.cwd ?? '';
+  const canCopyCwd = actions.onCopyCwd !== undefined && cwd !== '';
+  if (!canRename && !canArchive && !canCopyCwd) return null;
   const archived = meta?.archived === true;
   const busy = meta !== undefined && archiveLikelyBusy(meta);
   const swallow = (r: void | Promise<unknown>): void => {
@@ -56,6 +60,12 @@ export function SessionHeadMenu({
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-auto min-w-36" data-testid="session-head-menu-content">
+        {canCopyCwd && (
+          <DropdownMenuItem data-testid="head-menu-copy-cwd" title={cwd} onSelect={() => swallow(actions.onCopyCwd?.(cwd))}>
+            复制工作目录
+          </DropdownMenuItem>
+        )}
+        {canCopyCwd && (canRename || canArchive) && <DropdownMenuSeparator />}
         {canRename && (
           <DropdownMenuItem data-testid="head-menu-rename" onSelect={onRequestRename}>
             重命名
