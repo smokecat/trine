@@ -85,6 +85,12 @@ export const SessionMetaSchema = z.object({
    * 给「后台 N」的弱提示，不显示成运行中。省略 = 0 / 旧 agent。
    */
   bgRunning: z.number().int().nonnegative().optional(),
+  /**
+   * 非交互会话（session-ux 新增，可选）：转录出身是 `claude -p` / Python SDK
+   * 之类的脚本调用，不是终端交互或 trine 开的。client 默认把它归为临时会话、
+   * 不在列表里显示。省略 = 不是 / 不知道 / 旧 agent。
+   */
+  headless: z.boolean().optional(),
 });
 export type SessionMeta = z.infer<typeof SessionMetaSchema>;
 

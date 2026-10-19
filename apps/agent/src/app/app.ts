@@ -30,6 +30,7 @@ import type {
 import { EventEmitter } from '../bridge/emitter.ts';
 import { SessionManager, type CreateSessionArgs } from '../bridge/manager.ts';
 import type { ClaudeSession } from '../bridge/session.ts';
+import { createHeadlessProbe, type HeadlessProbe } from '../bridge/session-origin.ts';
 import type { EventBody, OutboundEvent } from '../bridge/types.ts';
 import { writeIdentity } from '../net/identity.ts';
 import { AgentNode } from '../net/node.ts';
@@ -55,6 +56,11 @@ import { AgentState } from './state.ts';
 /** 退出时给每个会话 drain 收尾的上限（整机退出总预算 10s 由 cli 兜底） */
 export const SHUTDOWN_DRAIN_TIMEOUT_MS = 1_500;
 
+function headlessProbeOption(deps: AgentAppDeps): { headlessProbe?: HeadlessProbe } {
+  if (deps.headlessProbe !== undefined) return { headlessProbe: deps.headlessProbe };
+  return deps.listSessionsFn === undefined ? { headlessProbe: createHeadlessProbe() } : {};
+}
+
 export interface AgentAppDeps {
   /** 注入假会话工厂（测试） */
   createSession?: (args: CreateSessionArgs) => ClaudeSession;
@@ -62,6 +68,11 @@ export interface AgentAppDeps {
   getSessionInfoFn?: typeof getSessionInfo;
   renameSessionFn?: typeof renameSession;
   deleteSessionFn?: typeof deleteSession;
+  /**
+   * 非交互会话探测（测试）。缺省：用真实 listSessions 时读 ~/.claude 转录开头；
+   * 注入了假 listSessions 时不探测，免得测试去碰真 ~/.claude
+   */
+  headlessProbe?: HeadlessProbe;
   /** 注入假转录读取（测试）；默认走 SDK getSessionMessages */
   getSessionMessagesFn?: typeof getSessionMessages;
   /** 注入斜杠命令探测用的 query（测试）；默认走 SDK query */
@@ -166,6 +177,7 @@ export class AgentApp {
       // 权限模式变化（含 CLI 自行切换）落盘到 state.json，下次 resume 按它起
       onPermissionModeChange: (sessionId, mode) => router.onPermissionModeChange(sessionId, mode),
       log,
+      ...headlessProbeOption(deps),
     });
 
     // app 引用要给 node 的回调用，先占个位（回调只在 connect 之后才会触发）

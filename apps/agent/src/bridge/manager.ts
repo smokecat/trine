@@ -28,6 +28,7 @@ import {
 } from '@anthropic-ai/claude-agent-sdk';
 import { EventEmitter, scopedEmitter } from './emitter.ts';
 import { ClaudeSession, type SessionRuntimeMeta } from './session.ts';
+import type { HeadlessProbe } from './session-origin.ts';
 import type { EventBody } from './types.ts';
 
 /**
@@ -110,6 +111,11 @@ export interface SessionManagerOptions {
   onPermissionModeChange?: (sessionId: string, mode: PermissionMode) => void;
   /** 日志出口，透传给会话（单条 SDK 消息处理失败等非致命异常） */
   log?: (line: string) => void;
+  /**
+   * 非交互会话探测（读转录开头的 entrypoint，见 session-origin.ts）。不给则
+   * 不标 `headless`——测试默认不给，免得去读真 ~/.claude。
+   */
+  headlessProbe?: HeadlessProbe;
 }
 
 /** 建会话所需参数 */
@@ -168,6 +174,9 @@ export class SessionManager {
   readonly #onRunEnd: ((sessionId: string) => void) | undefined;
   readonly #onPermissionModeChange: ((sessionId: string, mode: PermissionMode) => void) | undefined;
   readonly #log: ((line: string) => void) | undefined;
+  readonly #headlessProbe: HeadlessProbe | undefined;
+  /** 已探明是非交互出身的 sessionId（出身不变，只增不减） */
+  readonly #headless = new Set<string>();
 
   /** sessionId → 活跃会话。**这张表就是互斥锁** */
   readonly #sessions = new Map<string, ClaudeSession>();
@@ -191,6 +200,7 @@ export class SessionManager {
     this.#onRunEnd = options.onRunEnd;
     this.#onPermissionModeChange = options.onPermissionModeChange;
     this.#log = options.log;
+    this.#headlessProbe = options.headlessProbe;
     this.#createSession =
       options.createSession ?? ((args) => new ClaudeSession(args));
   }
@@ -370,6 +380,7 @@ export class SessionManager {
       ...(options?.limit === undefined ? {} : { limit: options.limit }),
       includeWorktrees: true,
     });
+    await this.#probeHeadless(infos);
 
     const out: SessionMeta[] = [];
     const seen = new Set<string>();
@@ -412,7 +423,7 @@ export class SessionManager {
   /**
    * 所有产出 SessionMeta 的出口统一经过这里（评审 B3）：合并 flags store 的
    * archived / archivedAt 与 pendingTitle。入参里若带着 archived 字段一律丢弃
-   * ——标记的唯一来源是 flags store。
+   * ——标记的唯一来源是 flags store。`headless` 同理，唯一来源是 #headless。
    *
    * pendingTitle 覆盖 title（不只在 title 为空时）：它是用户显式设过、还没来得及
    * 写进转录的标题，比 SDK 的自动摘要新。首条消息落盘到补写完成之间，
@@ -423,7 +434,8 @@ export class SessionManager {
    * 一条补写卡住的 pending 不该盖住它（评审 minor 1）。
    */
   decorate(meta: SessionMeta, options: { hasCustomTitle?: boolean } = {}): SessionMeta {
-    const { archived: _archived, archivedAt: _archivedAt, ...rest } = meta;
+    const { archived: _archived, archivedAt: _archivedAt, headless: _headless, ...stripped } = meta;
+    const rest: SessionMeta = this.#headless.has(meta.sessionId) ? { ...stripped, headless: true } : stripped;
     const flags = this.#flags;
     if (flags === undefined) return rest;
     const pending = options.hasCustomTitle === true ? undefined : flags.pendingTitle(meta.sessionId);
@@ -487,6 +499,7 @@ export class SessionManager {
       return this.metaOf(sessionId);
     }
     const info = await this.#getSessionInfo(sessionId);
+    if (info !== undefined) await this.#probeHeadless([info]);
     return info === undefined
       ? undefined
       : this.decorate(this.#fromInfo(info), { hasCustomTitle: info.customTitle !== undefined });
@@ -534,6 +547,18 @@ export class SessionManager {
     if (cached.createdAt === undefined && info.createdAt !== undefined) patch.createdAt = info.createdAt;
     if (Object.keys(patch).length === 0) return;
     this.#meta.set(info.sessionId, { ...cached, ...patch });
+  }
+
+  /** 探测一批会话的出身，非交互的记进 #headless。探测失败当作不知道 */
+  async #probeHeadless(infos: readonly SDKSessionInfo[]): Promise<void> {
+    const probe = this.#headlessProbe;
+    if (probe === undefined || infos.length === 0) return;
+    try {
+      const result = await probe(infos.map((info) => ({ sessionId: info.sessionId, cwd: info.cwd })));
+      for (const [id, headless] of result) if (headless) this.#headless.add(id);
+    } catch (err) {
+      this.#log?.(`探测会话来源失败：${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   /** SDK 会话信息 + 本进程运行时状态 → SessionMeta（未合并标记） */

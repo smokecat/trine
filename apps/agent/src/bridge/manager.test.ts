@@ -41,6 +41,7 @@ function makeHarness(options?: {
   onRunEnd?: (sessionId: string) => void;
   claudeExecutable?: string;
   rememberedParams?: SessionManagerOptions['rememberedParams'];
+  headlessProbe?: SessionManagerOptions['headlessProbe'];
 }) {
   const events: OutboundEvent[] = [];
   const created: FakeSession[] = [];
@@ -62,6 +63,7 @@ function makeHarness(options?: {
     ...(options?.onRunEnd === undefined ? {} : { onRunEnd: options.onRunEnd }),
     ...(options?.claudeExecutable === undefined ? {} : { claudeExecutable: options.claudeExecutable }),
     ...(options?.rememberedParams === undefined ? {} : { rememberedParams: options.rememberedParams }),
+    ...(options?.headlessProbe === undefined ? {} : { headlessProbe: options.headlessProbe }),
     createSession: (args: CreateSessionArgs) => {
       const fake: FakeSession = {
         args,
@@ -403,6 +405,53 @@ describe('SessionManager · 列表', () => {
 
     const list = await manager.list();
     expect(list.map((s) => s.sessionId)).toEqual(['new', 'old']);
+  });
+});
+
+describe('SessionManager · 非交互会话（headless）', () => {
+  const sessions = [
+    { sessionId: 'script', summary: '脚本', lastModified: 2_000, cwd: '/repo' },
+    { sessionId: 'human', summary: '交互', lastModified: 1_000, cwd: '/repo' },
+  ] as Awaited<ReturnType<typeof listSessions>>;
+
+  test('list 按探测结果标 headless；之后的广播（decorate）同口径', async () => {
+    const asked: string[][] = [];
+    const { manager, events } = makeHarness({
+      sessions,
+      headlessProbe: async (refs) => {
+        asked.push(refs.map((r) => `${r.sessionId}@${r.cwd}`));
+        return new Map([
+          ['script', true],
+          ['human', false],
+        ]);
+      },
+    });
+    const list = await manager.list();
+    expect(asked).toEqual([['script@/repo', 'human@/repo']]);
+    expect(list.find((m) => m.sessionId === 'script')?.headless).toBe(true);
+    expect(list.find((m) => m.sessionId === 'human')).not.toHaveProperty('headless');
+
+    manager.acquire({ sessionId: 'script', ...base, resume: true });
+    expect(manager.metaOf('script')?.headless).toBe(true);
+    expect(manager.decorate({ ...list[1]!, headless: true })).not.toHaveProperty('headless');
+    expect(events).toHaveLength(0);
+  });
+
+  test('snapshot 查 SDK 的会话也探测', async () => {
+    const { manager } = makeHarness({ sessions, headlessProbe: async () => new Map([['script', true]]) });
+    expect((await manager.snapshot('script'))?.headless).toBe(true);
+  });
+
+  test('探测抛错：不标、不影响列表', async () => {
+    const { manager } = makeHarness({
+      sessions,
+      headlessProbe: async () => {
+        throw new Error('boom');
+      },
+    });
+    const list = await manager.list();
+    expect(list).toHaveLength(2);
+    expect(list.some((m) => m.headless === true)).toBe(false);
   });
 });
 

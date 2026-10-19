@@ -93,7 +93,9 @@ SessionMeta 新增**可选**字段（旧 agent 不发、旧 client 收到会被 
 - `createdAt?: Timestamp` / `gitBranch?: string` / `firstPrompt?: string` — 来自 SDK 会话信息（创建时间、会话结束时的分支、首条有意义的输入），供搜索与分组
 - `lastEvent` 语义不变
 
-agent 侧所有产出 SessionMeta 的出口（list、session.created、session.updated、各命令成功后的广播）都经同一处合并归档标记，活跃会话的状态迁移不会冲掉 title / firstPrompt / archived 等非运行时字段。
+- `headless?: boolean`（session-ux，2026-10-20）— 非交互会话：转录里第一条带 `entrypoint` 的行是 `sdk-cli`（`claude -p`）或 `sdk-py`（Python SDK）。终端交互（`cli`）与 trine 自己开的会话（TS SDK，`sdk-ts`）都不算。agent 读转录开头判定、按 sessionId 缓存；省略 = 不是 / 不知道 / 旧 agent。client 把它与「cwd 在系统临时目录下」一起归为临时会话，列表默认隐藏
+
+agent 侧所有产出 SessionMeta 的出口（list、session.created、session.updated、各命令成功后的广播）都经同一处合并归档标记与 `headless`，活跃会话的状态迁移不会冲掉 title / firstPrompt / archived 等非运行时字段。
 
 ### 2.2 重命名 / 归档 / 永久删除
 
