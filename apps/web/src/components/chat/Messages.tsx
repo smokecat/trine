@@ -6,6 +6,7 @@
  * 斜体是错的），只有 assistant 文本过 streamdown。
  */
 import { useState } from 'react';
+import { Undo2Icon } from 'lucide-react';
 import type { AssistantEntry, UserEntry } from '@/lib/reducer.ts';
 import { cn } from '@/lib/utils.ts';
 import { Markdown } from './Markdown.tsx';
@@ -30,23 +31,49 @@ export function UserMessage({
   entry,
   now,
   onAction,
+  onRewind,
 }: {
   entry: UserEntry;
   /** 撤回乐观态的超时判据（Timeline 的统一 tick） */
   now: number;
   onAction: (action: UserEntryAction, entry: UserEntry) => void;
+  /** 回退到这条消息之前；不给 = 这条不能回退（未确认 / agent 不支持 / 会话忙） */
+  onRewind?: ((entry: UserEntry) => void) | undefined;
 }): React.JSX.Element {
   const badge = userEntryBadge(entry, formatExpiry, now);
   const action = badge.action;
+  // 触屏没有 hover：点气泡把「回退」亮出来；有指针的设备悬停即可见
+  const [revealed, setRevealed] = useState(false);
   return (
     <li
       data-testid="entry-user"
       data-status={entry.status ?? 'remote'}
-      className="flex max-w-[85%] flex-col items-end gap-1 self-end"
+      className="group flex max-w-[85%] flex-col items-end gap-1 self-end"
     >
-      <div className="bg-user-bubble rounded-[14px] rounded-br-[4px] px-3 py-2 text-[14px] whitespace-pre-wrap">
+      <div
+        className="bg-user-bubble rounded-[14px] rounded-br-[4px] px-3 py-2 text-[14px] whitespace-pre-wrap"
+        onClick={onRewind === undefined ? undefined : () => setRevealed((v) => !v)}
+      >
         {entry.text}
       </div>
+      {onRewind !== undefined && (
+        <button
+          type="button"
+          data-testid="user-rewind"
+          title="回退到这条消息之前（可选还原代码 / 对话）"
+          className={cn(
+            'text-text-3 hover:text-text-2 flex items-center gap-1 text-[11.5px] transition-opacity focus-visible:opacity-100',
+            revealed ? 'opacity-100' : 'opacity-0 group-hover:opacity-100',
+          )}
+          onClick={() => {
+            setRevealed(false);
+            onRewind(entry);
+          }}
+        >
+          <Undo2Icon className="size-3" />
+          回退到这里
+        </button>
+      )}
       {badge.label !== undefined && (
         <div className={cn('flex items-center gap-2 text-[11.5px]', TONE_CLASS[badge.tone])}>
           <span>{badge.label}</span>

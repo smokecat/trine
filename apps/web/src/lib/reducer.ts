@@ -94,6 +94,11 @@ export const UserEntrySchema = z.object({
   local: z.boolean(),
   status: LocalStatusSchema.optional(),
   messageId: z.string().optional(),
+  /**
+   * 转录 uuid（`user.message.uuid`，agent ≥ 0.9.0；历史条目即其 id）。回退以它指认
+   * 目标消息，也用于和历史页去重。**加法字段**。
+   */
+  uuid: z.string().optional(),
   /** input.parked 回执里的 seq，撤回（park.recall）与 park.expired 对账用 */
   parkedSeq: z.number().int().nonnegative().optional(),
   /**
@@ -444,7 +449,14 @@ export function applyEvent(tl: Timeline, event: AgentToClientEvent): Timeline {
           const status = transitionLocalStatus(cur.status ?? 'sending', 'confirmed');
           return withEntries(
             tl,
-            replaceEntry(tl.entries, idx, { ...cur, status, messageId: event.messageId, text: event.text, seq }),
+            replaceEntry(tl.entries, idx, {
+              ...cur,
+              status,
+              messageId: event.messageId,
+              text: event.text,
+              ...(event.uuid === undefined ? {} : { uuid: event.uuid }),
+              seq,
+            }),
             seq,
           );
         }
@@ -453,10 +465,24 @@ export function applyEvent(tl: Timeline, event: AgentToClientEvent): Timeline {
       if (dupIdx >= 0) return withEntries(tl, tl.entries, seq);
       return withEntries(
         tl,
-        [...tl.entries, { kind: 'user', id: event.messageId, text: event.text, local: false, messageId: event.messageId, seq, ts: event.ts }],
+        [
+          ...tl.entries,
+          {
+            kind: 'user',
+            id: event.messageId,
+            text: event.text,
+            local: false,
+            messageId: event.messageId,
+            ...(event.uuid === undefined ? {} : { uuid: event.uuid }),
+            seq,
+            ts: event.ts,
+          },
+        ],
         seq,
       );
     }
+    case 'session.rewound':
+      return event.mode === 'code' ? withEntries(tl, tl.entries, seq) : applyRewound(tl, event.targetMessageIds, seq);
     case 'tool.start': {
       // 已有同 id 条目（重发 / 子条目先于 start 收到过 end）：原地更新名字与参数，
       // 结果与子树留着。顶层与任意深度的子条目都算
@@ -615,6 +641,9 @@ export function applyEvent(tl: Timeline, event: AgentToClientEvent): Timeline {
     case 'subagent.history.response':
     // 命令清单由 client.loadCommands 按 reqId 关联后写进 capabilities；这里只推进游标
     case 'session.commands.response':
+    // 回退的预览 / 结果由 client 按 reqId 关联；时间线的变化走 session.rewound
+    case 'session.rewind.preview.response':
+    case 'session.rewind.response':
     case 'session.capabilities':
       return { ...tl, lastAppliedSeq: Math.max(tl.lastAppliedSeq, seq) };
     // 机器级：不属于任何时间线
@@ -841,6 +870,43 @@ export function nextParkedExpiry(tl: Timeline): number | null {
 }
 
 // ---------------------------------------------------------------------------
+// 回退（session.rewound）
+// ---------------------------------------------------------------------------
+
+/** 用户条目是否就是这些 id 之一（本地 id / messageId / 转录 uuid 任一对上） */
+function userEntryMatches(entry: TimelineEntry, ids: ReadonlySet<string>): boolean {
+  if (entry.kind !== 'user') return false;
+  return (
+    ids.has(entry.id) ||
+    (entry.messageId !== undefined && ids.has(entry.messageId)) ||
+    (entry.uuid !== undefined && ids.has(entry.uuid))
+  );
+}
+
+/**
+ * 对话已回退：从目标用户消息起（含）截掉时间线。对不上任何条目（时间线是旧的 /
+ * 目标在没加载的更早历史里）就整条清空并忘掉翻页状态——视图随后自动重拉历史，
+ * 以 agent 的转录为准。截掉的子 agent 暂存一并丢掉（父已经不在了）。
+ */
+function applyRewound(tl: Timeline, targetMessageIds: readonly string[], seq: number): Timeline {
+  const ids = new Set(targetMessageIds);
+  const at = tl.entries.findIndex((e) => userEntryMatches(e, ids));
+  const { history, pendingChildren: _pending, ...rest } = tl;
+  const lastAppliedSeq = Math.max(tl.lastAppliedSeq, seq);
+  if (at < 0) return { ...rest, entries: [], lastAppliedSeq };
+  return { ...rest, ...(history === undefined ? {} : { history }), entries: tl.entries.slice(0, at), lastAppliedSeq };
+}
+
+/**
+ * 回退的目标 id：转录 uuid 优先，其次 messageId（agent 进程内能映射回 uuid）。
+ * 还没被 agent 确认的本地条目（发送中 / 排队 / 失败……）不能回退，返回 undefined。
+ */
+export function rewindTargetId(entry: UserEntry): string | undefined {
+  if (entry.local && entry.status !== undefined && entry.status !== 'confirmed') return undefined;
+  return entry.uuid ?? entry.messageId ?? (entry.local ? undefined : entry.id);
+}
+
+// ---------------------------------------------------------------------------
 // 历史回看（session.history.response → 时间线开头）
 // ---------------------------------------------------------------------------
 
@@ -855,7 +921,7 @@ export function isHistoryEntry(entry: TimelineEntry): boolean {
 function historyToEntry(item: HistoryItem): TimelineEntry {
   switch (item.kind) {
     case 'user':
-      return { kind: 'user', id: item.id, text: item.text, local: false, messageId: item.id, seq: 0, ts: item.ts };
+      return { kind: 'user', id: item.id, text: item.text, local: false, messageId: item.id, uuid: item.id, seq: 0, ts: item.ts };
     case 'assistant':
       return { kind: 'assistant', id: item.id, text: item.text, done: true, thinking: false, seq: 0, ts: item.ts };
     case 'tool':
@@ -898,6 +964,8 @@ export function mergeHistory(
     if (e.seq > 0 && e.ts < cutoff) cutoff = e.ts;
     seen.add(`${e.kind}:${e.id}`);
     if (e.kind === 'user' && e.messageId !== undefined) seen.add(`user:${e.messageId}`);
+    // 实时条目带了转录 uuid（agent ≥ 0.9.0）：与历史页的同一条消息直接对上
+    if (e.kind === 'user' && e.uuid !== undefined) seen.add(`user:${e.uuid}`);
   }
   const fresh: TimelineEntry[] = [];
   for (const item of page.items) {
@@ -1003,6 +1071,17 @@ export const SUBAGENT_HISTORY_MIN_AGENT_VERSION = '0.8.0';
 /** agent 版本 ≥ SUBAGENT_HISTORY_MIN_AGENT_VERSION；解析不了（未知版本）按不支持处理 */
 export function agentSupportsSubagentHistory(agentVersion: string | undefined): boolean {
   return agentAtLeast(agentVersion, SUBAGENT_HISTORY_MIN_AGENT_VERSION);
+}
+
+/**
+ * 回退（`session.rewind.preview` / `session.rewind`）的最低 agent 版本。旧 agent 不认识
+ * 这些 type（schema 层丢弃、永不应答）——用户消息据此决定显不显示「回退」。
+ */
+export const REWIND_MIN_AGENT_VERSION = '0.9.0';
+
+/** agent 版本 ≥ REWIND_MIN_AGENT_VERSION；解析不了（未知版本）按不支持处理 */
+export function agentSupportsRewind(agentVersion: string | undefined): boolean {
+  return agentAtLeast(agentVersion, REWIND_MIN_AGENT_VERSION);
 }
 
 /** 快照里正在运行的后台任务数（没有快照 = 0） */

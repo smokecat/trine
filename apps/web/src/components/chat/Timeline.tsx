@@ -16,7 +16,7 @@
  */
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { ArrowDownIcon } from 'lucide-react';
-import type { TimelineEntry, ToolEntry, UserEntry } from '@/lib/reducer.ts';
+import { rewindTargetId, type TimelineEntry, type ToolEntry, type UserEntry } from '@/lib/reducer.ts';
 import { cn } from '@/lib/utils.ts';
 import { AssistantMessage, SyncingRow, SystemNote, UserMessage } from './Messages.tsx';
 import { PermissionCard, type PermissionDecision } from './PermissionCard.tsx';
@@ -98,6 +98,7 @@ export function Timeline({
   onEntryRender,
   planOptions = true,
   subagentHistory = false,
+  onRewind,
 }: {
   entries: TimelineEntry[];
   syncing: 'normal' | 'backfill' | undefined;
@@ -127,6 +128,11 @@ export function Timeline({
   planOptions?: boolean;
   /** agent 是否支持子 agent 过程回看（≥ 0.8.0）；null = 还不知道（machine.info 未到）；缺省不支持 */
   subagentHistory?: boolean | null;
+  /**
+   * 回退到某条用户消息之前（agent ≥ 0.9.0）。不给 = 现在不能回退（会话忙 / 离线 /
+   * 版本过旧），用户消息上不出入口。引用要稳定，否则会打穿 Entry 的 memo。
+   */
+  onRewind?: ((entry: UserEntry) => void) | undefined;
 }): React.JSX.Element {
   const scrollRef = useRef<HTMLOListElement>(null);
   const [following, setFollowing] = useState(true);
@@ -228,6 +234,7 @@ export function Timeline({
             subagentSource={subagentSourceOf(entry, labels)}
             onLoadChildren={loadChildren}
             historyUnknown={historyUnknown}
+            onRewind={entry.kind === 'user' && rewindTargetId(entry) !== undefined ? onRewind : undefined}
           />
         ))}
         {extra}
@@ -268,6 +275,7 @@ const Entry = memo(function Entry({
   subagentSource,
   onLoadChildren,
   historyUnknown,
+  onRewind,
 }: {
   entry: TimelineEntry;
   deviceId: string | null;
@@ -277,6 +285,8 @@ const Entry = memo(function Entry({
   /** 子 agent 过程回看；引用来自 memo 过的 handlers，稳定 */
   onLoadChildren: ((toolUseId: string) => Promise<void>) | undefined;
   historyUnknown: boolean;
+  /** 只有能回退的用户条目才拿到它（其余 undefined，不打穿 memo） */
+  onRewind: ((entry: UserEntry) => void) | undefined;
   now: number;
   /** 这一条正在跑时的插值耗时；`-1` = 不是当前运行的工具（评审 N4） */
   runningElapsedMs: number;
@@ -286,7 +296,7 @@ const Entry = memo(function Entry({
   onEntryRender?.(`${entry.kind}:${entry.id}`);
   switch (entry.kind) {
     case 'user':
-      return <UserMessage entry={entry} now={now} onAction={handlers.onUserAction} />;
+      return <UserMessage entry={entry} now={now} onAction={handlers.onUserAction} onRewind={onRewind} />;
     case 'assistant':
       return <AssistantMessage entry={entry} />;
     case 'tool':

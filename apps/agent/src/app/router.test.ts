@@ -130,6 +130,38 @@ class FakeSession {
     return Promise.resolve();
   }
   onClose: (() => void) | undefined = undefined;
+  // —— 回退（rewind）——
+  rewindBlockReason: string | undefined = undefined;
+  rewindResult: { canRewind: boolean; error?: string; filesChanged?: string[]; insertions?: number; deletions?: number } = {
+    canRewind: true,
+    filesChanged: ['/repo/src/a.ts', '/elsewhere/b.ts'],
+    insertions: 3,
+    deletions: 1,
+  };
+  readonly uuids = new Map<string, string>();
+  pendingRewind: { resumeAt: string; dropFrom: string } | undefined = undefined;
+  rewindBlocker(): string | undefined {
+    return this.rewindBlockReason;
+  }
+  userMessageUuid(clientMsgId: string): string | undefined {
+    return this.uuids.get(clientMsgId);
+  }
+  clientMsgIdOf(uuid: string): string | undefined {
+    for (const [c, u] of this.uuids) if (u === uuid) return c;
+    return undefined;
+  }
+  async previewFiles(uuid: string) {
+    this.calls.push(`rewindFiles:${uuid}:dry`);
+    return this.rewindResult;
+  }
+  async restoreFiles(uuid: string) {
+    this.calls.push(`rewindFiles:${uuid}:real`);
+    return this.rewindResult;
+  }
+  rewindConversation(point: { resumeAt: string; dropFrom: string }): void {
+    this.calls.push(`rewindConversation:${point.resumeAt}:${point.dropFrom}`);
+    this.pendingRewind = point;
+  }
   /** 像真 ClaudeSession 一样：状态迁移回调 onMeta（manager 广播 / 自动取消归档 / onRunEnd） */
   transition(state: SessionState): void {
     this.state = state;
@@ -1879,5 +1911,176 @@ describe('toSlashCommands', () => {
     expect(out[1]!.description).toHaveLength(COMMAND_DESCRIPTION_MAX);
     expect(out[1]!.description!.endsWith('…')).toBe(true);
     expect(out[1]!.source).toBe('project');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 回退（session.rewind.preview / session.rewind）
+// ---------------------------------------------------------------------------
+
+describe('Router · 回退', () => {
+  type Ev<T extends string> = Extract<OutboundEvent['event'], { type: T }>;
+
+  async function rewindHarness() {
+    const h = await makeHarness({ transcripts: { old: transcript(3) } });
+    h.state.rememberSession('old', params);
+    return h;
+  }
+
+  test('预览：定向回请求方；对话与代码都可用，路径相对 cwd，不改任何东西', async () => {
+    const h = await rewindHarness();
+    await h.router.handle({ type: 'session.rewind.preview', ...c2a('old'), reqId: 'p1', targetMessageId: 'u1' }, tablet);
+    const out = h.events.filter((e) => e.event.type === 'session.rewind.preview.response');
+    expect(out).toHaveLength(1);
+    expect(out[0]!.to).toBe('tablet');
+    expect(out[0]!.event).toMatchObject({
+      reqId: 'p1',
+      ok: true,
+      text: 'q1',
+      conversation: { available: true },
+      files: { available: true, filesChanged: ['src/a.ts', '/elsewhere/b.ts'], insertions: 3, deletions: 1 },
+    });
+    const fake = h.created[0]!;
+    expect(fake.calls).toContain('rewindFiles:u1:dry');
+    expect(fake.calls.some((c) => c.startsWith('rewindConversation'))).toBe(false);
+    expect(h.state.pendingRewind('old')).toBeUndefined();
+    expect(h.byType('session.rewound')).toHaveLength(0);
+  });
+
+  test('预览第一条消息：对话不可回退（给原因），代码照常', async () => {
+    const h = await rewindHarness();
+    await h.router.handle({ type: 'session.rewind.preview', ...c2a('old'), reqId: 'p1', targetMessageId: 'u0' }, phone);
+    const [res] = h.byType('session.rewind.preview.response') as Ev<'session.rewind.preview.response'>[];
+    expect(res!.ok).toBe(true);
+    expect(res!.conversation).toMatchObject({ available: false });
+    expect(res!.conversation!.reason).toContain('第一条消息');
+    expect(res!.files).toMatchObject({ available: true });
+  });
+
+  test('预览：没有快照 → files 不可用，请求本身仍成功', async () => {
+    const h = await rewindHarness();
+    await h.router.handle({ type: 'session.status.request', ...c2a('old'), reqId: 's' }, phone);
+    h.created[0]!.rewindResult = { canRewind: false, error: 'No file checkpoint found' };
+    await h.router.handle({ type: 'session.rewind.preview', ...c2a('old'), reqId: 'p1', targetMessageId: 'u1' }, phone);
+    const [res] = h.byType('session.rewind.preview.response') as Ev<'session.rewind.preview.response'>[];
+    expect(res).toMatchObject({ ok: true, files: { available: false } });
+    expect(res!.files!.reason).toContain('No file checkpoint found');
+  });
+
+  test('执行 both：先还原文件、再落盘截断点并拆进程；广播 rewound 后定向应答', async () => {
+    const h = await rewindHarness();
+    await h.router.handle({ type: 'session.rewind', ...c2a('old'), reqId: 'r1', targetMessageId: 'u2', mode: 'both' }, phone);
+    const fake = h.created[0]!;
+    expect(fake.calls.filter((c) => c.startsWith('rewind'))).toEqual(['rewindFiles:u2:real', 'rewindConversation:a1:u2']);
+    expect(h.state.pendingRewind('old')).toEqual({ resumeAt: 'a1', dropFrom: 'u2' });
+
+    const rewound = h.events.filter((e) => e.event.type === 'session.rewound');
+    expect(rewound).toHaveLength(1);
+    expect(rewound[0]!.to).toBeUndefined();
+    expect(rewound[0]!.event).toMatchObject({ sessionId: 'old', targetMessageIds: ['u2'], mode: 'both', filesChanged: 2 });
+
+    const res = h.events.filter((e) => e.event.type === 'session.rewind.response');
+    expect(res[0]!.to).toBe('phone');
+    expect(res[0]!.event).toMatchObject({ reqId: 'r1', ok: true, text: 'q2', files: { filesChanged: ['src/a.ts', '/elsewhere/b.ts'] } });
+    // 广播在应答之前
+    expect(h.events.indexOf(rewound[0]!)).toBeLessThan(h.events.indexOf(res[0]!));
+  });
+
+  test('只回退对话：不碰文件；只回退代码：不动对话', async () => {
+    const h = await rewindHarness();
+    await h.router.handle({ type: 'session.rewind', ...c2a('old'), reqId: 'r1', targetMessageId: 'u1', mode: 'conversation' }, phone);
+    const fake = h.created[0]!;
+    expect(fake.calls.filter((c) => c.startsWith('rewind'))).toEqual(['rewindConversation:a0:u1']);
+    const [res] = h.byType('session.rewind.response') as Ev<'session.rewind.response'>[];
+    expect(res).toMatchObject({ ok: true });
+    expect(res!.files).toBeUndefined();
+    expect(h.byType('session.rewound')[0]).not.toHaveProperty('filesChanged');
+
+    const h2 = await rewindHarness();
+    await h2.router.handle({ type: 'session.rewind', ...c2a('old'), reqId: 'r1', targetMessageId: 'u0', mode: 'code' }, phone);
+    expect(h2.created[0]!.calls.filter((c) => c.startsWith('rewind'))).toEqual(['rewindFiles:u0:real']);
+    expect(h2.state.pendingRewind('old')).toBeUndefined();
+    expect(h2.byType('session.rewound')[0]).toMatchObject({ mode: 'code', filesChanged: 2 });
+  });
+
+  test('失败：busy / not_found / 非用户消息与第一条消息回退对话 invalid / 没有快照 unavailable——都不改东西、不广播', async () => {
+    const h = await rewindHarness();
+    await h.router.handle({ type: 'session.status.request', ...c2a('old'), reqId: 's' }, phone);
+    const fake = h.created[0]!;
+    const run = async (targetMessageId: string, mode: 'both' | 'conversation' | 'code') => {
+      await h.router.handle({ type: 'session.rewind', ...c2a('old'), reqId: `r-${targetMessageId}-${mode}`, targetMessageId, mode }, phone);
+      return (h.byType('session.rewind.response') as Ev<'session.rewind.response'>[]).at(-1)!;
+    };
+
+    fake.rewindBlockReason = '会话正在运行';
+    expect((await run('u1', 'both')).error).toEqual({ code: 'busy', message: '会话正在运行' });
+    fake.rewindBlockReason = undefined;
+
+    expect((await run('nope', 'both')).error?.code).toBe('not_found');
+    // 不是用户说的话（助手回复）
+    expect((await run('a1', 'both')).error?.code).toBe('invalid');
+    expect((await run('u0', 'both')).error?.code).toBe('invalid');
+
+    fake.rewindResult = { canRewind: false };
+    expect((await run('u1', 'both')).error?.code).toBe('unavailable');
+
+    expect(fake.calls.filter((c) => c.startsWith('rewindConversation'))).toEqual([]);
+    expect(h.state.pendingRewind('old')).toBeUndefined();
+    expect(h.byType('session.rewound')).toHaveLength(0);
+    expect(h.byType('error.fatal')).toHaveLength(0);
+  });
+
+  test('目标给 clientMsgId：映射回转录 uuid，广播带上两种 id', async () => {
+    const h = await rewindHarness();
+    await h.router.handle({ type: 'session.status.request', ...c2a('old'), reqId: 's' }, phone);
+    h.created[0]!.uuids.set('c-2', 'u2');
+    await h.router.handle({ type: 'session.rewind', ...c2a('old'), reqId: 'r1', targetMessageId: 'c-2', mode: 'conversation' }, phone);
+    expect(h.byType('session.rewound')[0]).toMatchObject({ targetMessageIds: ['c-2', 'u2'] });
+    expect(h.state.pendingRewind('old')).toEqual({ resumeAt: 'a1', dropFrom: 'u2' });
+  });
+
+  test('已有待生效截断点：被撤的尾巴里的消息找不到；历史回看截掉尾巴', async () => {
+    const h = await rewindHarness();
+    await h.router.handle({ type: 'session.rewind', ...c2a('old'), reqId: 'r1', targetMessageId: 'u1', mode: 'conversation' }, phone);
+    await h.router.handle({ type: 'session.rewind', ...c2a('old'), reqId: 'r2', targetMessageId: 'u2', mode: 'conversation' }, phone);
+    const responses = h.byType('session.rewind.response') as Ev<'session.rewind.response'>[];
+    expect(responses[1]!.error?.code).toBe('not_found');
+
+    await h.router.handle({ type: 'session.history.request', ...c2a('old'), reqId: 'h1' }, phone);
+    const [page] = h.byType('session.history.response') as Ev<'session.history.response'>[];
+    expect(page!.items.map((i) => i.id)).toEqual(['u0', 'msg_0']);
+  });
+
+  test('agent 重启后：state.json 里的截断点用于历史截断，并在 resume 时交给会话', async () => {
+    const h = await rewindHarness();
+    h.state.setPendingRewind('old', { resumeAt: 'a0', dropFrom: 'u1' });
+    await h.router.handle({ type: 'session.history.request', ...c2a('old'), reqId: 'h1' }, phone);
+    const [page] = h.byType('session.history.response') as Ev<'session.history.response'>[];
+    expect(page!.items.map((i) => i.id)).toEqual(['u0', 'msg_0']);
+    expect(h.created).toHaveLength(0);
+
+    await h.router.handle({ type: 'input.send', ...c2a('old'), clientMsgId: 'c1', text: 'hi' }, phone);
+    expect(h.created[0]!.args.rewindPoint).toEqual({ resumeAt: 'a0', dropFrom: 'u1' });
+  });
+
+  test('会话不存在：仍定向回 not_found（不让 client 干等超时）', async () => {
+    const h = await makeHarness();
+    await h.router.handle({ type: 'session.rewind', ...c2a('ghost'), reqId: 'r1', targetMessageId: 'u1', mode: 'both' }, phone);
+    const out = h.events.filter((e) => e.event.type === 'session.rewind.response');
+    expect(out).toHaveLength(1);
+    expect(out[0]!.to).toBe('phone');
+    // 机器级：不为不存在的会话开 seq 流
+    expect(out[0]!.scope).toBeNull();
+    expect(out[0]!.event.sessionId).toBeUndefined();
+    expect(out[0]!.event).toMatchObject({ reqId: 'r1', ok: false, error: { code: 'not_found' } });
+  });
+
+  test('读转录抛错 → io 应答，不发 error.fatal', async () => {
+    const h = await makeHarness({ historyThrows: true });
+    h.state.rememberSession('old', params);
+    await h.router.handle({ type: 'session.rewind.preview', ...c2a('old'), reqId: 'p1', targetMessageId: 'u1' }, phone);
+    const [res] = h.byType('session.rewind.preview.response') as Ev<'session.rewind.preview.response'>[];
+    expect(res!.error?.code).toBe('io');
+    expect(h.byType('error.fatal')).toHaveLength(0);
   });
 });

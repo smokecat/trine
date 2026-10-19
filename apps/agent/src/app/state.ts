@@ -53,8 +53,19 @@ export const SessionParamsSchema = z.object({
   started: z.boolean().optional(),
 });
 export type SessionParams = z.infer<typeof SessionParamsSchema>;
+export type RewindPoint = z.infer<typeof RewindPointSchema>;
 
 const SeqMapSchema = z.record(z.string(), z.number().int().nonnegative());
+
+/**
+ * 待生效的对话截断点（回退对话后、下一条消息之前；见 bridge/session.ts「回退」）。
+ * 必须落盘：CLI 只在新分支写出消息后才记住截断，agent 重启 / 空闲回收后若不带上，
+ * 下次 resume 会回到回退前的长链。
+ */
+export const RewindPointSchema = z.object({
+  resumeAt: z.string().min(1),
+  dropFrom: z.string().min(1),
+});
 
 export const AgentStateFileSchema = z.object({
   v: z.literal(1),
@@ -65,6 +76,8 @@ export const AgentStateFileSchema = z.object({
   /** SeqCursors.snapshot() 原样：key 含 NUL 分隔符 */
   inCursors: SeqMapSchema,
   sessions: z.record(z.string(), SessionParamsSchema),
+  /** sessionId → 待生效的截断点（加法字段，省略 = 没有） */
+  rewinds: z.record(z.string(), RewindPointSchema).optional(),
 });
 export type AgentStateFile = z.infer<typeof AgentStateFileSchema>;
 
@@ -216,8 +229,33 @@ export class AgentState {
    * D10），墓碑会挡住后续指向它的帧。
    */
   forgetSession(sessionId: string): void {
+    this.setPendingRewind(sessionId, undefined);
     if (!Object.hasOwn(this.#data.sessions, sessionId)) return;
     delete this.#data.sessions[sessionId];
+    this.#markDirty();
+  }
+
+  // -------------------------------------------------------------------------
+  // 待生效的对话截断点
+  // -------------------------------------------------------------------------
+
+  pendingRewind(sessionId: string): RewindPoint | undefined {
+    const rewinds = this.#data.rewinds;
+    return rewinds !== undefined && Object.hasOwn(rewinds, sessionId) ? rewinds[sessionId] : undefined;
+  }
+
+  /** 记下 / 清掉（undefined）截断点 */
+  setPendingRewind(sessionId: string, point: RewindPoint | undefined): void {
+    const current = this.pendingRewind(sessionId);
+    if (point === undefined) {
+      if (current === undefined) return;
+      const { [sessionId]: _gone, ...rest } = this.#data.rewinds ?? {};
+      if (Object.keys(rest).length === 0) delete this.#data.rewinds;
+      else this.#data.rewinds = rest;
+    } else {
+      if (current?.resumeAt === point.resumeAt && current.dropFrom === point.dropFrom) return;
+      this.#data.rewinds = { ...this.#data.rewinds, [sessionId]: { ...point } };
+    }
     this.#markDirty();
   }
 

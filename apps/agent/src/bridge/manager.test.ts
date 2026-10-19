@@ -42,6 +42,7 @@ function makeHarness(options?: {
   claudeExecutable?: string;
   rememberedParams?: SessionManagerOptions['rememberedParams'];
   headlessProbe?: SessionManagerOptions['headlessProbe'];
+  onRewindApplied?: (sessionId: string) => void;
 }) {
   const events: OutboundEvent[] = [];
   const created: FakeSession[] = [];
@@ -64,6 +65,7 @@ function makeHarness(options?: {
     ...(options?.claudeExecutable === undefined ? {} : { claudeExecutable: options.claudeExecutable }),
     ...(options?.rememberedParams === undefined ? {} : { rememberedParams: options.rememberedParams }),
     ...(options?.headlessProbe === undefined ? {} : { headlessProbe: options.headlessProbe }),
+    ...(options?.onRewindApplied === undefined ? {} : { onRewindApplied: options.onRewindApplied }),
     createSession: (args: CreateSessionArgs) => {
       const fake: FakeSession = {
         args,
@@ -158,6 +160,19 @@ describe('SessionManager · claude 可执行文件', () => {
     const without = makeHarness();
     without.manager.acquire({ sessionId: 's1', ...base });
     expect('pathToClaudeCodeExecutable' in without.created[0]!.args).toBe(false);
+  });
+});
+
+describe('SessionManager · 回退截断点', () => {
+  test('acquire 的 rewindPoint 透传给会话；会话报生效时带上 sessionId 回调', () => {
+    const applied: string[] = [];
+    const h = makeHarness({ onRewindApplied: (sid) => applied.push(sid) });
+    h.manager.acquire({ sessionId: 's1', ...base, resume: true, rewindPoint: { resumeAt: 'a0', dropFrom: 'u1' } });
+    h.manager.acquire({ sessionId: 's2', ...base });
+    expect(h.created[0]!.args.rewindPoint).toEqual({ resumeAt: 'a0', dropFrom: 'u1' });
+    expect('rewindPoint' in h.created[1]!.args).toBe(false);
+    h.created[0]!.args.onRewindApplied?.();
+    expect(applied).toEqual(['s1']);
   });
 });
 

@@ -91,9 +91,31 @@
  * 瞬时错误（分类见 errors.ts）自动 `resume` 同 sessionId 续跑，
  * 且**不重发原消息**——原消息可能已执行一半，重发会 double-write。
  * 改为发一句「继续」提示，让 Claude 基于已有上下文自行接续。
+ *
+ * ## 回退（rewind）
+ *
+ * - **代码**：所有 query 都开 `enableFileCheckpointing`（SDK 默认关，本机交互式
+ *   claude 默认开），CLI 在 Write / Edit 前给文件做快照，落盘在
+ *   `~/.claude/file-history/<sessionId>/`，跨进程可用。`previewFiles()` / `restoreFiles()` 有活跃 query
+ *   就用它；没有就临时起一个 resume 的 query（不发消息，不写转录），用完即关。
+ *   Bash 改的文件不在快照范围内。
+ * - **对话**：`resumeSessionAt` 只是启动参数，所以回退对话 = 拆掉当前 query，记下
+ *   截断点（`#pendingRewind`），下次惰性起 query 时带上。CLI 只在新分支上真的写了
+ *   消息之后才「记住」截断——只起进程不发消息就关掉，下次普通 resume 又回到长链
+ *   （实测）。所以截断点要一直带着，直到这个 query 收到第一条回复帧或 result，
+ *   才算生效并通知调用方清掉持久化的副本。
+ * - 用户消息的转录 uuid 就是推送时打的 `SDKUserMessage.uuid`（实测一致）。它在
+ *   `send()` 入队时生成并随 `user.message` 回显出去，client 回退时用它指认目标。
  */
 import { randomUUID } from 'node:crypto';
-import { query, type Options, type Query, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
+import {
+  query,
+  type Options,
+  type Query,
+  type RewindFilesResult,
+  type SDKMessage,
+  type SDKUserMessage,
+} from '@anthropic-ai/claude-agent-sdk';
 import type { BgTask, PermissionMode, SessionState, WaitingFor } from '@trine/core';
 import { BgTaskTracker, spontaneousDetailOf } from './bgtasks.ts';
 import {
@@ -104,6 +126,7 @@ import {
   type FatalClassification,
 } from './errors.ts';
 import { Heartbeat } from './heartbeat.ts';
+import { idleInput } from './idle-input.ts';
 import { PermissionBridge, type PermissionVerdict } from './permission.ts';
 import { InputQueue } from './queue.ts';
 import { backgroundSubagentEnd, toSingleLine } from './summarize.ts';
@@ -136,6 +159,9 @@ const RESUME_HINT =
 /** clientMsgId ↔ 推送 uuid 映射的容量（与队列去重表同量级；rewind 要用） */
 const MAX_REMEMBERED_UUIDS = 500;
 
+/** 临时 query 读 / 还原文件快照的超时：冷启动一两秒，留足余量 */
+const REWIND_FILES_TIMEOUT_MS = 30_000;
+
 /** 子 agent task_id → 父 toolUseId 映射的容量（量小，超限淘汰最早的） */
 const MAX_SUBAGENT_PARENTS = 500;
 
@@ -164,6 +190,20 @@ export interface ClaudeSessionOptions {
   onMeta?: (meta: SessionRuntimeMeta) => void;
   /** 日志出口（单条消息处理失败等非致命异常）；不给则 console.error */
   log?: (line: string) => void;
+  /** 待生效的对话截断点（上次回退后还没发过消息，app 从 state.json 读出来） */
+  rewindPoint?: RewindPoint;
+  /** 截断点已生效（新分支上有了第一条回复），调用方据此清掉持久化的截断点 */
+  onRewindApplied?: () => void;
+}
+
+/**
+ * 对话截断点（回退对话，见文件头「回退」）。
+ * - `resumeAt`：保留链上的最后一条 uuid，起 query 时作为 `resumeSessionAt`；
+ * - `dropFrom`：被撤掉的第一条用户消息 uuid，生效前读历史要从它截断。
+ */
+export interface RewindPoint {
+  resumeAt: string;
+  dropFrom: string;
 }
 
 /** 会话运行时元数据快照 */
@@ -285,7 +325,12 @@ export class ClaudeSession {
    */
   #stateBeforeWait: SessionState | undefined = undefined;
   /** clientMsgId → 推送 uuid（插入序即淘汰序） */
-  readonly #userMessageUuids = new Map<string, string>();
+  readonly #userMessageUuids = new Map<string, ReturnType<typeof randomUUID>>();
+  /** 待生效的对话截断点（见文件头「回退」） */
+  #pendingRewind: RewindPoint | undefined;
+  /** 带着截断点起的那个 query；它收到第一条回复即截断生效 */
+  #rewindQuery: Query | undefined = undefined;
+  readonly #onRewindApplied: (() => void) | undefined;
   /**
    * 子 agent 的 task_id → 父 Agent/Task 工具的 toolUseId（task_started 时记）。
    * canUseTool 的 agentID 就是 task_id，权限卡的来源靠它查。会话生命周期内保留
@@ -312,6 +357,8 @@ export class ClaudeSession {
     this.#log = options.log ?? ((line) => console.error(line));
     this.#claudeExecutable = options.pathToClaudeCodeExecutable;
     this.#resumeRequested = options.resume ?? false;
+    this.#pendingRewind = options.rewindPoint;
+    this.#onRewindApplied = options.onRewindApplied;
     this.#lastActivityAt = this.#now();
     this.#translate = createTranslateState(this.#now());
 
@@ -386,6 +433,98 @@ export class ClaudeSession {
     return this.#userMessageUuids.get(clientMsgId);
   }
 
+  /** userMessageUuid 的反查（回退广播要带上 clientMsgId，让实时条目也能对上） */
+  clientMsgIdOf(uuid: string): string | undefined {
+    for (const [clientMsgId, known] of this.#userMessageUuids) if (known === uuid) return clientMsgId;
+    return undefined;
+  }
+
+  /** 待生效的对话截断点（见文件头「回退」） */
+  get pendingRewind(): RewindPoint | undefined {
+    return this.#pendingRewind;
+  }
+
+  /**
+   * 不能回退的原因；undefined = 可以。运行中 / 等批准 / 有排队消息都会被回退打断，
+   * 后台任务会随拆进程死掉，所以都拒绝。
+   */
+  rewindBlocker(): string | undefined {
+    if (this.#state === 'running' || this.#state === 'waiting_permission' || this.#drainBusy || this.#round !== undefined) {
+      return '会话正在运行，请等它跑完或先停止';
+    }
+    if (this.#queue.length > 0) return '会话有排队中的消息，请先撤回或等它们跑完';
+    if (this.#bgTasks.runningCount > 0) return '会话有后台任务在运行，回退会终止它们；请先停止后台任务';
+    return undefined;
+  }
+
+  /**
+   * 统计把文件还原到某条用户消息发出之前会改动什么（不改文件）。有活跃 query 就用它；
+   * 没有就临时起一个 resume 的 query（不发消息），用完即关（见文件头「回退」）。
+   * 调用方负责先确认会话空闲、目标消息在转录里。
+   */
+  previewFiles(userMessageUuid: string): Promise<RewindFilesResult> {
+    return this.#withFilesQuery((q) => q.rewindFiles(userMessageUuid, { dryRun: true }));
+  }
+
+  /**
+   * 把文件还原到某条用户消息发出之前。SDK 真正还原时不回改动统计（只有 dryRun 才给，
+   * 实测），所以在同一个 query 上先 dryRun 取统计、再还原，结果合并两者。
+   */
+  restoreFiles(userMessageUuid: string): Promise<RewindFilesResult> {
+    return this.#withFilesQuery(async (q) => {
+      const preview = await q.rewindFiles(userMessageUuid, { dryRun: true });
+      if (!preview.canRewind) return preview;
+      const result = await q.rewindFiles(userMessageUuid);
+      if (!result.canRewind) return result;
+      return {
+        ...result,
+        filesChanged: result.filesChanged ?? preview.filesChanged ?? [],
+        insertions: result.insertions ?? preview.insertions ?? 0,
+        deletions: result.deletions ?? preview.deletions ?? 0,
+      };
+    });
+  }
+
+  /** 在活跃 query 上跑文件快照请求；没有就起一个临时 query（不发消息、带超时、用完即关） */
+  async #withFilesQuery<T>(fn: (q: Query) => Promise<T>): Promise<T> {
+    this.#touch();
+    const live = this.#query;
+    if (live !== undefined) return fn(live);
+    const abort = new AbortController();
+    const q = this.#queryFn({
+      prompt: idleInput(abort.signal),
+      options: { ...this.#baseOptions(), resume: this.sessionId, abortController: abort },
+    });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        fn(q),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error('读取文件快照超时')), REWIND_FILES_TIMEOUT_MS);
+        }),
+      ]);
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+      abort.abort();
+      try {
+        q.close();
+      } catch {
+        // 进程随 abort 收走
+      }
+    }
+  }
+
+  /**
+   * 回退对话：拆掉当前 query，记下截断点，下次起 query 时从截断点接上（见文件头
+   * 「回退」）。调用方负责先确认会话空闲（rewindBlocker）并持久化截断点。
+   */
+  rewindConversation(point: RewindPoint): void {
+    this.#touch();
+    if (this.#query !== undefined) this.#teardownQuery();
+    this.#pendingRewind = point;
+    this.#resumeRequested = true;
+  }
+
   meta(): SessionRuntimeMeta {
     const waitingFor = this.#state === 'waiting_permission' ? this.permissions.waitingFor : undefined;
     return {
@@ -441,12 +580,16 @@ export class ClaudeSession {
       return { duplicate: true };
     }
 
+    // 转录 uuid 入队时就定下来（推送时沿用），随回显发出去供回退指认
+    const uuid = randomUUID();
+    this.#rememberUuid(clientMsgId, uuid);
     // 回显给所有客户端设备（协议 §1.1 user.message）
     this.#emit({
       type: 'user.message',
       messageId: clientMsgId,
       clientMsgId,
       text,
+      uuid,
     });
 
     if (result.shouldRunNow && this.#draining === undefined) {
@@ -746,8 +889,10 @@ export class ClaudeSession {
     const push = this.#pushInput;
     if (push === undefined) throw new Error('输入流未就绪');
 
-    const uuid = randomUUID();
-    if (clientMsgId !== undefined) this.#rememberUuid(clientMsgId, uuid);
+    // 用户消息沿用 send() 时定下的 uuid；续跑提示等内部推送现生成
+    const known = clientMsgId === undefined ? undefined : this.#userMessageUuids.get(clientMsgId);
+    const uuid = known ?? randomUUID();
+    if (clientMsgId !== undefined && known === undefined) this.#rememberUuid(clientMsgId, uuid);
     // 先登记在途、再推送：读取循环处理本轮第一帧时必须已经能看到它
     const settled = new Promise<void>((resolve, reject) => {
       this.#inflight = { uuid, clientMsgId, resolve, reject };
@@ -768,7 +913,7 @@ export class ClaudeSession {
     await settled;
   }
 
-  #rememberUuid(clientMsgId: string, uuid: string): void {
+  #rememberUuid(clientMsgId: string, uuid: ReturnType<typeof randomUUID>): void {
     this.#userMessageUuids.set(clientMsgId, uuid);
     while (this.#userMessageUuids.size > MAX_REMEMBERED_UUIDS) {
       const oldest = this.#userMessageUuids.keys().next();
@@ -781,17 +926,9 @@ export class ClaudeSession {
   // 内部：query 生命周期与读取循环
   // -------------------------------------------------------------------------
 
-  /** 起 SDK query（配置对齐见文件头）并起它的读取循环 */
-  #startQuery(): void {
-    const abort = new AbortController();
-    this.#abort = abort;
-
-    // 流式输入：一个由外部 push 驱动的 AsyncIterable
-    const stream = createPushStream<SDKUserMessage>();
-    this.#pushInput = stream.push;
-    this.#endInput = stream.end;
-
-    const options: Options = {
+  /** 会话 query 与读文件快照的临时 query 共用的配置（对齐见文件头） */
+  #baseOptions(): Options {
+    return {
       // —— 硬约束：与本机交互式 claude 行为对齐（CLAUDE.md / D3）——
       systemPrompt: { type: 'preset', preset: 'claude_code' },
       settingSources: ['user', 'project', 'local'],
@@ -807,16 +944,37 @@ export class ClaudeSession {
       // --allow-dangerously-skip-permissions），不会主动启用它；不设的话
       // setPermissionMode('bypassPermissions') 会被 CLI 拒绝
       allowDangerouslySkipPermissions: true,
+      // 文件快照：回退代码的前提（见文件头「回退」）
+      enableFileCheckpointing: true,
+    };
+  }
+
+  /** 起 SDK query（配置对齐见文件头）并起它的读取循环 */
+  #startQuery(): void {
+    const abort = new AbortController();
+    this.#abort = abort;
+
+    // 流式输入：一个由外部 push 驱动的 AsyncIterable
+    const stream = createPushStream<SDKUserMessage>();
+    this.#pushInput = stream.push;
+    this.#endInput = stream.end;
+
+    const rewind = this.#resumeRequested ? this.#pendingRewind : undefined;
+    const options: Options = {
+      ...this.#baseOptions(),
       includePartialMessages: true,
       canUseTool: this.permissions.canUseTool,
       abortController: abort,
       ...(this.#resumeRequested
         ? { resume: this.sessionId }
         : { sessionId: this.sessionId }),
+      // 回退对话后的第一次起进程：从截断点接上（见文件头「回退」）
+      ...(rewind === undefined ? {} : { resumeSessionAt: rewind.resumeAt }),
     };
 
     const q = this.#queryFn({ prompt: stream.iterable, options });
     this.#query = q;
+    this.#rewindQuery = rewind === undefined ? undefined : q;
     // resume 只在首次起进程时有意义，之后同一 query 长驻
     this.#resumeRequested = false;
     // 每个进程从头记：标记见没见过、有没有进行中的轮都是 per-query 的事实
@@ -914,6 +1072,7 @@ export class ClaudeSession {
     if (this.#round === undefined && opensRound(message)) this.#openRound();
     if (this.#round?.kind === 'unknown' && isReplyFrame(message)) this.#attributeRound(message);
     if (userMessageUuidOf(message) !== undefined) this.#stampsSeen = true;
+    if (this.#rewindQuery !== undefined && (isReplyFrame(message) || message.type === 'result')) this.#rewindApplied();
 
     let bodies: EventBody[] = [];
     try {
@@ -1247,6 +1406,8 @@ export class ClaudeSession {
       // 忽略
     }
     this.#query = undefined;
+    // 截断还没生效就拆了：#pendingRewind 留着，下次起 query 再带上
+    this.#rewindQuery = undefined;
     this.#pushInput = undefined;
     this.#endInput = undefined;
     this.#abort = undefined;
@@ -1279,6 +1440,18 @@ export class ClaudeSession {
 
   #touch(): void {
     this.#lastActivityAt = this.#now();
+  }
+
+  /** 带截断点起的 query 收到了第一条回复：新分支已落盘，截断生效 */
+  #rewindApplied(): void {
+    this.#rewindQuery = undefined;
+    if (this.#pendingRewind === undefined) return;
+    this.#pendingRewind = undefined;
+    try {
+      this.#onRewindApplied?.();
+    } catch (err) {
+      this.#log(`[session ${this.sessionId}] 清理截断点失败：${errorText(err)}`);
+    }
   }
 }
 

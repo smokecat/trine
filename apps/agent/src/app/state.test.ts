@@ -152,3 +152,34 @@ describe('AgentState · forgetSession', () => {
     expect((file.outSeq as Record<string, number>).s1).toBe(9);
   });
 });
+
+describe('AgentState · 待生效的对话截断点', () => {
+  test('记下 / 覆盖 / 清掉都落盘；重启后读得回；forgetSession 一并清掉', async () => {
+    const state = await load();
+    expect(state.pendingRewind('s1')).toBeUndefined();
+    state.setPendingRewind('s1', { resumeAt: 'a0', dropFrom: 'u1' });
+    state.setPendingRewind('s2', { resumeAt: 'a5', dropFrom: 'u6' });
+    await state.flush();
+    expect((await readJson())['rewinds']).toEqual({ s1: { resumeAt: 'a0', dropFrom: 'u1' }, s2: { resumeAt: 'a5', dropFrom: 'u6' } });
+
+    const reloaded = await load();
+    expect(reloaded.pendingRewind('s1')).toEqual({ resumeAt: 'a0', dropFrom: 'u1' });
+    // 相同值不置脏
+    reloaded.setPendingRewind('s1', { resumeAt: 'a0', dropFrom: 'u1' });
+    expect(reloaded.dirty).toBe(false);
+
+    reloaded.setPendingRewind('s1', undefined);
+    reloaded.forgetSession('s2');
+    await reloaded.flush();
+    expect(reloaded.pendingRewind('s1')).toBeUndefined();
+    expect(reloaded.pendingRewind('s2')).toBeUndefined();
+    expect('rewinds' in (await readJson())).toBe(false);
+  });
+
+  test('旧版状态文件没有 rewinds 字段：照常读入', async () => {
+    await writeFile(path, JSON.stringify({ v: 1, machineId: 'mbp', outSeq: {}, inCursors: {}, sessions: {} }));
+    const state = await load();
+    expect(state.pendingRewind('s1')).toBeUndefined();
+    expect(logs).toEqual([]);
+  });
+});

@@ -54,16 +54,18 @@ function assistantMessage(text: string, id = 'msg_1'): SDKMessage {
  * @param scripts 每轮（每条用户消息）要吐的消息序列；用完后最后一个脚本复用
  */
 function fakeQueryFactory(scripts: SDKMessage[][]) {
-  const calls: { options: Options | undefined; userMessages: SDKUserMessage[] }[] = [];
+  const calls: { options: Options | undefined; userMessages: SDKUserMessage[]; rewinds: { id: string; dryRun: boolean }[]; closed: boolean }[] = [];
   let turnIndex = 0;
 
   const factory = (params: {
     prompt: string | AsyncIterable<SDKUserMessage>;
     options?: Options;
   }): Query => {
-    const record: { options: Options | undefined; userMessages: SDKUserMessage[] } = {
+    const record: (typeof calls)[number] = {
       options: params.options,
       userMessages: [],
+      rewinds: [],
+      closed: false,
     };
     calls.push(record);
 
@@ -113,8 +115,18 @@ function fakeQueryFactory(scripts: SDKMessage[][]) {
       },
       setPermissionMode: () => Promise.resolve(),
       setModel: () => Promise.resolve(),
+      // 照真 SDK：只有 dryRun 回改动统计，真正还原只回 canRewind / skippedLinks
+      rewindFiles: (id: string, opts?: { dryRun?: boolean }) => {
+        record.rewinds.push({ id, dryRun: opts?.dryRun === true });
+        return Promise.resolve(
+          opts?.dryRun === true
+            ? { canRewind: true, filesChanged: ['/tmp/a.txt'], insertions: 1, deletions: 2 }
+            : { canRewind: true, skippedLinks: 0 },
+        );
+      },
       close: () => {
         interrupted = true;
+        record.closed = true;
       },
     };
 
@@ -1993,6 +2005,147 @@ describe('ClaudeSession · 权限来源兜底（评审 m6）', () => {
     void session.permissions.canUseTool('Write', { file_path: '/x' }, { signal: new AbortController().signal, toolUseID: 'toolu_w', requestId: 'r', agentID: 'no-task-started' } as never);
     const req = events.find((e) => e.type === 'permission.request');
     expect(req).toMatchObject({ parentToolUseId: 'toolu_parent' });
+    await session.close();
+  });
+});
+
+describe('ClaudeSession · 回退（rewind）', () => {
+  test('回显带转录 uuid，推给 SDK 的用户消息用同一个 uuid；可双向查', async () => {
+    const { session, events, calls } = makeSession([[assistantMessage('ok'), resultMessage()]]);
+    session.send('m1', '你好');
+    await waitFor(() => events.some((e) => e.type === 'run.done'));
+    const echo = events.find((e) => e.type === 'user.message') as Extract<EventBody, { type: 'user.message' }>;
+    expect(echo.uuid).toBeString();
+    expect(calls[0]!.userMessages[0]!.uuid).toBe(echo.uuid as never);
+    expect(session.userMessageUuid('m1')).toBe(echo.uuid!);
+    expect(session.clientMsgIdOf(echo.uuid!)).toBe('m1');
+    expect(session.clientMsgIdOf('nope')).toBeUndefined();
+    await session.close();
+  });
+
+  test('会话 query 打开 enableFileCheckpointing', async () => {
+    const { session, calls } = makeSession([[resultMessage()]]);
+    session.send('m1', 'x');
+    await waitFor(() => calls.length > 0);
+    expect(calls[0]!.options!.enableFileCheckpointing).toBe(true);
+    await session.close();
+  });
+
+  test('没有子进程时 previewFiles 起临时 query（resume、不发消息），用完关掉', async () => {
+    const { session, calls } = makeSession([[resultMessage()]], { resume: true });
+    const result = await session.previewFiles('u-1');
+    expect(result).toMatchObject({ canRewind: true, filesChanged: ['/tmp/a.txt'] });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.options).toMatchObject({ resume: 's1', enableFileCheckpointing: true, cwd: '/tmp' });
+    expect(calls[0]!.rewinds).toEqual([{ id: 'u-1', dryRun: true }]);
+    expect(calls[0]!.userMessages).toHaveLength(0);
+    expect(calls[0]!.closed).toBe(true);
+    expect(session.hasProcess).toBe(false);
+    await session.close();
+  });
+
+  test('restoreFiles：同一个 query 上先 dryRun 取统计再还原，结果合并（真 SDK 还原时不回统计）', async () => {
+    const { session, calls } = makeSession([[resultMessage()]], { resume: true });
+    const result = await session.restoreFiles('u-1');
+    expect(result).toEqual({ canRewind: true, skippedLinks: 0, filesChanged: ['/tmp/a.txt'], insertions: 1, deletions: 2 });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.rewinds).toEqual([
+      { id: 'u-1', dryRun: true },
+      { id: 'u-1', dryRun: false },
+    ]);
+    expect(calls[0]!.closed).toBe(true);
+    await session.close();
+  });
+
+  test('有活跃子进程时直接用它', async () => {
+    const { session, events, calls } = makeSession([[assistantMessage('ok'), resultMessage()]]);
+    session.send('m1', 'x');
+    await waitFor(() => events.some((e) => e.type === 'run.done'));
+    await session.restoreFiles('u-1');
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.rewinds.map((r) => r.dryRun)).toEqual([true, false]);
+    expect(session.hasProcess).toBe(true);
+    await session.close();
+  });
+
+  test('rewindConversation：拆进程，下次起 query 带 resumeSessionAt；收到回复后生效、只带一次', async () => {
+    let applied = 0;
+    const { session, events, calls } = makeSession([[assistantMessage('ok'), resultMessage()]], {
+      onRewindApplied: () => {
+        applied += 1;
+      },
+    });
+    session.send('m1', 'x');
+    await waitFor(() => events.filter((e) => e.type === 'run.done').length === 1);
+    expect(session.rewindBlocker()).toBeUndefined();
+
+    session.rewindConversation({ resumeAt: 'a-0', dropFrom: 'u-1' });
+    expect(session.hasProcess).toBe(false);
+    expect(calls[0]!.closed).toBe(true);
+    expect(session.pendingRewind).toEqual({ resumeAt: 'a-0', dropFrom: 'u-1' });
+
+    session.send('m2', '换个思路');
+    await waitFor(() => events.filter((e) => e.type === 'run.done').length === 2);
+    expect(calls[1]!.options).toMatchObject({ resume: 's1', resumeSessionAt: 'a-0' });
+    expect(applied).toBe(1);
+    expect(session.pendingRewind).toBeUndefined();
+
+    // 之后再起进程就是普通 resume
+    await session.stop();
+    session.send('m3', '继续');
+    await waitFor(() => calls.length === 3);
+    expect(calls[2]!.options!.resumeSessionAt).toBeUndefined();
+    await session.close();
+  });
+
+  test('构造时给了截断点（agent 重启后）：首次 resume 带上', async () => {
+    const { session, calls } = makeSession([[assistantMessage('ok'), resultMessage()]], {
+      resume: true,
+      rewindPoint: { resumeAt: 'a-0', dropFrom: 'u-1' },
+    });
+    session.send('m1', 'x');
+    await waitFor(() => calls.length > 0);
+    expect(calls[0]!.options).toMatchObject({ resume: 's1', resumeSessionAt: 'a-0' });
+    await session.close();
+  });
+
+  test('rewindBlocker：运行中（含其间又排了消息）给出原因', async () => {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const { session, events } = makeSession([[assistantMessage('ok'), resultMessage()]], {
+      queryFn: ((params: { prompt: AsyncIterable<SDKUserMessage> }) => {
+        const it = params.prompt[Symbol.asyncIterator]();
+        let step = 0;
+        const gen = {
+          async next(): Promise<IteratorResult<SDKMessage, void>> {
+            if (step === 0) {
+              step = 1;
+              await it.next();
+              return { value: assistantMessage('working'), done: false };
+            }
+            if (step === 1) {
+              step = 2;
+              await gate;
+              return { value: resultMessage(), done: false };
+            }
+            await new Promise(() => {});
+            return { value: undefined, done: true };
+          },
+          interrupt: () => Promise.resolve(),
+          close: () => {},
+          [Symbol.asyncIterator]: () => gen,
+        };
+        return gen as unknown as Query;
+      }) as never,
+    });
+    session.send('m1', 'x');
+    await waitFor(() => events.some((e) => e.type === 'assistant.done' || e.type === 'assistant.delta') || session.state === 'running');
+    expect(session.rewindBlocker()).toContain('正在运行');
+    session.send('m2', 'y');
+    expect(session.rewindBlocker()).toContain('正在运行');
+    release();
     await session.close();
   });
 });

@@ -176,6 +176,8 @@ export class AgentApp {
       onRunEnd: (sessionId) => router.onRunEnd(sessionId),
       // 权限模式变化（含 CLI 自行切换）落盘到 state.json，下次 resume 按它起
       onPermissionModeChange: (sessionId, mode) => router.onPermissionModeChange(sessionId, mode),
+      // 回退后的截断点生效了（新分支已落盘），清掉持久化的副本
+      onRewindApplied: (sessionId) => state.setPendingRewind(sessionId, undefined),
       log,
       ...headlessProbeOption(deps),
     });

@@ -41,6 +41,10 @@ is not a substitute for those controls, backups or TLS.
   Enabling bypass permissions increases the authority of every paired controller.
   The web app preselects `bypassPermissions` for new sessions by default; change it in
   Settings → New session defaults if you want tool approval prompts.
+- Any paired controller can rewind a session. Restoring code overwrites or deletes the
+  files Claude edited since the chosen message, without a tool approval prompt. Sessions
+  keep Claude Code file checkpoints (backups of edited files) in Claude's configuration
+  directory.
 
 ## First registration and additional machines
 

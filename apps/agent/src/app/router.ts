@@ -60,9 +60,17 @@
  * 墓碑判定仍在会话链上做；探测本身（冷启动一两秒，最坏到超时）放到**链外**
  * 跑，不堵同会话紧随其后的 input.send。尽力而为：探测失败只 log、回空数组，
  * 不发 error.fatal（菜单拉取失败不该进聊天时间线）。只定向回请求方。
+ *
+ * ## 回退：session.rewind.preview / session.rewind
+ *
+ * 编排在 rewind.ts。要 resolveSession（读文件快照可能要起临时 query，会话实例是
+ * 入口），但不发消息、不占着进程。应答会话级、只定向回请求方；成功的回退先对全部
+ * 设备广播 `session.rewound` 再应答。处理中的异常收敛成 `io` 应答，不走链的兜底
+ * （那会发 error.fatal 进时间线，且关联不到请求）。待生效的截断点存在 state.json，
+ * 期间 session.history.request 按它截掉被撤的尾巴。
  */
 import { randomUUID } from 'node:crypto';
-import { getSessionMessages, type SlashCommand as SdkSlashCommand } from '@anthropic-ai/claude-agent-sdk';
+import { getSessionMessages, type SessionMessage, type SlashCommand as SdkSlashCommand } from '@anthropic-ai/claude-agent-sdk';
 import type {
   AgentToClientEvent,
   ClientToAgentEvent,
@@ -72,7 +80,7 @@ import type {
   SlashCommand,
 } from '@trine/core';
 import type { EventEmitter } from '../bridge/emitter.ts';
-import { paginateHistory, toHistoryItems, toSubagentHistoryItems } from '../bridge/history.ts';
+import { cutAtRewind, paginateHistory, toHistoryItems, toSubagentHistoryItems } from '../bridge/history.ts';
 import { readSubagentTranscript } from '../bridge/subagent-history.ts';
 import {
   ConcurrencyLimitError,
@@ -86,6 +94,7 @@ import type { Recipient } from '../net/recipients.ts';
 import type { CwdStore } from './cwd-store.ts';
 import type { ClaudeUpdateOutcome } from './claude-cli.ts';
 import type { SessionFlagsStore } from './session-flags.ts';
+import { executeRewind, previewRewind, type RewindDeps } from './rewind.ts';
 import { SessionMutations, type MutationOutcome } from './session-mutations.ts';
 import type { AgentState, SessionParams } from './state.ts';
 
@@ -408,7 +417,23 @@ export class Router {
     }
 
     const session = await this.resolveSession(sessionId);
-    if (session === undefined) return;
+    if (session === undefined) {
+      // 回退带 reqId：resolve 失败（会话不存在 / 并发已满）也要应答，否则 client 干等到超时。
+      // 走机器级（不为可能不存在的会话开 seq 流，见文件头）；client 只按 reqId 关联
+      if (event.type === 'session.rewind.preview' || event.type === 'session.rewind') {
+        this.#deps.emitter.emit(
+          {
+            type: event.type === 'session.rewind' ? 'session.rewind.response' : 'session.rewind.preview.response',
+            reqId: event.reqId,
+            ok: false,
+            error: { code: 'not_found', message: '无法打开这个会话（会话不存在，或活跃会话已达上限）' },
+          },
+          null,
+          { to: sender.deviceId },
+        );
+      }
+      return;
+    }
 
     switch (event.type) {
       case 'input.send':
@@ -458,6 +483,10 @@ export class Router {
           reqId: event.reqId,
           servers: this.#deps.capabilities.mcpServers(sessionId) ?? [],
         });
+        return;
+      case 'session.rewind.preview':
+      case 'session.rewind':
+        await this.#rewind(sessionId, session, event, sender);
         return;
       default:
         this.#log(`[router] 未处理的会话级事件 type=${event.type}`);
@@ -547,9 +576,8 @@ export class Router {
   /**
    * 历史回看：读转录 → HistoryItem[] → 按 before/limit 分页 + 体积封顶 → 定向回给请求方。
    *
-   * cwd 只从零成本来源取（state.json / manager meta），拿不到就不传 dir、让 SDK
-   * 搜全部项目——为了一个 dir 去跑 listSessions 不值。给了 dir 却没读到（会话切过
-   * cwd，转录在别的项目目录下）再不带 dir 兜一次。会话不存在 → 空页，不报错。
+   * 转录读取见 #readTranscript（为了一个 dir 去跑 listSessions 不值）。有待生效的
+   * 回退截断点时先截掉被撤的尾巴。会话不存在 → 空页，不报错。
    * 读取抛错交给命令链兜底（error.fatal，现有惯例）。
    */
   async #history(
@@ -557,10 +585,8 @@ export class Router {
     event: Extract<ClientToAgentEvent, { type: 'session.history.request' }>,
     sender: Recipient,
   ): Promise<void> {
-    const read = this.#deps.getSessionMessagesFn ?? getSessionMessages;
-    const cwd = this.#deps.state.sessionParams(sessionId)?.cwd ?? this.#deps.manager.metaOf(sessionId)?.cwd;
-    let messages = await read(sessionId, cwd === undefined || cwd === '' ? {} : { dir: cwd });
-    if (messages.length === 0 && cwd !== undefined && cwd !== '') messages = await read(sessionId, {});
+    const pending = this.#deps.manager.get(sessionId)?.pendingRewind ?? this.#deps.state.pendingRewind(sessionId);
+    const messages = cutAtRewind(await this.#readTranscript(sessionId), pending?.dropFrom);
     const page = paginateHistory(toHistoryItems(messages), { before: event.before, limit: event.limit });
     this.#deps.emitter.emit(
       {
@@ -573,6 +599,58 @@ export class Router {
       sessionId,
       { to: sender.deviceId },
     );
+  }
+
+  /**
+   * 读会话主链：cwd 只从零成本来源取（state.json / manager meta），拿不到就不传 dir、
+   * 让 SDK 搜全部项目；给了 dir 却没读到（会话切过 cwd）再不带 dir 兜一次。
+   */
+  async #readTranscript(sessionId: string): Promise<SessionMessage[]> {
+    const read = this.#deps.getSessionMessagesFn ?? getSessionMessages;
+    const cwd = this.#deps.state.sessionParams(sessionId)?.cwd ?? this.#deps.manager.metaOf(sessionId)?.cwd;
+    const messages = await read(sessionId, cwd === undefined || cwd === '' ? {} : { dir: cwd });
+    if (messages.length === 0 && cwd !== undefined && cwd !== '') return read(sessionId, {});
+    return messages;
+  }
+
+  /** 回退预览 / 执行（见文件头「回退」） */
+  async #rewind(
+    sessionId: string,
+    session: ClaudeSession,
+    event: Extract<ClientToAgentEvent, { type: 'session.rewind.preview' | 'session.rewind' }>,
+    sender: Recipient,
+  ): Promise<void> {
+    const deps: RewindDeps = {
+      readMessages: (sid) => this.#readTranscript(sid),
+      setPendingRewind: (sid, point) => this.#deps.state.setPendingRewind(sid, point),
+    };
+    const reply = (body: EventBody): void => {
+      this.#deps.emitter.emit(body, sessionId, { to: sender.deviceId });
+    };
+    const failed = (err: unknown) => {
+      const message = err instanceof Error ? err.message : String(err);
+      this.#log(`[router] ${event.type} 失败 session=${sessionId}: ${message}`);
+      return { ok: false as const, error: { code: 'io' as const, message: `agent 处理失败：${message}`.slice(0, 300) } };
+    };
+    if (event.type === 'session.rewind.preview') {
+      const result = await previewRewind(deps, session, event.targetMessageId).catch(failed);
+      reply({ type: 'session.rewind.preview.response', reqId: event.reqId, ...result });
+      return;
+    }
+    const result = await executeRewind(deps, session, event.targetMessageId, event.mode).catch(failed);
+    if (!result.ok) {
+      reply({ type: 'session.rewind.response', reqId: event.reqId, ok: false, error: result.error });
+      return;
+    }
+    this.#log(`[router] 会话 ${sessionId} 已回退（${event.mode}）`);
+    this.#emitSession(sessionId, { type: 'session.rewound', ...result.rewound });
+    reply({
+      type: 'session.rewind.response',
+      reqId: event.reqId,
+      ok: true,
+      text: result.text,
+      ...(result.files === undefined ? {} : { files: result.files }),
+    });
   }
 
   /** 子 agent 过程回看（见文件头）：cwd 取法同 #history，猜不中由定位器扫描兜底 */
@@ -701,7 +779,8 @@ export class Router {
       permissionMode: meta.permissionMode,
       started,
     };
-    manager.acquire({ sessionId, ...params, resume: started });
+    const rewindPoint = session.pendingRewind;
+    manager.acquire({ sessionId, ...params, resume: started, ...(rewindPoint === undefined ? {} : { rewindPoint }) });
     state.rememberSession(sessionId, params);
     // acquire(resume:true) 不广播，这里手动发 session.updated 让所有 client 看到新 cwd
     const updated = manager.metaOf(sessionId);
@@ -789,11 +868,13 @@ export class Router {
       // 第一次状态迁移就把空标题广播出去（评审 B3）
       const seed = resume ? await this.#seedFor(sessionId) : undefined;
       if (this.#deps.manager.has(sessionId)) return this.#deps.manager.get(sessionId);
+      const rewindPoint = resume ? this.#deps.state.pendingRewind(sessionId) : undefined;
       const { session } = this.#deps.manager.acquire({
         sessionId,
         ...params,
         resume,
         ...(seed === undefined ? {} : { seed }),
+        ...(rewindPoint === undefined ? {} : { rewindPoint }),
       });
       this.#deps.state.rememberSession(sessionId, params);
       return session;

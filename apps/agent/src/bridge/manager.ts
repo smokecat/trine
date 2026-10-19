@@ -27,7 +27,7 @@ import {
   type SDKSessionInfo,
 } from '@anthropic-ai/claude-agent-sdk';
 import { EventEmitter, scopedEmitter } from './emitter.ts';
-import { ClaudeSession, type SessionRuntimeMeta } from './session.ts';
+import { ClaudeSession, type RewindPoint, type SessionRuntimeMeta } from './session.ts';
 import type { HeadlessProbe } from './session-origin.ts';
 import type { EventBody } from './types.ts';
 
@@ -109,6 +109,11 @@ export interface SessionManagerOptions {
    * 后者没有 client 命令经过 router，只能从 meta 变化这里接出去。
    */
   onPermissionModeChange?: (sessionId: string, mode: PermissionMode) => void;
+  /**
+   * 会话的对话截断点已生效（回退后的第一条回复到了）时回调，app 接到 state.json
+   * 清掉持久化的截断点（见 session.ts「回退」）。
+   */
+  onRewindApplied?: (sessionId: string) => void;
   /** 日志出口，透传给会话（单条 SDK 消息处理失败等非致命异常） */
   log?: (line: string) => void;
   /**
@@ -131,6 +136,9 @@ export interface CreateSessionArgs {
   onIdle?: () => void;
   onMeta?: (meta: SessionRuntimeMeta) => void;
   log?: (line: string) => void;
+  /** 待生效的对话截断点（见 session.ts「回退」） */
+  rewindPoint?: RewindPoint;
+  onRewindApplied?: () => void;
 }
 
 const DEFAULT_MAX_CONCURRENT = 5;
@@ -173,6 +181,7 @@ export class SessionManager {
   readonly #rememberedParams: SessionManagerOptions['rememberedParams'];
   readonly #onRunEnd: ((sessionId: string) => void) | undefined;
   readonly #onPermissionModeChange: ((sessionId: string, mode: PermissionMode) => void) | undefined;
+  readonly #onRewindApplied: ((sessionId: string) => void) | undefined;
   readonly #log: ((line: string) => void) | undefined;
   readonly #headlessProbe: HeadlessProbe | undefined;
   /** 已探明是非交互出身的 sessionId（出身不变，只增不减） */
@@ -199,6 +208,7 @@ export class SessionManager {
     this.#claudeExecutable = options.claudeExecutable;
     this.#onRunEnd = options.onRunEnd;
     this.#onPermissionModeChange = options.onPermissionModeChange;
+    this.#onRewindApplied = options.onRewindApplied;
     this.#log = options.log;
     this.#headlessProbe = options.headlessProbe;
     this.#createSession =
@@ -234,6 +244,8 @@ export class SessionManager {
      * ——早先这里一律 `title: ''`，resume 一次标题就被广播成空（评审 B3）。
      */
     seed?: SessionSeed;
+    /** 待生效的对话截断点（调用方从 state.json 取；见 session.ts「回退」） */
+    rewindPoint?: RewindPoint;
   }): AcquireResult {
     const existing = this.#sessions.get(args.sessionId);
     if (existing !== undefined) {
@@ -269,6 +281,8 @@ export class SessionManager {
       },
       onMeta: (meta) => this.#onMeta(meta),
       ...(this.#log === undefined ? {} : { log: this.#log }),
+      ...(args.rewindPoint === undefined ? {} : { rewindPoint: args.rewindPoint }),
+      onRewindApplied: () => this.#onRewindApplied?.(args.sessionId),
     });
 
     this.#sessions.set(args.sessionId, session);

@@ -21,7 +21,15 @@
  */
 import { sodiumReady } from '@trine/core/crypto';
 import { AuthClient, httpBase, type AuthToken } from '@trine/core/net';
-import type { AgentToClientEvent, PermissionMode, SessionMeta, SessionMutateErrorCode, TransportFrame } from '@trine/core';
+import type {
+  AgentToClientEvent,
+  PermissionMode,
+  RewindErrorCode,
+  RewindMode,
+  SessionMeta,
+  SessionMutateErrorCode,
+  TransportFrame,
+} from '@trine/core';
 import type { Clock, DocStore, KvAdapter, SocketFactory } from './adapters.ts';
 import { Connection, type ConnectionSnapshot } from './connection.ts';
 import { Inbound, type DroppedInfo } from './envelope.ts';
@@ -156,6 +164,23 @@ export class SessionMutateError extends Error {
     this.name = 'SessionMutateError';
   }
 }
+
+/** 回退被 agent 拒绝（`ok:false`）：message 是 agent 给的人话，原样展示 */
+export class RewindError extends Error {
+  constructor(
+    readonly code: RewindErrorCode,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'RewindError';
+  }
+}
+
+export type RewindPreviewResult = Extract<AgentToClientEvent, { type: 'session.rewind.preview.response' }>;
+export type RewindResult = Extract<AgentToClientEvent, { type: 'session.rewind.response' }>;
+
+/** 回退请求的超时：会话没有子进程时 agent 要临时起一个读文件快照（冷启动一两秒） */
+const REWIND_TIMEOUT_MS = 45_000;
 
 /** 会话元数据命令等不到应答时的说法：旧 agent 会静默丢弃未知帧（协议 §2 互操作） */
 export const MUTATE_TIMEOUT_HINT = '未收到 agent 应答：agent 版本过旧或离线';
@@ -831,6 +856,40 @@ export class TrineClient {
     const body: { type: 'bgtask.stop'; sessionId: string; taskId: string } = { type: 'bgtask.stop', sessionId, taskId };
     const res = await this.request(machineId, body);
     if (res.type !== 'session.mutate.response') throw new Error(`意外的应答 ${res.type}`);
+  }
+
+  /**
+   * 回退预览（`session.rewind.preview`，agent ≥ 0.9.0；版本门控由调用方做）。
+   * 不改任何东西；`ok:false`（busy / not_found / io）抛 RewindError。
+   * 响应是定向帧，只有本设备收得到。
+   */
+  async previewRewind(machineId: string, sessionId: string, targetMessageId: string): Promise<RewindPreviewResult> {
+    const body: { type: 'session.rewind.preview'; sessionId: string; targetMessageId: string } = {
+      type: 'session.rewind.preview',
+      sessionId,
+      targetMessageId,
+    };
+    const res = await this.request(machineId, body, { timeoutMs: Math.max(this.#requestTimeoutMs, REWIND_TIMEOUT_MS) });
+    if (res.type !== 'session.rewind.preview.response') throw new Error(`意外的应答 ${res.type}`);
+    if (!res.ok) throw rewindError(res.error);
+    return res;
+  }
+
+  /**
+   * 执行回退（`session.rewind`）。成功时 agent 已先广播 `session.rewound`，各设备的
+   * 时间线由它截断；这里只返回结果（还原的文件、原消息文本供预填）。
+   */
+  async rewind(machineId: string, sessionId: string, targetMessageId: string, mode: RewindMode): Promise<RewindResult> {
+    const body: { type: 'session.rewind'; sessionId: string; targetMessageId: string; mode: RewindMode } = {
+      type: 'session.rewind',
+      sessionId,
+      targetMessageId,
+      mode,
+    };
+    const res = await this.request(machineId, body, { timeoutMs: Math.max(this.#requestTimeoutMs, REWIND_TIMEOUT_MS) });
+    if (res.type !== 'session.rewind.response') throw new Error(`意外的应答 ${res.type}`);
+    if (!res.ok) throw rewindError(res.error);
+    return res;
   }
 
   /** 任意 c2a 事件（不等应答）；返回是否发出（fatal scope 为 false） */
@@ -1654,4 +1713,8 @@ export class TrineClient {
       this.#sweepParked();
     }, delay);
   }
+}
+
+function rewindError(error: { code: RewindErrorCode; message: string } | undefined): RewindError {
+  return error === undefined ? new RewindError('io', 'agent 拒绝了回退（未给原因）') : new RewindError(error.code, error.message);
 }

@@ -24,6 +24,13 @@
  * （`shouldAutoLoadHistory`）自动向 agent 要一页本机转录历史，前插到时间线开头；
  * 还有更早的就在顶部给「加载更早」。加载中 / 失败只在顶部一行轻提示。
  *
+ * ## 回退
+ *
+ * 用户消息上的「回退到这里」→ RewindDialog（预览 + 选模式）→ `session.rewind`。
+ * 只在 agent ≥ 0.9.0、机器在线、会话空闲且没有后台任务时给入口（agent 也会拒绝
+ * busy）。时间线的截断由 agent 广播的 `session.rewound` 驱动；回退了对话且输入框
+ * 为空时把原消息填回去，方便改了再发。
+ *
  * ## `/status` `/mcp` 是本地信息卡
  *
  * 按需请求、不轮询（方案 §0 行 i：这类请求占 agent 的并发名额）。结果不进
@@ -32,7 +39,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router';
 import { toast } from 'sonner';
-import type { McpServerStatus, PermissionMode } from '@trine/core';
+import type { McpServerStatus, PermissionMode, RewindMode } from '@trine/core';
 import { AppHead } from '@/components/shell/AppHead.tsx';
 import { ChipLabel, StatePill, StatusDot } from '@/components/shell/StatusDot.tsx';
 import { Button } from '@/components/ui/button.tsx';
@@ -41,6 +48,8 @@ import { HistoryHead, InfoCard, type HistoryHeadState } from '@/components/chat/
 import { HeartbeatFooter } from '@/components/chat/HeartbeatFooter.tsx';
 import { BgTaskBar } from '@/components/chat/BgTaskBar.tsx';
 import { Timeline, type TimelineHandlers } from '@/components/chat/Timeline.tsx';
+import { RewindDialog } from '@/components/chat/RewindDialog.tsx';
+import { rewindDoneMessage } from '@/components/chat/rewind-model.ts';
 import type { PermissionDecision } from '@/components/chat/PermissionCard.tsx';
 import { heartbeatView } from '@/components/chat/heartbeat-model.ts';
 import { resolvedAliasModel, shortModel } from '@/components/list/sorting.ts';
@@ -62,12 +71,15 @@ import {
   agentSupportsBgTaskStop,
   agentSupportsHistory,
   agentSupportsPlanOptions,
+  agentSupportsRewind,
   agentSupportsSubagentHistory,
   bgRunningCount,
   bgTasksStale,
   emptyTimeline,
+  rewindTargetId,
   shouldAutoLoadHistory,
   type PermissionEntry,
+  type UserEntry,
 } from '@/lib/reducer.ts';
 import { timelineKey } from '@/lib/storage.ts';
 import { formatCost } from '@/lib/format.ts';
@@ -113,6 +125,8 @@ export function ChatView(): React.JSX.Element {
   const [renameOpen, setRenameOpen] = useState(false);
   const [renameBusy, setRenameBusy] = useState(false);
   const [now, setNow] = useState(() => Date.now());
+  /** 正在确认回退的目标用户消息（RewindDialog 打开中） */
+  const [rewindTarget, setRewindTarget] = useState<UserEntry | null>(null);
   /** 历史拉取的本地进度（按会话 key 记，切会话不串） */
   const [historyLoad, setHistoryLoad] = useState<{ key: string; state: 'loading' | 'error'; message?: string } | null>(null);
 
@@ -298,6 +312,31 @@ export function ChatView(): React.JSX.Element {
         client ? client.loadSubagentHistory(machineId, sessionId, toolUseId) : Promise.reject(new Error('未连接')),
     }),
     [client, machineId, sessionId],
+  );
+
+  // 回退入口：条件不满足时不给回调，用户消息上就不出按钮（见文件头「回退」）
+  const canRewind =
+    client !== null &&
+    machine?.online === true &&
+    agentSupportsRewind(machine.info?.agentVersion) &&
+    !running &&
+    bgRunning === 0;
+  const openRewind = useCallback((entry: UserEntry) => setRewindTarget(entry), []);
+  const rewindId = rewindTarget === null ? undefined : rewindTargetId(rewindTarget);
+  const loadRewindPreview = useCallback(() => {
+    if (!client || rewindId === undefined) return Promise.reject(new Error('未连接'));
+    return client.previewRewind(machineId, sessionId, rewindId);
+  }, [client, machineId, sessionId, rewindId]);
+  const confirmRewind = useCallback(
+    async (mode: RewindMode) => {
+      if (!client || rewindId === undefined || rewindTarget === null) throw new Error('未连接');
+      const result = await client.rewind(machineId, sessionId, rewindId, mode);
+      const prefill = mode !== 'code' && draft.trim() === '';
+      if (prefill) setDraft(key, result.text ?? rewindTarget.text);
+      setRewindTarget(null);
+      toast.success(rewindDoneMessage(result, mode, prefill));
+    },
+    [client, machineId, sessionId, rewindId, rewindTarget, draft, key, setDraft],
   );
 
   const stopBgTask = useCallback(
@@ -512,6 +551,7 @@ export function ChatView(): React.JSX.Element {
           planOptions={agentSupportsPlanOptions(machine?.info?.agentVersion)}
           // machine.info 还没到时不下「版本过旧」的结论（评审 m4）
           subagentHistory={machine?.info == null ? null : agentSupportsSubagentHistory(machine.info.agentVersion)}
+          onRewind={canRewind ? openRewind : undefined}
           head={
             <HistoryHead
               state={historyHead}
@@ -556,6 +596,16 @@ export function ChatView(): React.JSX.Element {
           ...(onRename === undefined ? { unavailable: ['rename'] as const } : {}),
         }}
         sendKey={prefs.sendKey}
+      />
+
+      <RewindDialog
+        open={rewindTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) setRewindTarget(null);
+        }}
+        messageText={rewindTarget?.text ?? ''}
+        loadPreview={loadRewindPreview}
+        onConfirm={confirmRewind}
       />
 
       <SessionSettingsSheet

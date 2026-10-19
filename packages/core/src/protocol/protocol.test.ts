@@ -631,6 +631,69 @@ describe('子 agent 过程（subagent-view）', () => {
   });
 });
 
+describe('回退（rewind）', () => {
+  test('user.message 可带 uuid（非空串），省略照过', () => {
+    const frame = { type: 'user.message', ...a2c, messageId: 'c1', clientMsgId: 'c1', text: 'hi', uuid: 'u-1' };
+    expect(AgentToClientEventSchema.parse(frame)).toEqual(frame as never);
+    expect(AgentToClientEventSchema.safeParse({ ...frame, uuid: '' }).success).toBe(false);
+    const { uuid: _u, ...plain } = frame;
+    expect(AgentToClientEventSchema.safeParse(plain).success).toBe(true);
+  });
+
+  test('session.rewind.preview / session.rewind：c2a、要求 reqId 与 targetMessageId、mode 封闭枚举', () => {
+    const preview = { type: 'session.rewind.preview', ...c2a, reqId: 'r1', targetMessageId: 'u-1' };
+    expect(ClientToAgentEventSchema.parse(preview)).toEqual(preview as never);
+    expect(ClientToAgentEventSchema.safeParse({ ...preview, targetMessageId: '' }).success).toBe(false);
+    expect(AgentToClientEventSchema.safeParse(preview).success).toBe(false);
+
+    for (const mode of ['both', 'conversation', 'code']) {
+      const frame = { type: 'session.rewind', ...c2a, reqId: 'r2', targetMessageId: 'u-1', mode };
+      expect(ClientToAgentEventSchema.parse(frame)).toEqual(frame as never);
+    }
+    expect(
+      ClientToAgentEventSchema.safeParse({ type: 'session.rewind', ...c2a, reqId: 'r2', targetMessageId: 'u-1', mode: 'all' }).success,
+    ).toBe(false);
+    expect(ClientToAgentEventSchema.safeParse({ type: 'session.rewind', ...c2a, reqId: 'r2', targetMessageId: 'u-1' }).success).toBe(false);
+  });
+
+  test('session.rewind.preview.response：成功带两部分可用性，失败带 error', () => {
+    const ok = {
+      type: 'session.rewind.preview.response',
+      ...a2c,
+      reqId: 'r1',
+      ok: true,
+      text: '改一下 README',
+      conversation: { available: true },
+      files: { available: true, filesChanged: ['README.md'], insertions: 3, deletions: 1 },
+    };
+    expect(AgentToClientEventSchema.parse(ok)).toEqual(ok as never);
+    const noFiles = { ...ok, conversation: { available: false, reason: '第一条消息' }, files: { available: false, reason: '没有快照' } };
+    expect(AgentToClientEventSchema.parse(noFiles)).toEqual(noFiles as never);
+    const failed = { type: 'session.rewind.preview.response', ...a2c, reqId: 'r1', ok: false, error: { code: 'busy', message: '运行中' } };
+    expect(AgentToClientEventSchema.parse(failed)).toEqual(failed as never);
+    expect(AgentToClientEventSchema.safeParse({ ...failed, error: { code: 'nope', message: 'x' } }).success).toBe(false);
+    expect(ClientToAgentEventSchema.safeParse(ok).success).toBe(false);
+  });
+
+  test('session.rewind.response 与 session.rewound：a2c、会话级', () => {
+    const res = {
+      type: 'session.rewind.response',
+      ...a2c,
+      reqId: 'r2',
+      ok: true,
+      text: 'hi',
+      files: { filesChanged: ['a.txt'], insertions: 0, deletions: 2, skippedLinks: 0 },
+    };
+    expect(AgentToClientEventSchema.parse(res)).toEqual(res as never);
+    expect(AgentToClientEventSchema.safeParse({ ...res, files: { ...res.files, insertions: -1 } }).success).toBe(false);
+
+    const rewound = { type: 'session.rewound', ...a2c, targetMessageIds: ['u-1', 'c1'], mode: 'both', filesChanged: 1 };
+    expect(AgentToClientEventSchema.parse(rewound)).toEqual(rewound as never);
+    expect(AgentToClientEventSchema.safeParse({ ...rewound, targetMessageIds: [] }).success).toBe(false);
+    expect(ClientToAgentEventSchema.safeParse(rewound).success).toBe(false);
+  });
+});
+
 describe('远程更新 claude（claude-update）', () => {
   const machineA2c = { ts, seq: 1, dir: 'a2c' } as const;
   const machineC2a = { ts, seq: 1, dir: 'c2a' } as const;

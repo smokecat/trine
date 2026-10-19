@@ -728,7 +728,7 @@ describe('agent 接线 · 端到端', () => {
       ['/home/u/.local/bin/claude', 'update'],
       ['/home/u/.local/bin/claude', '--version'],
     ]);
-    expect(app.machineInfo()).toMatchObject({ agentVersion: '0.8.0', claudeVersion: '2.1.282 (Claude Code)' });
+    expect(app.machineInfo()).toMatchObject({ agentVersion: '0.9.0', claudeVersion: '2.1.282 (Claude Code)' });
     client.close();
   });
 });

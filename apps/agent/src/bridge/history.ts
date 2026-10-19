@@ -120,6 +120,32 @@ function userText(content: unknown): string {
 }
 
 /**
+ * 主链上的一行是不是「用户说的话」：是就返回清洗后的文本，否则 undefined
+ * （子代理行、工具结果载体、本地命令输出、空文本）。与 toHistoryItems 出 user 条目
+ * 的口径一致——回退只能指向历史里看得见的用户消息。
+ */
+export function humanUserText(message: SessionMessage): string | undefined {
+  if (message.type !== 'user') return undefined;
+  if (message.parent_tool_use_id !== null && message.parent_tool_use_id !== undefined) return undefined;
+  const raw = asRecord(message.message);
+  if (raw === undefined) return undefined;
+  const content = raw['content'];
+  if (Array.isArray(content) && content.some((b) => asRecord(b)?.['type'] === 'tool_result')) return undefined;
+  const text = normalizeUserText(userText(content));
+  return text.trim() === '' ? undefined : text;
+}
+
+/**
+ * 待生效的截断点（回退对话后、下一条消息之前）：转录主链还是回退前的长链，读历史
+ * 要从被撤掉的那条用户消息（`dropFrom`）起截掉。找不到就原样返回。
+ */
+export function cutAtRewind(messages: readonly SessionMessage[], dropFrom: string | undefined): readonly SessionMessage[] {
+  if (dropFrom === undefined) return messages;
+  const at = messages.findIndex((m) => m.uuid === dropFrom);
+  return at < 0 ? messages : messages.slice(0, at);
+}
+
+/**
  * SessionMessage[] → HistoryItem[]（旧 → 新）。
  *
  * 丢弃：system 行、子代理行（`parent_tool_use_id` 非空）、thinking、空文本、

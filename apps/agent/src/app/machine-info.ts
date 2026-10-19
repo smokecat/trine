@@ -24,7 +24,9 @@ import type { MachineInfo } from '@trine/core';
 // - 0.8.0 起支持子 agent 过程：子 agent 的 tool.start/end 与 permission.request 带
 //   parentToolUseId（旧 web 会把子工具卡平铺——先部署 web 再重启 agent）、
 //   subagent.history.request；Agent/Task 结果摘要改为「N 次工具调用 · 耗时」
-export const AGENT_VERSION = '0.8.0';
+// - 0.9.0 起支持回退：session.rewind.preview / session.rewind / session.rewound，
+//   user.message 带转录 uuid；会话开启文件快照（enableFileCheckpointing）
+export const AGENT_VERSION = '0.9.0';
 
 export function buildMachineInfo(input: {
   name: string;

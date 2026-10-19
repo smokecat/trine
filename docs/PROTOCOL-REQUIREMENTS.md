@@ -77,6 +77,30 @@
 - client 合并：只收早于时间线里「agent 产生的条目（seq>0）」最早 ts 的历史项，按 id 去重，
   以 seq 0 前插到时间线开头；`hasMore` 时时间线顶部给「加载更早」
 
+### 1.8 回退（rewind，agent ≥ 0.9.0）
+
+对应 Claude Code `/rewind`：回到某条用户消息发出之前，可选「代码 + 对话」「只回退对话」「只还原代码」。
+
+- `user.message` 增加可选 `uuid` — 这条消息在本机转录里的 uuid（与历史回看 user 条目的 id 同源），
+  回退以它指认目标；client 也用它与历史页去重。旧 agent 不带，client 退回用 messageId
+- `session.rewind.preview`（client→agent，会话级）— `{ reqId, targetMessageId }`，不改任何东西
+- `session.rewind.preview.response`（agent→client，**只发给请求方设备**）—
+  `{ reqId, ok, error?, text?, conversation?: { available, reason? }, files?: { available, reason?, filesChanged?, insertions?, deletions? } }`；
+  `text` 是目标消息原文。目标是第一条消息时对话不可回退；没有文件快照时代码不可还原
+- `session.rewind`（client→agent，会话级）— `{ reqId, targetMessageId, mode: both|conversation|code }`
+- `session.rewind.response`（agent→client，只发给请求方设备）— `{ reqId, ok, error?, text?, files?: { filesChanged, insertions, deletions, skippedLinks? } }`
+- `session.rewound`（agent→client，会话级广播）— `{ targetMessageIds[], mode, filesChanged? }`；
+  `mode` 不是 `code` 时 client 把时间线从目标消息起（含）截掉，`targetMessageIds` 里任一 id
+  （转录 uuid / clientMsgId）能对上本地条目即可；都对不上就清空时间线重拉历史。成功的回退先广播再应答
+- 失败码 `busy | not_found | invalid | unavailable | io`：运行中、等待批准、有排队消息或有后台任务 → `busy`；
+  目标不在当前对话主链上 → `not_found`；不是用户消息、或回退对话到第一条消息之前 → `invalid`；没有文件快照 → `unavailable`
+- `targetMessageId` 可以是转录 uuid，也可以是实时回显的 messageId（agent 进程内能映射回 uuid）
+- agent 实现：所有会话开启 SDK `enableFileCheckpointing`，代码经 `Query.rewindFiles()` 还原（会话没有子进程时
+  临时起一个不发消息的 query）；对话经下次起 query 时的 `resumeSessionAt` 截断。截断点存在 `~/.trine/state.json`，
+  直到新分支上收到第一条回复才清除，期间历史回看按它截掉被撤的尾巴。`both` 先还原文件，失败则对话不动
+- 互操作：旧 agent 不认识这些 type，client 按 `agentVersion ≥ 0.9.0` 决定显不显示入口；旧 client 丢弃
+  `session.rewound`，时间线保留已回退的消息，刷新历史后恢复正确
+
 ## 2. 会话列表
 
 - `session.list`（client→agent 请求 / agent 推增量）— 每条：

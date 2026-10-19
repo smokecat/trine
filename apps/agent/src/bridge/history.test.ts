@@ -2,7 +2,9 @@ import { describe, expect, test } from 'bun:test';
 import type { SessionMessage } from '@anthropic-ai/claude-agent-sdk';
 import type { HistoryItem } from '@trine/core';
 import {
+  cutAtRewind,
   HISTORY_TEXT_MAX,
+  humanUserText,
   normalizeUserText,
   paginateHistory,
   toHistoryItems,
@@ -230,5 +232,27 @@ describe('toHistoryItems · Agent/Task 结果（subagent-view）', () => {
     ]);
     expect(items).toHaveLength(1);
     expect(items[0]).toMatchObject({ kind: 'tool', argSummary: 'Run echo', status: 'ok', resultSummary: '✓ 3 次工具调用 · 18.3s', outputPreview: '全部完成。\n第二行' });
+  });
+});
+
+describe('回退辅助（humanUserText / cutAtRewind）', () => {
+  test('humanUserText：只认主线程里用户说的话', () => {
+    expect(humanUserText(user('u1', '改一下 README', T0))).toBe('改一下 README');
+    expect(humanUserText(user('u2', [{ type: 'text', text: 'a' }, { type: 'image' }], T0))).toBe('a\n[图片]');
+    expect(humanUserText(user('u3', '<command-name>/review</command-name><command-args>x</command-args>', T0))).toBe('/review x');
+    // 工具结果载体、本地命令输出、子代理行、空文本、助手行都不是
+    expect(humanUserText(user('u4', [{ type: 'tool_result', tool_use_id: 't1', content: 'ok' }], T0))).toBeUndefined();
+    expect(humanUserText(user('u5', '<local-command-stdout>hi</local-command-stdout>', T0))).toBeUndefined();
+    expect(humanUserText(user('u6', 'sub', T0, 'toolu_parent'))).toBeUndefined();
+    expect(humanUserText(user('u7', '   ', T0))).toBeUndefined();
+    expect(humanUserText(assistant('a1', 'msg_1', [{ type: 'text', text: 'x' }], T0))).toBeUndefined();
+  });
+
+  test('cutAtRewind：从 dropFrom 起截掉；没有 / 找不到原样返回', () => {
+    const chain = [user('u1', 'q1', T0), assistant('a1', 'msg_1', [{ type: 'text', text: 'x' }], T1), user('u2', 'q2', T2)];
+    expect(cutAtRewind(chain, 'u2').map((m) => m.uuid)).toEqual(['u1', 'a1']);
+    expect(cutAtRewind(chain, 'u1')).toEqual([]);
+    expect(cutAtRewind(chain, undefined)).toBe(chain);
+    expect(cutAtRewind(chain, 'nope')).toBe(chain);
   });
 });

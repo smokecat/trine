@@ -115,6 +115,12 @@ export const UserMessageSchema = z.object({
   /** 发起端的 clientMsgId，发起设备据此把本地暂存条目升级为已确认 */
   clientMsgId: z.string().optional(),
   text: z.string(),
+  /**
+   * 这条消息在本机转录里的 uuid（= 历史回看里 user 条目的 id）。回退
+   * （`session.rewind`）以它定位目标消息；agent ≥ 0.9.0 才带，省略时 client 用
+   * messageId 兜底（agent 进程内还记得 clientMsgId → uuid 的映射）。
+   */
+  uuid: z.string().min(1).optional(),
 });
 
 // ---------------------------------------------------------------------------
@@ -423,6 +429,125 @@ export const SubagentHistoryResponseSchema = z.object({
   items: z.array(HistoryItemSchema),
   /** 体积封顶截掉了更早的条目 */
   truncated: z.boolean().optional(),
+});
+
+// ---------------------------------------------------------------------------
+// §1.8 回退（rewind，agent ≥ 0.9.0）
+// ---------------------------------------------------------------------------
+
+/**
+ * 回退模式，对应 Claude Code `/rewind` 的三个选项：
+ * - `both`         代码 + 对话
+ * - `conversation` 只回退对话（模型上下文截断到目标消息之前，文件不动）
+ * - `code`         只还原文件（对话不动）
+ */
+export const RewindModeSchema = z.enum(['both', 'conversation', 'code']);
+export type RewindMode = z.infer<typeof RewindModeSchema>;
+
+/**
+ * 回退失败原因：
+ * - `busy`        会话运行中 / 等待批准 / 有排队消息 / 有后台任务在跑
+ * - `not_found`   目标消息不在当前对话主链上（或会话不存在）
+ * - `invalid`     请求的模式不适用（如回退对话到第一条消息之前）
+ * - `unavailable` 没有可用的文件快照（开启 checkpoint 之前的轮次等）
+ * - `io`          读转录 / 调 SDK 失败，或 agent 内部异常
+ */
+export const RewindErrorCodeSchema = z.enum(['busy', 'not_found', 'invalid', 'unavailable', 'io']);
+export type RewindErrorCode = z.infer<typeof RewindErrorCodeSchema>;
+
+const RewindErrorSchema = z.object({ code: RewindErrorCodeSchema, message: z.string() });
+
+/**
+ * 回退的目标消息 id：user 条目的转录 uuid（`user.message.uuid` / 历史条目 id），
+ * 或者实时回显的 messageId（= clientMsgId，agent 进程内能映射回 uuid）。
+ * 语义是「回到这条消息发出之前」：这条消息本身也被撤掉。
+ */
+const RewindTargetSchema = z.string().min(1);
+
+/** 文件改动统计（SDK rewindFiles 的结果）；路径相对会话 cwd，cwd 之外的保持绝对路径 */
+export const RewindFilesStatSchema = z.object({
+  filesChanged: z.array(z.string()),
+  insertions: z.number().int().nonnegative(),
+  deletions: z.number().int().nonnegative(),
+});
+export type RewindFilesStat = z.infer<typeof RewindFilesStatSchema>;
+
+/**
+ * client → agent：预览一次回退（不改任何东西）。会话级帧；会话没有子进程时
+ * agent 会临时起一个（不发消息）来读文件快照，所以可能要一两秒。
+ */
+export const SessionRewindPreviewSchema = z.object({
+  type: z.literal('session.rewind.preview'),
+  ...c2aBase,
+  reqId: ReqIdSchema,
+  targetMessageId: RewindTargetSchema,
+});
+
+/**
+ * agent → client：预览结果，**只发给请求方设备**。会话根本打不开（不存在 / 并发已满）
+ * 时以机器级帧（不带 sessionId）回 `not_found`——client 只按 reqId 关联，两种都收得到。
+ * `ok:false` 表示整个请求不成立（busy / not_found / io），此时其余字段省略。
+ * `ok:true` 时分别给出对话与代码两部分能不能回退：
+ * - `conversation.available` false 时 `reason` 说明原因（如目标是第一条消息）；
+ * - `files.available` false 时 `reason` 说明原因（如没有快照）；true 时带改动统计。
+ * `text` 是目标消息原文，供确认界面展示、回退后预填输入框。
+ */
+export const SessionRewindPreviewResponseSchema = z.object({
+  type: z.literal('session.rewind.preview.response'),
+  ...a2cBase,
+  reqId: ReqIdSchema,
+  ok: z.boolean(),
+  error: RewindErrorSchema.optional(),
+  text: z.string().optional(),
+  conversation: z.object({ available: z.boolean(), reason: z.string().optional() }).optional(),
+  files: z
+    .object({ available: z.boolean(), reason: z.string().optional() })
+    .extend(RewindFilesStatSchema.partial().shape)
+    .optional(),
+});
+
+/**
+ * client → agent：执行回退。`both` 先还原文件、再截断对话；文件还原失败则整体失败、
+ * 对话不动。成功后 agent 先广播 `session.rewound`，再回 `session.rewind.response`。
+ */
+export const SessionRewindSchema = z.object({
+  type: z.literal('session.rewind'),
+  ...c2aBase,
+  reqId: ReqIdSchema,
+  targetMessageId: RewindTargetSchema,
+  mode: RewindModeSchema,
+});
+
+/**
+ * agent → client：回退结果，**只发给请求方设备**。`files` 只在还原了文件时带；
+ * `skippedLinks` 是因符号链接等原因没敢还原的文件数。`text` 同 preview。
+ */
+export const SessionRewindResponseSchema = z.object({
+  type: z.literal('session.rewind.response'),
+  ...a2cBase,
+  reqId: ReqIdSchema,
+  ok: z.boolean(),
+  error: RewindErrorSchema.optional(),
+  text: z.string().optional(),
+  files: RewindFilesStatSchema.extend({ skippedLinks: z.number().int().nonnegative().optional() }).optional(),
+});
+
+/**
+ * agent → client：会话已回退（会话级广播，所有设备）。`conversation` 为 true 时
+ * client 把时间线从目标消息起（含）截掉：`targetMessageIds` 列出这条消息可能的
+ * 各种 id（转录 uuid、clientMsgId），哪个能对上本地条目就用哪个；都对不上就清空
+ * 时间线重新拉历史。只回退了代码时时间线不动。
+ *
+ * 互操作：旧 client 不认识本 type，schema 层丢弃——它的时间线会保留已回退的消息，
+ * 刷新历史后恢复正确。
+ */
+export const SessionRewoundSchema = z.object({
+  type: z.literal('session.rewound'),
+  ...a2cBase,
+  targetMessageIds: z.array(z.string().min(1)).min(1),
+  mode: RewindModeSchema,
+  /** 还原的文件数（只回退对话时省略） */
+  filesChanged: z.number().int().nonnegative().optional(),
 });
 
 // ---------------------------------------------------------------------------
@@ -875,6 +1000,9 @@ export const AgentToClientEventSchema = z.discriminatedUnion('type', [
   SessionHistoryResponseSchema,
   SubagentHistoryResponseSchema,
   SessionCommandsResponseSchema,
+  SessionRewindPreviewResponseSchema,
+  SessionRewindResponseSchema,
+  SessionRewoundSchema,
   SessionCapabilitiesSchema,
   MachineInfoEventSchema,
   MachineClaudeUpdateResponseSchema,
@@ -906,6 +1034,8 @@ export const ClientToAgentEventSchema = z.discriminatedUnion('type', [
   SessionHistoryRequestSchema,
   SubagentHistoryRequestSchema,
   SessionCommandsRequestSchema,
+  SessionRewindPreviewSchema,
+  SessionRewindSchema,
   MachineRenameSchema,
   MachineUnpairSchema,
   MachineClaudeUpdateRequestSchema,

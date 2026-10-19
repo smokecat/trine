@@ -13,6 +13,7 @@ the agent runs on your own computer.
 ## What it does
 
 - Streams assistant messages, tool activity and subagent history.
+- Rewinds a session to before one of your messages, restoring code, the conversation or both.
 - Lists, resumes, renames and archives sessions across paired machines; right-click or
   multi-select (Ctrl/Cmd/Shift-click) to archive in bulk, and copy a session's working directory.
 - Hides temporary sessions by default (working directory under a system temp directory, or
@@ -121,6 +122,16 @@ In the message box, the Return key on touch devices (phones, tablets) always ins
 new line; tap the send button to send. With a physical keyboard, Settings → Send key
 chooses between Enter to send (Shift+Enter for a new line, the default) and Cmd/Ctrl+Enter
 to send (Enter for a new line). Cmd/Ctrl+Enter sends in both modes.
+
+To rewind, hover over (or tap) one of your messages and choose **Rewind to here** (agent 0.9.0
+or later, session idle). The dialog previews the change and offers the same three options as
+Claude Code's `/rewind`: restore code and conversation, conversation only, or code only.
+Rewinding the conversation removes that message and everything after it on every device and
+puts the message back into the input box. Code is restored from Claude Code's file checkpoints,
+which the agent now enables for every session (Claude Code stores them in its own configuration
+directory). Only edits made through Claude's editing tools can be restored; changes made by
+Bash commands or by hand cannot. Turns that ran before checkpoints were enabled can only rewind
+the conversation, and the first message of a session can only restore code.
 
 The relay reads environment variables. Copy the
 [environment template](apps/server/deploy/trine-server.env.example) outside the
