@@ -28,6 +28,7 @@
  */
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { ArrowUpIcon, PaperclipIcon, SquareIcon } from 'lucide-react';
+import { toast } from 'sonner';
 import { Button } from '@/components/ui/button.tsx';
 import { useMediaQuery } from '@/components/shell/use-media-query.ts';
 import { cn } from '@/lib/utils.ts';
@@ -131,7 +132,10 @@ export function Composer({
     if (files.length === 0 || attachments === undefined) return;
     // 剪贴板里有文件（截图、复制的图片 / 文件）：当附件收，不往输入框里贴文件名
     e.preventDefault();
-    if (attachments.disabledReason !== undefined) return;
+    if (attachments.disabledReason !== undefined) {
+      toast.error(attachments.disabledReason);
+      return;
+    }
     attachments.onAdd(files);
   };
 

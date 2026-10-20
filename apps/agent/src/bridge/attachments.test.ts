@@ -197,3 +197,8 @@ describe('safeFileName', () => {
     expect(long).toBe(`${'x'.repeat(120)}.png`);
   });
 });
+
+test('相对的上传根目录转成绝对路径（路径要原样交给 Claude）', async () => {
+  const relative = new AttachmentStore({ root: 'rel-uploads', blobs: () => blobs });
+  expect(relative.root).toBe(join(process.cwd(), 'rel-uploads'));
+});

@@ -24,7 +24,7 @@
 import { createHash } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import type { SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import type { AttachmentMeta, AttachmentRef, HistoryAttachment } from '@trine/core';
 import { encryptBlob, generateBlobKey } from '@trine/core/crypto';
@@ -112,7 +112,8 @@ export class AttachmentStore {
   readonly #now: () => number;
 
   constructor(options: AttachmentStoreOptions) {
-    this.root = options.root;
+    // 绝对路径：这些路径要原样写进发给 Claude 的消息，相对路径会按会话 cwd 去解析
+    this.root = resolve(options.root);
     this.#blobs = options.blobs;
     this.#now = options.now ?? Date.now;
   }
