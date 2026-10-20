@@ -222,6 +222,12 @@ export class SessionMutations {
         if (!(await this.#known(sessionId))) return fail('not_found', `找不到会话 ${sessionId}`);
         await flags.setArchived(sessionId, now());
       }
+      // 归档 = 暂时不用：顺带回收子进程、让出名额（转录还在，取消归档后随时可恢复）。
+      // 有后台任务在跑的不回收——回收会把后台任务一起杀掉，留给空闲回收去等
+      const live = manager.get(sessionId);
+      if (live !== undefined && live.bgRunningCount === 0) {
+        await manager.release(sessionId, '会话已归档，子进程已回收（可随时恢复）');
+      }
     } else if (flags.archivedAt(sessionId) !== undefined) {
       // 标记在就清：即使转录已不在（外部删了），也允许把残留标记清掉
       await flags.clearArchived(sessionId);

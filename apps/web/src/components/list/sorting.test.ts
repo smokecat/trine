@@ -3,6 +3,8 @@ import type { SessionMeta, SessionState } from '@trine/core';
 import {
   compareSessions,
   countActiveSessions,
+  countLiveSessions,
+  liveSessionsLine,
   displayModel,
   resolvedAliasModel,
   shortModel,
@@ -150,5 +152,21 @@ describe('selectMachineFilterItems / countActiveSessions', () => {
     const items = selectMachineFilterItems(machines, sessions);
     expect(items.map((i) => i.name)).toEqual(['alpha', 'beta', 'unknown', 'zeta']);
     expect(items.find((i) => i.machineId === 'm1')).toMatchObject({ parkedCount: 3, activeCount: 2 });
+  });
+});
+
+describe('countLiveSessions / liveSessionsLine', () => {
+  test('按 live 计数（与活跃不同口径），上限缺省时只给数', () => {
+    const map = {
+      a: meta({ sessionId: 'a', live: true }),
+      b: meta({ sessionId: 'b', state: 'running', live: true }),
+      c: meta({ sessionId: 'c' }),
+    };
+    expect(countLiveSessions(map)).toBe(2);
+    expect(countLiveSessions(undefined)).toBe(0);
+    expect(liveSessionsLine(2, 10)).toBe('子进程 2/10');
+    expect(liveSessionsLine(0, 10)).toBe('子进程 0/10');
+    expect(liveSessionsLine(2, undefined)).toBe('子进程 2');
+    expect(liveSessionsLine(0, undefined)).toBe('');
   });
 });

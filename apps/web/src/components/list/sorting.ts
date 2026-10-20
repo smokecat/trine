@@ -170,3 +170,24 @@ export function countActiveSessions(map: Record<string, SessionMeta> | undefined
   }
   return n;
 }
+
+/**
+ * 有子进程（占活跃名额）的会话数——`meta.live`，agent ≥ 0.10.0 才带。与「活跃」
+ * （运行中 / 等批准）不同口径：空闲但子进程还没回收的也算。归档的也算（有后台
+ * 任务时归档不回收子进程）。
+ */
+export function countLiveSessions(map: Record<string, SessionMeta> | undefined): number {
+  if (map === undefined) return 0;
+  let n = 0;
+  for (const meta of Object.values(map)) if (meta.live === true) n += 1;
+  return n;
+}
+
+/**
+ * 「子进程 3/10」：上限来自 machine.info.maxSessions（agent ≥ 0.10.0）。旧 agent
+ * 不发上限也不发 live，返回空串（调用方不显示）。
+ */
+export function liveSessionsLine(live: number, maxSessions: number | undefined): string {
+  if (maxSessions === undefined) return live > 0 ? `子进程 ${live}` : '';
+  return `子进程 ${live}/${maxSessions}`;
+}

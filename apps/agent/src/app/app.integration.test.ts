@@ -675,7 +675,8 @@ describe('agent 接线 · 端到端', () => {
     expect(running).toBeDefined();
     // 进入 running 的那一帧里就已经不是归档态（同一次广播）
     expect(running!.archived).toBeUndefined();
-    expect(updates.every((u) => u?.archived === undefined)).toBe(true);
+    // 归档时子进程已回收，唤醒先 resume（广播 live，此时仍是归档态），进入 running 起不再归档
+    expect(updates.slice(updates.indexOf(running!)).every((u) => u?.archived === undefined)).toBe(true);
     await app.flags.flush();
     const flagsFile = await Bun.file(agentPaths(home).sessions).json();
     expect(flagsFile.archived).toEqual({});
@@ -728,7 +729,7 @@ describe('agent 接线 · 端到端', () => {
       ['/home/u/.local/bin/claude', 'update'],
       ['/home/u/.local/bin/claude', '--version'],
     ]);
-    expect(app.machineInfo()).toMatchObject({ agentVersion: '0.9.0', claudeVersion: '2.1.282 (Claude Code)' });
+    expect(app.machineInfo()).toMatchObject({ agentVersion: '0.10.0', claudeVersion: '2.1.282 (Claude Code)' });
     client.close();
   });
 });

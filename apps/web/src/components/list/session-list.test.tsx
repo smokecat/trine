@@ -298,6 +298,23 @@ describe('工作空间分组', () => {
     expect(badge('c')).toBeUndefined();
   });
 
+  test('会话行：空闲且有子进程 → 「驻留」；运行中 / 有后台提示 / 无子进程不显示', () => {
+    render({
+      m: {
+        a: meta({ sessionId: 'a', state: 'idle', live: true }),
+        b: meta({ sessionId: 'b', state: 'running', live: true }),
+        c: meta({ sessionId: 'c', state: 'idle', live: true, bgRunning: 1 }),
+        d: meta({ sessionId: 'd', state: 'idle' }),
+      },
+    });
+    const badge = (sid: string) =>
+      $$('session-row').find((r) => r.dataset['sessionId'] === sid)?.querySelector('[data-testid="live-badge"]')?.textContent;
+    expect(badge('a')).toBe('驻留');
+    expect(badge('b')).toBeUndefined();
+    expect(badge('c')).toBeUndefined();
+    expect(badge('d')).toBeUndefined();
+  });
+
     test('有待批准的组即便被折叠过也强制展开', () => {
     setGroupCollapsed(groupKey('m', '/w/wait'), true);
     render(

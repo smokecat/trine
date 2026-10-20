@@ -9,6 +9,7 @@ import { NavLink } from 'react-router';
 import { StatusDot } from '@/components/shell/StatusDot.tsx';
 import type { MachineState } from '@/store/types.ts';
 import { cn } from '@/lib/utils.ts';
+import { liveSessionsLine } from '@/components/list/sorting.ts';
 import {
   machineHeartbeatLine,
   machinePlatformLine,
@@ -20,13 +21,17 @@ import {
 export function MachineCard({
   machine,
   activeCount,
+  liveCount,
   now,
 }: {
   machine: MachineState;
   activeCount: number;
+  /** 有子进程的会话数（`meta.live`） */
+  liveCount: number;
   now?: number;
 }): React.JSX.Element {
   const platform = machinePlatformLine(machine.info);
+  const live = liveSessionsLine(liveCount, machine.info?.maxSessions);
   const warn = parkedWarnLine(machine.parkedCount);
 
   return (
@@ -55,6 +60,11 @@ export function MachineCard({
           {machineVersionLine(machine.info)}
         </span>
         {activeCount > 0 && <span className="text-brand-ink">{activeCount} 个活跃会话</span>}
+        {live !== '' && (
+          <span className="tabular" data-testid="machine-live">
+            {live}
+          </span>
+        )}
       </div>
 
       {warn !== '' && (

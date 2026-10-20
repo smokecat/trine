@@ -118,8 +118,9 @@ SessionMeta 新增**可选**字段（旧 agent 不发、旧 client 收到会被 
 - `lastEvent` 语义不变
 
 - `headless?: boolean`（session-ux，2026-10-20）— 非交互会话：转录里第一条带 `entrypoint` 的行是 `sdk-cli`（`claude -p`）或 `sdk-py`（Python SDK）。终端交互（`cli`）与 trine 自己开的会话（TS SDK，`sdk-ts`）都不算。agent 读转录开头判定、按 sessionId 缓存；省略 = 不是 / 不知道 / 旧 agent。client 把它与「cwd 在系统临时目录下」一起归为临时会话，列表默认隐藏
+- `live?: boolean`（live-sessions，agent ≥ 0.10.0）— 会话当前在 agent 上有子进程，占一个活跃名额（上限见 `machine.info.maxSessions`）。子进程拉起（新建 / resume）与关闭（空闲回收、满额腾位、归档、切目录）后都会广播一次 `session.updated`；归档会话时若它不忙且没有后台任务，顺带回收子进程；省略 = 没有 / 旧 agent。名额满时 agent 先回收最久未活动且不忙（不在跑、不等批准、无排队输入、无后台任务）的会话，全都在忙才回 `error.fatal(config)`
 
-agent 侧所有产出 SessionMeta 的出口（list、session.created、session.updated、各命令成功后的广播）都经同一处合并归档标记与 `headless`，活跃会话的状态迁移不会冲掉 title / firstPrompt / archived 等非运行时字段。
+agent 侧所有产出 SessionMeta 的出口（list、session.created、session.updated、各命令成功后的广播）都经同一处合并归档标记、`headless` 与 `live`，活跃会话的状态迁移不会冲掉 title / firstPrompt / archived 等非运行时字段。
 
 ### 2.2 重命名 / 归档 / 永久删除
 
@@ -143,7 +144,7 @@ agent 侧所有产出 SessionMeta 的出口（list、session.created、session.u
 ## 3. 机器管理
 
 - `machine.status`† — 服务端可见（在线状态本身就是服务端知道的）：`{ machineId, online, lastSeenAt }`
-- `machine.info` — E2E 内容：`{ name, platform, osVersion, agentVersion, claudeVersion, activeSessionCount }`（常用目录另见 §6）
+- `machine.info` — E2E 内容：`{ name, platform, osVersion, agentVersion, claudeVersion, activeSessionCount, maxSessions? }`（maxSessions 自 0.10.0）（常用目录另见 §6）
 - `machine.rename` / `machine.unpair`（client→…）— 原型未画界面但 MVP 需要
 - 离线排队计数：server 按 machineId 报排队帧数†（`{ machineId, parkedCount }`，不泄露内容）
 

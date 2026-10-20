@@ -224,6 +224,67 @@ describe('SessionManager · 并发上限', () => {
   });
 });
 
+describe('SessionManager · 满额腾位', () => {
+  test('没满不回收', async () => {
+    const { manager, created } = makeHarness({ maxConcurrent: 2 });
+    manager.acquire({ sessionId: 's1', ...base });
+
+    expect(await manager.makeRoom()).toBeUndefined();
+    expect(created[0]!.closed).toBe(false);
+  });
+
+  test('满额 → 回收最久没活动且不忙的会话，名额让给新会话', async () => {
+    let clock = 0;
+    const { manager, created } = makeHarness({ maxConcurrent: 3, now: () => clock });
+    manager.acquire({ sessionId: 'oldest-busy', ...base });
+    clock = 10;
+    manager.acquire({ sessionId: 'older', ...base });
+    clock = 20;
+    manager.acquire({ sessionId: 'newer', ...base });
+    created[0]!.state = 'running';
+
+    expect(await manager.makeRoom()).toBe('older');
+    expect(created[1]!.closed).toBe(true);
+    expect(created[1]!.closeReason).toContain('可随时恢复');
+    expect(manager.activeSessionIds).toEqual(['oldest-busy', 'newer']);
+    expect(() => manager.acquire({ sessionId: 's4', ...base })).not.toThrow();
+  });
+
+  test('排队输入 / 等批准 / 后台任务都算忙，全忙则不回收', async () => {
+    const { manager, created } = makeHarness({ maxConcurrent: 3 });
+    for (const id of ['a', 'b', 'c']) manager.acquire({ sessionId: id, ...base });
+    created[0]!.queueLength = 1;
+    created[1]!.state = 'waiting_permission';
+    created[2]!.bgRunningCount = 1;
+
+    expect(await manager.makeRoom()).toBeUndefined();
+    expect(created.some((s) => s.closed)).toBe(false);
+    expect(() => manager.acquire({ sessionId: 'd', ...base })).toThrow(ConcurrencyLimitError);
+  });
+});
+
+describe('SessionManager · live 标记', () => {
+  test('有实例才带 live；release 后广播一次不带 live 的 updated', async () => {
+    const { manager, events } = makeHarness();
+    manager.acquire({ sessionId: 's1', ...base });
+    expect(manager.metaOf('s1')?.live).toBe(true);
+    expect(manager.decorate({ ...manager.metaOf('s1')!, sessionId: 'other', live: true })).not.toHaveProperty('live');
+
+    await manager.release('s1');
+    const last = events.at(-1)!.event;
+    expect(last).toMatchObject({ type: 'session.updated', session: { sessionId: 's1' } });
+    expect((last as { session: object }).session).not.toHaveProperty('live');
+  });
+
+  test('closeAll（进程退出）不广播', async () => {
+    const { manager, events } = makeHarness();
+    manager.acquire({ sessionId: 's1', ...base });
+    const before = events.length;
+    await manager.closeAll();
+    expect(events).toHaveLength(before);
+  });
+});
+
 describe('SessionManager · 空闲回收', () => {
   test('空闲超时的会话被回收', async () => {
     let clock = 0;
@@ -449,7 +510,13 @@ describe('SessionManager · 非交互会话（headless）', () => {
     manager.acquire({ sessionId: 'script', ...base, resume: true });
     expect(manager.metaOf('script')?.headless).toBe(true);
     expect(manager.decorate({ ...list[1]!, headless: true })).not.toHaveProperty('headless');
-    expect(events).toHaveLength(0);
+    // resume 只广播一次 updated（live），同样带 headless
+    expect(events.map((e) => e.event)).toEqual([
+      expect.objectContaining({
+        type: 'session.updated',
+        session: expect.objectContaining({ sessionId: 'script', headless: true, live: true }),
+      }),
+    ]);
   });
 
   test('snapshot 查 SDK 的会话也探测', async () => {

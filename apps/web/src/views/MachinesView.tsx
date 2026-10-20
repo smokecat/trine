@@ -10,7 +10,7 @@ import { PlusIcon } from 'lucide-react';
 import { Button } from '@/components/ui/button.tsx';
 import { AppHead } from '@/components/shell/AppHead.tsx';
 import { MachineCard } from '@/components/machines/MachineCard.tsx';
-import { countActiveSessions } from '@/components/list/sorting.ts';
+import { countActiveSessions, countLiveSessions } from '@/components/list/sorting.ts';
 import { useNow } from '@/components/list/use-session-refresh.ts';
 import { useTrine } from '@/app/runtime.ts';
 
@@ -57,6 +57,7 @@ export function MachinesView(): React.JSX.Element {
             key={m.machineId}
             machine={m}
             activeCount={countActiveSessions(sessions[m.machineId])}
+            liveCount={countLiveSessions(sessions[m.machineId])}
             now={now}
           />
         ))}

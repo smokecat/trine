@@ -28,7 +28,7 @@ import {
   parkedWarnLine,
 } from '@/components/machines/machine-text.ts';
 import { SessionList } from '@/components/list/SessionList.tsx';
-import { countActiveSessions } from '@/components/list/sorting.ts';
+import { countActiveSessions, countLiveSessions, liveSessionsLine } from '@/components/list/sorting.ts';
 import { countArchived, DEFAULT_LIST_QUERY, type ListQuery } from '@/components/list/filtering.ts';
 import { useNow } from '@/components/list/use-session-refresh.ts';
 import { useSessionActions } from '@/components/list/use-session-actions.ts';
@@ -71,6 +71,7 @@ export function MachineDetailView(): React.JSX.Element {
   const platform = machinePlatformLine(machine.info);
   const warn = parkedWarnLine(machine.parkedCount);
   const activeCount = countActiveSessions(sessions[machine.machineId]);
+  const live = liveSessionsLine(countLiveSessions(sessions[machine.machineId]), machine.info?.maxSessions);
   // 计数与列表都不含已归档（session-list-v2 §4.5，评审 M4）；归档数单独标出
   const archivedCount = countArchived(sessions, machine.machineId);
   const totalCount = Object.keys(sessions[machine.machineId] ?? {}).length - archivedCount;
@@ -102,6 +103,14 @@ export function MachineDetailView(): React.JSX.Element {
             {activeCount > 0 && <span className="text-brand-ink"> · {activeCount} 个活跃</span>}
             {archivedCount > 0 && <span className="text-text-3"> · 另有 {archivedCount} 个已归档</span>}
           </dd>
+          {live !== '' && (
+            <>
+              <dt className="text-text-3">子进程</dt>
+              <dd className="tabular" data-testid="detail-live">
+                {live.replace('子进程 ', '')}
+              </dd>
+            </>
+          )}
           {warn !== '' && (
             <>
               <dt className="text-text-3">排队</dt>

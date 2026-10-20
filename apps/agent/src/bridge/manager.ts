@@ -13,10 +13,14 @@
  *
  * ## 并发上限与空闲回收
  *
- * 每个子进程是完整 Node 程序，100-200MB 量级。个人机器 3-10 个并发无压力，
+ * 每个子进程是完整 Node 程序，100-200MB 量级。个人机器 10 个上下并发无压力，
  * 但必须有上限，否则手机上手滑连开十几个会话能把机器打死。
  * 空闲回收关掉的是**子进程**，会话本身（jsonl）还在，随时可 resume——
  * 所以回收不该销毁 seq 序列（见 emitter.dropScope 的注释）。
+ *
+ * 名额满时再要新开（新建，或给不在跑的历史会话发消息），先挤掉最久没活动、
+ * 且不忙的那个（`makeRoom`）：与空闲回收同一语义，只是不等超时。客户端没有
+ * 「结束会话」的入口，单靠拒绝只会让用户干等 15 分钟回收。全都在忙才拒绝。
  */
 import type { PermissionMode, SessionMeta, SessionState } from '@trine/core';
 import {
@@ -69,6 +73,15 @@ export function seedFromInfo(info: SDKSessionInfo): SessionSeed {
 /** 运行中 / 等批准（「一轮还没跑完」） */
 function inRun(state: SessionState): boolean {
   return state === 'running' || state === 'waiting_permission';
+}
+
+/**
+ * 不能回收的会话：一轮没跑完、有排队输入，或有后台任务在跑（Bash
+ * run_in_background / 后台子 agent）——回收会杀掉子进程，后台任务跟着死，
+ * 且它完成后 CLI 还要自发开一轮回报结果。
+ */
+function isBusy(session: ClaudeSession): boolean {
+  return inRun(session.state) || session.queueLength > 0 || session.bgRunningCount > 0;
 }
 
 export interface SessionManagerOptions {
@@ -141,7 +154,7 @@ export interface CreateSessionArgs {
   onRewindApplied?: () => void;
 }
 
-const DEFAULT_MAX_CONCURRENT = 5;
+const DEFAULT_MAX_CONCURRENT = 10;
 const DEFAULT_IDLE_TIMEOUT_MS = 15 * 60_000;
 
 /**
@@ -158,7 +171,7 @@ export interface AcquireResult {
 /** 并发已满时抛出，调用方转成 error.fatal(config) 告知用户 */
 export class ConcurrencyLimitError extends Error {
   constructor(readonly limit: number) {
-    super(`活跃会话已达上限 ${limit}，请先结束一个会话再新建`);
+    super(`活跃会话已达上限 ${limit} 且都在运行，请等其中一个跑完再试`);
     this.name = 'ConcurrencyLimitError';
   }
 }
@@ -218,6 +231,11 @@ export class SessionManager {
   /** 当前活跃（持有实例的）会话数 */
   get activeCount(): number {
     return this.#sessions.size;
+  }
+
+  /** 活跃会话上限 */
+  get maxConcurrent(): number {
+    return this.#maxConcurrent;
   }
 
   /** 活跃会话 id 列表 */
@@ -301,7 +319,10 @@ export class SessionManager {
       model: args.model,
       permissionMode: args.permissionMode,
       costUsd: 0,
-      ...(previous?.lastEvent === undefined ? {} : { lastEvent: previous.lastEvent }),
+      // 与 #fromInfo 同口径：没有更新的摘要时用首条输入，下面广播的 updated 不会把摘要清空
+      ...((previous?.lastEvent ?? seed?.firstPrompt) === undefined
+        ? {}
+        : { lastEvent: previous?.lastEvent ?? seed?.firstPrompt }),
       ...(firstPrompt === undefined ? {} : { firstPrompt }),
       ...(gitBranch === undefined ? {} : { gitBranch }),
       ...(createdAt === undefined ? {} : { createdAt }),
@@ -313,6 +334,9 @@ export class SessionManager {
     // resume 已有会话不算新建，不广播。
     if (args.resume !== true) {
       this.#emitter.emit({ type: 'session.created', session: this.decorate(meta) }, null);
+    } else {
+      // resume 不算新建，但子进程起来了：广播 live，列表据此标出占名额的会话
+      this.#emitter.emit({ type: 'session.updated', session: this.decorate(meta) }, null);
     }
     return { session, reused: false };
   }
@@ -336,10 +360,23 @@ export class SessionManager {
     reason = '会话已关闭',
     drainTimeoutMs?: number,
   ): Promise<void> {
+    await this.#release(sessionId, reason, drainTimeoutMs, true);
+  }
+
+  /** `broadcast`：收尾后广播一次 session.updated（live 去掉）；进程退出时不广播 */
+  async #release(
+    sessionId: string,
+    reason: string,
+    drainTimeoutMs: number | undefined,
+    broadcast: boolean,
+  ): Promise<void> {
     const session = this.#sessions.get(sessionId);
     if (session === undefined) return;
     this.#sessions.delete(sessionId);
     await session.close(reason, drainTimeoutMs);
+    if (!broadcast || this.#sessions.has(sessionId) || this.#flags?.isDeleted(sessionId) === true) return;
+    const meta = this.metaOf(sessionId);
+    if (meta !== undefined) this.#emitter.emit({ type: 'session.updated', session: meta }, null);
   }
 
   /**
@@ -351,7 +388,7 @@ export class SessionManager {
   async closeAll(reason = 'agent 正在退出', drainTimeoutMs?: number): Promise<void> {
     this.stopReaper();
     const ids = [...this.#sessions.keys()];
-    await Promise.all(ids.map((id) => this.release(id, reason, drainTimeoutMs)));
+    await Promise.all(ids.map((id) => this.#release(id, reason, drainTimeoutMs, false)));
   }
 
   /**
@@ -365,14 +402,7 @@ export class SessionManager {
     const reaped: string[] = [];
     for (const [id, session] of this.#sessions) {
       const idleFor = now - session.lastActivityAt;
-      // 有后台任务在跑（Bash run_in_background / 后台子 agent）也算忙：回收会杀掉
-      // 子进程，后台任务跟着死，且它完成后 CLI 还要自发开一轮回报结果
-      const busy =
-        session.state === 'running' ||
-        session.state === 'waiting_permission' ||
-        session.queueLength > 0 ||
-        session.bgRunningCount > 0;
-      if (!busy && idleFor >= this.#idleTimeoutMs) {
+      if (!isBusy(session) && idleFor >= this.#idleTimeoutMs) {
         reaped.push(id);
       }
     }
@@ -380,6 +410,26 @@ export class SessionManager {
       await this.release(id, '会话空闲超时，子进程已回收（可随时恢复）');
     }
     return reaped;
+  }
+
+  /**
+   * 名额已满时腾出一个：回收最久没活动、且不忙的会话（见文件头注释）。
+   * 调用方在 `acquire` 新会话前 await 它——close 收尾完才算腾出，免得新旧子进程
+   * 叠在一起。没满或全都在忙时什么都不做，交给 `acquire` 抛 ConcurrencyLimitError。
+   *
+   * @returns 被回收的 sessionId；没有回收返回 undefined
+   */
+  async makeRoom(): Promise<string | undefined> {
+    if (this.#sessions.size < this.#maxConcurrent) return undefined;
+    let victim: [string, ClaudeSession] | undefined;
+    for (const entry of this.#sessions) {
+      if (isBusy(entry[1])) continue;
+      if (victim === undefined || entry[1].lastActivityAt < victim[1].lastActivityAt) victim = entry;
+    }
+    if (victim === undefined) return undefined;
+    this.#log?.(`[manager] 活跃会话已满（${this.#maxConcurrent}），回收最久未活动的 ${victim[0]}`);
+    await this.release(victim[0], '活跃会话已满，最久未活动的会话子进程已回收（可随时恢复）');
+    return victim[0];
   }
 
   /**
@@ -437,7 +487,8 @@ export class SessionManager {
   /**
    * 所有产出 SessionMeta 的出口统一经过这里（评审 B3）：合并 flags store 的
    * archived / archivedAt 与 pendingTitle。入参里若带着 archived 字段一律丢弃
-   * ——标记的唯一来源是 flags store。`headless` 同理，唯一来源是 #headless。
+   * ——标记的唯一来源是 flags store。`headless` 同理，唯一来源是 #headless；
+   * `live` 的唯一来源是 #sessions。
    *
    * pendingTitle 覆盖 title（不只在 title 为空时）：它是用户显式设过、还没来得及
    * 写进转录的标题，比 SDK 的自动摘要新。首条消息落盘到补写完成之间，
@@ -448,8 +499,12 @@ export class SessionManager {
    * 一条补写卡住的 pending 不该盖住它（评审 minor 1）。
    */
   decorate(meta: SessionMeta, options: { hasCustomTitle?: boolean } = {}): SessionMeta {
-    const { archived: _archived, archivedAt: _archivedAt, headless: _headless, ...stripped } = meta;
-    const rest: SessionMeta = this.#headless.has(meta.sessionId) ? { ...stripped, headless: true } : stripped;
+    const { archived: _archived, archivedAt: _archivedAt, headless: _headless, live: _live, ...stripped } = meta;
+    const rest: SessionMeta = {
+      ...stripped,
+      ...(this.#headless.has(meta.sessionId) ? { headless: true } : {}),
+      ...(this.#sessions.has(meta.sessionId) ? { live: true } : {}),
+    };
     const flags = this.#flags;
     if (flags === undefined) return rest;
     const pending = options.hasCustomTitle === true ? undefined : flags.pendingTitle(meta.sessionId);

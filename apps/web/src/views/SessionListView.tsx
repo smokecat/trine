@@ -18,7 +18,7 @@ import { MachineFilterChips } from '@/components/list/MachineFilterChips.tsx';
 import { SessionList } from '@/components/list/SessionList.tsx';
 import { ListControls } from '@/components/list/ListControls.tsx';
 import { countArchived } from '@/components/list/filtering.ts';
-import { selectMachineFilterItems } from '@/components/list/sorting.ts';
+import { countLiveSessions, liveSessionsLine, selectMachineFilterItems } from '@/components/list/sorting.ts';
 import { useListGroupBy, useListQuery, useListShowTemp } from '@/components/list/use-list-query.ts';
 import { useSessionActions } from '@/components/list/use-session-actions.ts';
 import { useNow, useSessionRefresh } from '@/components/list/use-session-refresh.ts';
@@ -47,7 +47,15 @@ export function SessionListView(): React.JSX.Element {
     [machines, sessions],
   );
 
-  // 过滤指向的机器被移除后回到「全部」，免得列表永远空着
+  // 页头副标题：选定的（或唯一的）那台机器的子进程占用，名额满了能一眼看到
+  const machineIds = Object.keys(machines);
+  const headMachine = filter ?? (machineIds.length === 1 ? machineIds[0] : undefined);
+  const headLive =
+    headMachine === undefined || machines[headMachine] === undefined
+      ? ''
+      : liveSessionsLine(countLiveSessions(sessions[headMachine]), machines[headMachine].info?.maxSessions);
+
+    // 过滤指向的机器被移除后回到「全部」，免得列表永远空着
   useEffect(() => {
     if (filter !== null && machines[filter] === undefined) setFilter(null);
   }, [filter, machines, setFilter]);
@@ -72,6 +80,7 @@ export function SessionListView(): React.JSX.Element {
     <div className="relative flex min-h-0 flex-1 flex-col">
       <AppHead
         title="会话"
+        {...(headLive === '' ? {} : { meta: <span data-testid="list-live">{headLive}</span> })}
         right={
           <div className="flex items-center gap-0.5">
             <Button

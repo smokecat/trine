@@ -384,6 +384,7 @@ export class AgentApp {
       name: this.node.identity.name,
       claudeVersion: this.claudeVersion,
       activeSessionCount: this.manager.activeCount,
+      maxSessions: this.manager.maxConcurrent,
     });
   }
 

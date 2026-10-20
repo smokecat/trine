@@ -2,7 +2,7 @@
  * 会话卡（原型 `.sess`：三行 r1/r2/r3）。列表页与 PC 侧栏共用同一个组件，
  * 靠 `variant` 切紧凑（原型 `.desk-side .sess{padding:9px 11px}`）。
  *
- * r1：状态 pill · 标题 · 相对时间
+ * r1：状态 pill（+ 后台 N / 驻留）· 标题 · 相对时间
  * r2：lastEvent 单行摘要（等待批准 ✋ amber、运行中 🔧）
  * r3：机器名 · cwd 尾段 · 成本
  *
@@ -112,6 +112,19 @@ export function SessionRow({
               后台 {meta.bgRunning}
             </span>
           )}
+          {/* 空闲但子进程还在（agent ≥ 0.10.0 的 live）：占一个名额，有后台任务时上面已提示 */}
+          {meta.live === true &&
+            meta.state !== 'running' &&
+            meta.state !== 'waiting_permission' &&
+            !(meta.bgRunning !== undefined && meta.bgRunning > 0) && (
+              <span
+                data-testid="live-badge"
+                title="子进程还在，占一个活跃名额；空闲超时、归档或名额不够时回收"
+                className="text-text-3 shrink-0 text-[11px]"
+              >
+                驻留
+              </span>
+            )}
           <span className={cn('min-w-0 flex-1 truncate font-semibold', compact ? 'text-sm' : 'text-[14px]')}>
             {sessionTitle(meta)}
           </span>

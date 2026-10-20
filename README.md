@@ -108,7 +108,11 @@ comments are primarily in Chinese.
 
 The agent requires `--server` or `TRINE_SERVER`. Its default state directory is
 `~/.trine`; `--home`/`TRINE_HOME` overrides it. `TRINE_DEFAULT_MODEL` selects the
-fallback model (default `opus[1m]`). `TRINE_MAX_SESSIONS` and `TRINE_IDLE_TIMEOUT_MS` control active sessions.
+fallback model (default `opus[1m]`). `TRINE_MAX_SESSIONS` (default 10) and `TRINE_IDLE_TIMEOUT_MS` (default 15 minutes) control
+active sessions, i.e. sessions with a running Claude Code child process. When the limit is reached,
+the agent first shuts down the child process of the least recently active idle session (its
+transcript stays and it resumes on the next message); archiving a session also releases its idle child
+process. The web list marks such sessions as 驻留 and shows `子进程 n/max` for the machine.
 
 Model fields accept Claude Code family aliases (`fable`, `opus`, `sonnet`, `haiku`, and
 suffixed forms such as `opus[1m]`), which Claude Code resolves to the latest model in

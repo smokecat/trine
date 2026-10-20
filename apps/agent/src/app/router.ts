@@ -868,6 +868,8 @@ export class Router {
       // 第一次状态迁移就把空标题广播出去（评审 B3）
       const seed = resume ? await this.#seedFor(sessionId) : undefined;
       if (this.#deps.manager.has(sessionId)) return this.#deps.manager.get(sessionId);
+      await this.#deps.manager.makeRoom();
+      if (this.#deps.manager.has(sessionId)) return this.#deps.manager.get(sessionId);
       const rewindPoint = resume ? this.#deps.state.pendingRewind(sessionId) : undefined;
       const { session } = this.#deps.manager.acquire({
         sessionId,
@@ -973,6 +975,7 @@ export class Router {
           started: false,
         };
         try {
+          await manager.makeRoom();
           manager.acquire({ sessionId, cwd: params.cwd, model: params.model, permissionMode: params.permissionMode });
         } catch (err) {
           if (err instanceof ConcurrencyLimitError) {

@@ -91,6 +91,11 @@ export const SessionMetaSchema = z.object({
    * 不在列表里显示。省略 = 不是 / 不知道 / 旧 agent。
    */
   headless: z.boolean().optional(),
+  /**
+   * 会话当前在 agent 上有子进程（占一个活跃名额；live-sessions 新增，可选，
+   * agent ≥ 0.10.0）。空闲回收 / 满额腾位后变回省略。省略 = 没有 / 旧 agent。
+   */
+  live: z.boolean().optional(),
 });
 export type SessionMeta = z.infer<typeof SessionMetaSchema>;
 
@@ -173,6 +178,8 @@ export const MachineInfoSchema = z.object({
   agentVersion: z.string(),
   claudeVersion: z.string(),
   activeSessionCount: z.number().int().nonnegative(),
+  /** 活跃会话上限（live-sessions 新增，可选；旧 agent 不发） */
+  maxSessions: z.number().int().positive().optional(),
 });
 export type MachineInfo = z.infer<typeof MachineInfoSchema>;
 

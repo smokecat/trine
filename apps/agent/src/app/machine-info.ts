@@ -26,12 +26,15 @@ import type { MachineInfo } from '@trine/core';
 //   subagent.history.request；Agent/Task 结果摘要改为「N 次工具调用 · 耗时」
 // - 0.9.0 起支持回退：session.rewind.preview / session.rewind / session.rewound，
 //   user.message 带转录 uuid；会话开启文件快照（enableFileCheckpointing）
-export const AGENT_VERSION = '0.9.0';
+// - 0.10.0 起 SessionMeta 带 live（有子进程）、MachineInfo 带 maxSessions；名额满时
+//   先回收最久未活动的空闲会话，全都在忙才拒绝；默认上限 5 → 10
+export const AGENT_VERSION = '0.10.0';
 
 export function buildMachineInfo(input: {
   name: string;
   claudeVersion: string;
   activeSessionCount: number;
+  maxSessions: number;
 }): MachineInfo {
   return {
     name: input.name,
@@ -40,5 +43,6 @@ export function buildMachineInfo(input: {
     agentVersion: AGENT_VERSION,
     claudeVersion: input.claudeVersion,
     activeSessionCount: input.activeSessionCount,
+    maxSessions: input.maxSessions,
   };
 }

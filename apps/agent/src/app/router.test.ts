@@ -48,6 +48,7 @@ class FakeSession {
   costUsd = 0;
   lastActivityAt = 0;
   queueLength = 0;
+  bgRunningCount = 0;
   hasProcess = false;
   closed = false;
   cwd: string;
@@ -433,11 +434,24 @@ describe('Router · resolveSession', () => {
     expect(h.listCalls).toBe(2);
   });
 
-  test('并发满额 → 机器级 fatal(config)', async () => {
+  test('并发满额 → 回收空闲会话，给新会话让位', async () => {
     const h = await makeHarness({ maxConcurrent: 1 });
     h.state.rememberSession('s1', params);
     h.state.rememberSession('s2', params);
     await h.router.handle({ type: 'input.send', ...c2a('s1'), clientMsgId: 'c1', text: 'a' }, phone);
+    await h.router.handle({ type: 'input.send', ...c2a('s2'), clientMsgId: 'c2', text: 'b' }, phone);
+    expect(h.created).toHaveLength(2);
+    expect(h.created[0]!.closed).toBe(true);
+    expect(h.manager.activeSessionIds).toEqual(['s2']);
+    expect(h.byType('error.fatal')).toHaveLength(0);
+  });
+
+  test('并发满额且都在忙 → 机器级 fatal(config)', async () => {
+    const h = await makeHarness({ maxConcurrent: 1 });
+    h.state.rememberSession('s1', params);
+    h.state.rememberSession('s2', params);
+    await h.router.handle({ type: 'input.send', ...c2a('s1'), clientMsgId: 'c1', text: 'a' }, phone);
+    h.created[0]!.state = 'running';
     await h.router.handle({ type: 'input.send', ...c2a('s2'), clientMsgId: 'c2', text: 'b' }, phone);
     expect(h.created).toHaveLength(1);
     const fatal = h.byType('error.fatal');
@@ -778,7 +792,7 @@ describe('Router · 路由表（机器级）', () => {
     expect(h.state.sessionParams(sid)).toEqual({ cwd: '/a', model: 'm', permissionMode: 'plan', started: false });
   });
 
-  test('session.create 满额 → 机器级 fatal(config)，无 response', async () => {
+  test('session.create 满额且都在忙 → 机器级 fatal(config)，无 response', async () => {
     const h = await makeHarness({ maxConcurrent: 1 });
     const create = (reqId: string) =>
       h.router.handle(
@@ -786,6 +800,7 @@ describe('Router · 路由表（机器级）', () => {
         phone,
       );
     await create('q1');
+    h.created[0]!.state = 'running';
     await create('q2');
     expect(h.byType('session.create.response')).toHaveLength(1);
     expect(h.byType('error.fatal')[0]).toMatchObject({ kind: 'config' });
@@ -1291,6 +1306,28 @@ describe('Router · session.archive', () => {
     expect(responseOf(h, 'q-ok').ok).toBe(true);
   });
 
+  test('归档顺带回收空闲子进程；有后台任务的只归档不回收', async () => {
+    const h = await makeHarness();
+    h.state.rememberSession('s1', params);
+    h.state.rememberSession('s2', params);
+    await h.router.handle({ type: 'input.send', ...c2a('s1'), clientMsgId: 'c1', text: 'x' }, phone);
+    await h.router.handle({ type: 'input.send', ...c2a('s2'), clientMsgId: 'c2', text: 'y' }, phone);
+    expect(updatedSessions(h).filter((m) => m.sessionId === 's1').at(-1)?.live).toBe(true);
+    h.created[1]!.bgRunningCount = 1;
+
+    await h.router.handle(archive('s1', 'q1'), phone);
+    await h.router.handle(archive('s2', 'q2'), phone);
+    expect(responseOf(h, 'q1').ok).toBe(true);
+    expect(responseOf(h, 'q2').ok).toBe(true);
+    expect(h.created[0]!.closed).toBe(true);
+    expect(h.created[1]!.closed).toBe(false);
+    expect(h.manager.activeSessionIds).toEqual(['s2']);
+    const last = (sid: string) => updatedSessions(h).filter((m) => m.sessionId === sid).at(-1)!;
+    expect(last('s1')).toMatchObject({ archived: true });
+    expect(last('s1').live).toBeUndefined();
+    expect(last('s2')).toMatchObject({ archived: true, live: true });
+  });
+
   test('未知会话 → not_found；取消归档时标记还在就清（即使转录已不在）', async () => {
     const h = await makeHarness();
     await h.router.handle(archive('ghost', 'q1'), phone);
@@ -1354,7 +1391,10 @@ describe('Router · session.delete', () => {
     await h.router.handle({ type: 'input.send', ...c2a('h1'), clientMsgId: 'c0', text: 'x' }, phone);
     const session = h.created[0]!;
     session.hasProcess = true;
+    // 有后台任务才会归档后仍留着实例（否则归档顺带回收子进程）
+    session.bgRunningCount = 1;
     await h.router.handle(archive('h1', 'q-arch'), phone);
+    session.bgRunningCount = 0;
     return { ...h, session };
   }
 
