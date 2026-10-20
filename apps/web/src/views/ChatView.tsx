@@ -68,6 +68,7 @@ import { useSessionActions } from '@/components/list/use-session-actions.ts';
 import { RenameDialog } from '@/components/list/RenameDialog.tsx';
 import { SessionHeadMenu } from '@/components/chat/SessionHeadMenu.tsx';
 import { SessionUsage } from '@/components/usage/PlanUsage.tsx';
+import { supportsContextRefresh } from '@/components/usage/usage-model.ts';
 import { composerOfflineHint } from '@/components/banners/conditions.ts';
 import { useClient, useTrine } from '@/app/runtime.ts';
 import {
@@ -412,6 +413,18 @@ export function ChatView(): React.JSX.Element {
     [client, machineId, sessionId],
   );
 
+  // 头部 ctx 手动刷新（agent ≥ 0.13.0）：新值随 session.updated 到；这里只提示失败
+  const canRefreshContext = client !== null && meta !== undefined && supportsContextRefresh(machine?.info);
+  const refreshContext = useCallback(async (): Promise<void> => {
+    if (!client) return;
+    try {
+      const res = await client.refreshContext(machineId, sessionId);
+      if (!res.ok) toast.error(`刷新上下文用量失败：${res.error?.message ?? '未知原因'}`);
+    } catch (err) {
+      toast.error(`刷新上下文用量失败：${err instanceof Error ? err.message : String(err)}`);
+    }
+  }, [client, machineId, sessionId]);
+
   const requestStatus = useCallback(() => {
     if (!client) return;
     setInfoCard(null);
@@ -428,7 +441,10 @@ export function ChatView(): React.JSX.Element {
             { label: '本会话成本', value: formatCost(res.costUsd) },
             {
               label: '上下文',
-              value: `${res.contextUsedTokens.toLocaleString()} / ${res.contextLimitTokens.toLocaleString()} tokens`,
+              value:
+                res.contextLimitTokens === 0
+                  ? '暂无数据（每轮结束后更新，也可点头部的 ctx 刷新）'
+                  : `${res.contextUsedTokens.toLocaleString()} / ${res.contextLimitTokens.toLocaleString()} tokens`,
             },
             {
               label: 'agent',
@@ -575,7 +591,12 @@ export function ChatView(): React.JSX.Element {
                 ? '会话设置 ▾'
                 : `${cwdTail(meta.cwd)} · ${shortModel(meta.model)} · ${meta.permissionMode} ▾`}
             </button>
-            <SessionUsage context={meta?.context} rateLimits={machine?.info?.rateLimits} now={usageNow} />
+            <SessionUsage
+              context={meta?.context}
+              rateLimits={machine?.info?.rateLimits}
+              now={usageNow}
+              onRefreshContext={canRefreshContext ? refreshContext : undefined}
+            />
           </span>
         }
         right={

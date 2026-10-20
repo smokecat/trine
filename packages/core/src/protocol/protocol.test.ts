@@ -824,6 +824,27 @@ describe('用量展示（usage-display）', () => {
     expect(SessionMetaSchema.safeParse({ ...meta, context: { ...context, maxTokens: 0 } }).success).toBe(false);
   });
 
+  test('session.context.request / response：会话级、带 reqId；成功带 context，失败带错误码', () => {
+    const req = { type: 'session.context.request', ...c2a, reqId: 'q1' };
+    expect(ClientToAgentEventSchema.parse(req)).toEqual(req as never);
+    expect(AgentToClientEventSchema.safeParse(req).success).toBe(false);
+    const ok = {
+      type: 'session.context.response',
+      ...a2c,
+      reqId: 'q1',
+      ok: true,
+      context: { usedTokens: 48_448, maxTokens: 1_000_000, percent: 4.8, at: 1 },
+    };
+    expect(AgentToClientEventSchema.parse(ok)).toEqual(ok as never);
+    for (const code of ['not_found', 'failed']) {
+      const fail = { type: 'session.context.response', ...machineA2c, reqId: 'q1', ok: false, error: { code, message: 'x' } };
+      expect(AgentToClientEventSchema.parse(fail)).toEqual(fail as never);
+    }
+    expect(
+      AgentToClientEventSchema.safeParse({ ...ok, ok: false, error: { code: 'busy', message: 'x' } }).success,
+    ).toBe(false);
+  });
+
   test('machine.usage.request / response：方向、reqId、失败码', () => {
     const req = { type: 'machine.usage.request', ...machineC2a, reqId: 'q1' };
     expect(ClientToAgentEventSchema.parse(req)).toEqual(req as never);

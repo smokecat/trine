@@ -2282,3 +2282,50 @@ describe('slashCommandOf', () => {
     expect(slashCommandOf('/home/u/a.txt 是什么')).toBeUndefined();
   });
 });
+
+describe('ClaudeSession · 手动刷新 context', () => {
+  const usage = { totalTokens: 48_448, maxTokens: 1_000_000, percentage: 4.8 };
+
+  test('有活跃 query 直接查，并更新 meta', async () => {
+    const metas: SessionRuntimeMeta[] = [];
+    const { session, events, calls } = makeSession([[resultMessage()]], { onMeta: (m) => metas.push(m) }, {
+      getContextUsage: () => Promise.resolve(usage),
+    });
+    session.send('m1', 'x');
+    await waitFor(() => events.some((e) => e.type === 'run.done'));
+    const context = await session.refreshContextNow();
+    expect(context).toMatchObject({ usedTokens: 48_448, maxTokens: 1_000_000, percent: 4.8 });
+    expect(calls).toHaveLength(1);
+    expect(metas.at(-1)?.context?.usedTokens).toBe(48_448);
+    await session.close();
+  });
+
+  test('没有子进程：临时 resume（带待生效截断点）查完即关，不发消息', async () => {
+    const { session, calls } = makeSession([[resultMessage()]], {
+      resume: true,
+      rewindPoint: { resumeAt: 'keep-1', dropFrom: 'drop-1' },
+    }, { getContextUsage: () => Promise.resolve(usage) });
+    const context = await session.refreshContextNow();
+    expect(context.usedTokens).toBe(48_448);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.options).toMatchObject({ resume: 's1', resumeSessionAt: 'keep-1' });
+    expect(calls[0]!.closed).toBe(true);
+    expect(calls[0]!.userMessages).toHaveLength(0);
+    expect(session.hasProcess).toBe(false);
+    await session.close();
+  });
+
+  test('从没开始过的新会话：直接报错，不起进程', async () => {
+    const { session, calls } = makeSession([[resultMessage()]], {}, { getContextUsage: () => Promise.resolve(usage) });
+    await expect(session.refreshContextNow()).rejects.toThrow('还没有开始');
+    expect(calls).toHaveLength(0);
+    await session.close();
+  });
+
+  test('应答形状不认识：报错，不改 meta', async () => {
+    const { session } = makeSession([[resultMessage()]], { resume: true }, { getContextUsage: () => Promise.resolve({}) });
+    await expect(session.refreshContextNow()).rejects.toThrow('格式不认识');
+    expect(session.meta().context).toBeUndefined();
+    await session.close();
+  });
+});

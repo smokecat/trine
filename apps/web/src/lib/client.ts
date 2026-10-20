@@ -202,6 +202,9 @@ export const CLAUDE_UPDATE_TIMEOUT_MS = 6 * 60_000;
 /** 手动刷新限额用量的等待上限：agent 可能要临时起一个 claude 进程（agent 侧 30s 超时） */
 export const USAGE_REFRESH_TIMEOUT_MS = 45_000;
 
+/** `session.context.response`（ok 为 false 也照常返回，由调用方展示原因） */
+export type ContextRefreshResult = Extract<AgentToClientEvent, { type: 'session.context.response' }>;
+
 /** `machine.usage.response`（ok 为 false 也照常返回，由调用方展示原因） */
 export type UsageRefreshResult = Extract<AgentToClientEvent, { type: 'machine.usage.response' }>;
 
@@ -1633,6 +1636,20 @@ export class TrineClient {
   async refreshUsage(machineId: string): Promise<UsageRefreshResult> {
     const res = await this.request(machineId, { type: 'machine.usage.request' }, { timeoutMs: USAGE_REFRESH_TIMEOUT_MS });
     if (res.type !== 'machine.usage.response') throw new Error(`意外的应答 ${res.type}`);
+    return res;
+  }
+
+  /**
+   * 手动刷新会话的 context 用量（agent >= 0.13.0，调用方先做能力探测）。新值随 agent
+   * 先广播的 session.updated 到达；这里只返回成败。业务失败不抛，发不出去 / 超时才抛。
+   */
+  async refreshContext(machineId: string, sessionId: string): Promise<ContextRefreshResult> {
+    const res = await this.request(
+      machineId,
+      { type: 'session.context.request', sessionId },
+      { timeoutMs: USAGE_REFRESH_TIMEOUT_MS },
+    );
+    if (res.type !== 'session.context.response') throw new Error(`意外的应答 ${res.type}`);
     return res;
   }
 

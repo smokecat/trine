@@ -15,6 +15,15 @@ import { formatClock, isSameDay } from '@/lib/format.ts';
 /** 首个上报用量、支持 machine.usage.request 的 agent 版本 */
 export const USAGE_MIN_AGENT = '0.12.0';
 
+/** 首个支持 session.context.request（手动刷新 context）的 agent 版本 */
+export const CONTEXT_REFRESH_MIN_AGENT = '0.13.0';
+
+export function supportsContextRefresh(info: Pick<MachineInfo, 'agentVersion'> | null | undefined): boolean {
+  if (info === null || info === undefined) return false;
+  const cmp = compareVersions(info.agentVersion, CONTEXT_REFRESH_MIN_AGENT);
+  return cmp !== null && cmp >= 0;
+}
+
 export function supportsUsageRefresh(info: Pick<MachineInfo, 'agentVersion'> | null | undefined): boolean {
   if (info === null || info === undefined) return false;
   const cmp = compareVersions(info.agentVersion, USAGE_MIN_AGENT);

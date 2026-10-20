@@ -38,10 +38,10 @@ const rateLimits = {
 describe('SessionUsage', () => {
   test('ctx / 5h / 1w 百分比，不带重置时间', () => {
     const el = render(
-      <SessionUsage context={{ usedTokens: 50_000, maxTokens: 200_000, percent: 25, at: 1 }} rateLimits={rateLimits} now={now} />,
+      <SessionUsage context={{ usedTokens: 50_000, maxTokens: 200_000, percent: 25, at: now }} rateLimits={rateLimits} now={now} />,
     );
     expect(el.textContent).toBe('ctx 25%5h62%1w96%');
-    expect(el.querySelector('[data-testid="session-context"]')?.getAttribute('title')).toBe('上下文 50k / 200k tokens');
+    expect(el.querySelector('[data-testid="session-context"]')?.getAttribute('title')).toBe('上下文 50k / 200k tokens · 取于 刚刚');
     expect(el.querySelector('.text-red')?.textContent).toBe('96%');
   });
 
@@ -63,5 +63,40 @@ describe('PlanUsageLine', () => {
 
   test('没有数据不渲染', () => {
     expect(render(<PlanUsageLine rateLimits={undefined} now={now} />).innerHTML).toBe('');
+  });
+});
+
+describe('SessionUsage · 手动刷新 ctx', () => {
+  test('给了 onRefreshContext：ctx 是按钮，没有值显示「—」；点击转圈，完成后恢复', async () => {
+    let release!: () => void;
+    let calls = 0;
+    const el = render(
+      <SessionUsage
+        context={undefined}
+        rateLimits={undefined}
+        now={now}
+        onRefreshContext={() => {
+          calls += 1;
+          return new Promise<void>((r) => (release = r));
+        }}
+      />,
+    );
+    const button = el.querySelector('button[data-testid="session-context"]') as HTMLButtonElement;
+    expect(button.textContent).toBe('ctx —');
+    expect(button.title).toContain('点击刷新');
+    act(() => button.click());
+    expect(calls).toBe(1);
+    expect(button.disabled).toBe(true);
+    expect(button.textContent).toBe('ctx …');
+    await act(async () => release());
+    expect(button.disabled).toBe(false);
+  });
+
+  test('不能刷新时 ctx 不是按钮', () => {
+    const el = render(
+      <SessionUsage context={{ usedTokens: 1, maxTokens: 10, percent: 10, at: now }} rateLimits={undefined} now={now} />,
+    );
+    expect(el.querySelector('button')).toBeNull();
+    expect(el.querySelector('[data-testid="session-context"]')?.getAttribute('title')).toContain('取于 刚刚');
   });
 });

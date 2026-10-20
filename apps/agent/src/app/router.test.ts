@@ -155,6 +155,18 @@ class FakeSession {
     for (const [c, u] of this.uuids) if (u === uuid) return c;
     return undefined;
   }
+  // —— 手动刷新 context ——
+  contextResult: { usedTokens: number; maxTokens: number; percent: number; at: number } | Error = {
+    usedTokens: 48_000,
+    maxTokens: 200_000,
+    percent: 24,
+    at: 7,
+  };
+  async refreshContextNow() {
+    this.calls.push('refreshContext');
+    if (this.contextResult instanceof Error) throw this.contextResult;
+    return this.contextResult;
+  }
   async previewFiles(uuid: string) {
     this.calls.push(`rewindFiles:${uuid}:dry`);
     return this.rewindResult;
@@ -717,7 +729,30 @@ describe('Router · 路由表（会话级）', () => {
     expect(h.created.find((c) => c.sessionId === 'old')!.args.resume).toBe(true);
   });
 
-  test('session.status.request → 会话级 response，上下文占位 0/0', async () => {
+  test('session.context.request：定向回请求方；失败收敛成 failed；会话打不开回机器级 not_found', async () => {
+    const h = await withSession();
+    await h.router.handle({ type: 'session.context.request', ...c2a('s1'), reqId: 'c1' }, tablet);
+    const [ok] = h.events.filter((e) => e.event.type === 'session.context.response');
+    expect(ok!.to).toBe('tablet');
+    expect(ok!.event).toMatchObject({ sessionId: 's1', reqId: 'c1', ok: true, context: { usedTokens: 48_000, maxTokens: 200_000 } });
+    expect(h.session.calls).toContain('refreshContext');
+
+    h.session.contextResult = new Error('读取 context 用量超时');
+    await h.router.handle({ type: 'session.context.request', ...c2a('s1'), reqId: 'c2' }, phone);
+    expect(h.byType('session.context.response')[1]).toMatchObject({
+      reqId: 'c2',
+      ok: false,
+      error: { code: 'failed', message: '读取 context 用量超时' },
+    });
+    expect(h.byType('error.fatal')).toHaveLength(0);
+
+    await h.router.handle({ type: 'session.context.request', ...c2a('ghost'), reqId: 'c3' }, phone);
+    const [missing] = h.events.filter((e) => e.event.type === 'session.context.response' && e.event.reqId === 'c3');
+    expect(missing!.scope).toBeNull();
+    expect(missing!.event).toMatchObject({ ok: false, error: { code: 'not_found' } });
+  });
+
+  test('session.status.request → 会话级 response，还没取到 context 时为 0/0', async () => {
     const h = await withSession();
     h.session.costUsd = 0.42;
     await h.router.handle({ type: 'session.status.request', ...c2a('s1'), reqId: 'q1' }, phone);

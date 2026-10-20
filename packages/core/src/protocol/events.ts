@@ -39,6 +39,7 @@ import {
   ATTACHMENTS_MAX_COUNT,
   AttachmentRefSchema,
   BgTaskSchema,
+  ContextUsageSchema,
   HistoryItemSchema,
   MachineInfoSchema,
   McpServerStatusSchema,
@@ -808,10 +809,37 @@ export const SessionStatusResponseSchema = z.object({
   cwd: z.string(),
   permissionMode: PermissionModeSchema,
   costUsd: z.number().nonnegative(),
+  /** 最近一次已知的 context 用量（SessionMeta.context）；还没取到时两者都是 0 */
   contextUsedTokens: z.number().int().nonnegative(),
   contextLimitTokens: z.number().int().nonnegative(),
   agentVersion: z.string(),
   claudeVersion: z.string(),
+});
+
+/**
+ * client → agent：重新取一次本会话的 context 用量（手动刷新，agent ≥ 0.13.0）。
+ * 会话级帧。会话有子进程就直接查；没有就临时起一个 resume 该会话、不发消息的
+ * claude 查完即关（约 2 秒，不写转录）。新值随 `session.updated`（SessionMeta.context）
+ * 广播给所有设备，再回 `session.context.response`。
+ */
+export const SessionContextRequestSchema = z.object({
+  type: z.literal('session.context.request'),
+  ...c2aBase,
+  reqId: ReqIdSchema,
+});
+
+/**
+ * agent → client：`session.context.request` 的应答，**只发给请求方设备**。会话打不开
+ * （不存在 / 并发已满）时以机器级帧回 `not_found`，client 只按 reqId 关联。运行中也能查
+ * （查的是当前进程里的上下文）。
+ */
+export const SessionContextResponseSchema = z.object({
+  type: z.literal('session.context.response'),
+  ...a2cBase,
+  reqId: ReqIdSchema,
+  ok: z.boolean(),
+  context: ContextUsageSchema.optional(),
+  error: z.object({ code: z.enum(['not_found', 'failed']), message: z.string() }).optional(),
 });
 
 export const McpStatusRequestSchema = z.object({
@@ -1103,6 +1131,7 @@ export const AgentToClientEventSchema = z.discriminatedUnion('type', [
   SessionMutateResponseSchema,
   SessionRemovedSchema,
   SessionStatusResponseSchema,
+  SessionContextResponseSchema,
   McpStatusResponseSchema,
   SessionHistoryResponseSchema,
   SubagentHistoryResponseSchema,
@@ -1139,6 +1168,7 @@ export const ClientToAgentEventSchema = z.discriminatedUnion('type', [
   SessionSetPermissionModeSchema,
   SessionSetCwdSchema,
   SessionStatusRequestSchema,
+  SessionContextRequestSchema,
   McpStatusRequestSchema,
   SessionHistoryRequestSchema,
   SubagentHistoryRequestSchema,

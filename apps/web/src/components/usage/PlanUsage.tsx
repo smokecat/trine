@@ -137,27 +137,66 @@ export function PlanUsageStrip({
   );
 }
 
-/** 会话头部：ctx / 5h / 1w 百分比（不带重置时间，省地方；悬停看详情）。都没有时 null */
+/**
+ * 会话头部：ctx / 5h / 1w 百分比（不带重置时间，省地方；悬停看详情）。给了
+ * `onRefreshContext` 时 ctx 是按钮，点一下让 agent 重新取（还没有值时显示「ctx —」）。
+ * 什么都没有、也不能刷新时渲染 null。
+ */
 export function SessionUsage({
   context,
   rateLimits,
   now,
+  onRefreshContext,
 }: {
   context: ContextUsage | undefined;
   rateLimits: RateLimits | undefined;
   now: number;
+  /** 手动刷新 context；resolve 后结束转圈（成败提示由调用方负责） */
+  onRefreshContext?: (() => Promise<void>) | undefined;
 }): React.JSX.Element | null {
+  const [refreshing, setRefreshing] = useState(false);
   const ctx = context === undefined ? undefined : contextView(context);
   const five = rateLimits?.fiveHour;
   const seven = rateLimits?.sevenDay;
-  if (ctx === undefined && five === undefined && seven === undefined) return null;
+  const canRefresh = onRefreshContext !== undefined;
+  if (ctx === undefined && !canRefresh && five === undefined && seven === undefined) return null;
+  const ctxBody = (
+    <>
+      <span className="text-text-3">ctx </span>
+      {refreshing ? (
+        <span className="text-text-3 motion-safe:animate-pulse">…</span>
+      ) : (
+        <span className={cn(ctx !== undefined && TONE_CLASS[ctx.tone])}>{ctx?.percent ?? '—'}</span>
+      )}
+    </>
+  );
+  const ctxTitle = [
+    ctx?.title ?? '上下文用量：还没有数据',
+    ...(context === undefined ? [] : [`取于 ${formatRelativeTime(context.at, now)}`]),
+    ...(canRefresh ? ['点击刷新'] : []),
+  ].join(' · ');
   return (
     <span data-testid="session-usage" className="inline-flex shrink-0 items-baseline gap-2">
-      {ctx !== undefined && (
-        <span className="tabular whitespace-nowrap" title={ctx.title} data-testid="session-context">
-          <span className="text-text-3">ctx </span>
-          <span className={cn(TONE_CLASS[ctx.tone])}>{ctx.percent}</span>
-        </span>
+      {canRefresh ? (
+        <button
+          type="button"
+          data-testid="session-context"
+          className="tabular hover:text-text-2 cursor-pointer whitespace-nowrap underline decoration-dotted underline-offset-2 disabled:cursor-default"
+          title={ctxTitle}
+          disabled={refreshing}
+          onClick={() => {
+            setRefreshing(true);
+            void onRefreshContext().finally(() => setRefreshing(false));
+          }}
+        >
+          {ctxBody}
+        </button>
+      ) : (
+        ctx !== undefined && (
+          <span className="tabular whitespace-nowrap" title={ctxTitle} data-testid="session-context">
+            {ctxBody}
+          </span>
+        )
       )}
       {five !== undefined && <WindowValue label="5h" window={five} now={now} showReset={false} />}
       {seven !== undefined && <WindowValue label="1w" window={seven} now={now} showReset={false} />}

@@ -82,6 +82,12 @@
  * 设备广播 `session.rewound` 再应答。处理中的异常收敛成 `io` 应答，不走链的兜底
  * （那会发 error.fatal 进时间线，且关联不到请求）。待生效的截断点存在 state.json，
  * 期间 session.history.request 按它截掉被撤的尾巴。
+ *
+ * ## 手动刷新 context：session.context.request
+ *
+ * 同回退：要 resolveSession（会话实例是入口，进程被回收时由它起临时 query），挂在会话
+ * 链上执行（约 2 秒），不发消息。新值经 session.updated 广播，应答只定向回请求方；
+ * 会话打不开时同回退一样回机器级 `not_found`。
  */
 import { randomUUID } from 'node:crypto';
 import { getSessionMessages, type SessionMessage, type SlashCommand as SdkSlashCommand } from '@anthropic-ai/claude-agent-sdk';
@@ -516,6 +522,18 @@ export class Router {
     if (session === undefined) {
       // 回退带 reqId：resolve 失败（会话不存在 / 并发已满）也要应答，否则 client 干等到超时。
       // 走机器级（不为可能不存在的会话开 seq 流，见文件头）；client 只按 reqId 关联
+      if (event.type === 'session.context.request') {
+        this.#deps.emitter.emit(
+          {
+            type: 'session.context.response',
+            reqId: event.reqId,
+            ok: false,
+            error: { code: 'not_found', message: '无法打开这个会话（会话不存在，或活跃会话已达上限）' },
+          },
+          null,
+          { to: sender.deviceId },
+        );
+      }
       if (event.type === 'session.rewind.preview' || event.type === 'session.rewind') {
         this.#deps.emitter.emit(
           {
@@ -563,6 +581,8 @@ export class Router {
         return;
       case 'session.status.request': {
         const meta = session.meta();
+        // 实例刚 resume、还没取过时用 manager 缓存里上次的值
+        const context = meta.context ?? this.#deps.manager.metaOf(sessionId)?.context;
         const info = this.#deps.machineInfo();
         this.#emitSession(sessionId, {
           type: 'session.status.response',
@@ -571,9 +591,9 @@ export class Router {
           cwd: meta.cwd,
           permissionMode: meta.permissionMode,
           costUsd: meta.costUsd,
-          // 上下文用量 SDK 暂无稳定来源，占位 0/0（记遗留）
-          contextUsedTokens: 0,
-          contextLimitTokens: 0,
+          // 最近一次已知的值（每轮结束 / 手动刷新时取）；还没取到为 0/0
+          contextUsedTokens: context?.usedTokens ?? 0,
+          contextLimitTokens: context?.maxTokens ?? 0,
           agentVersion: info.agentVersion,
           claudeVersion: info.claudeVersion,
         });
@@ -592,6 +612,25 @@ export class Router {
       case 'session.rewind':
         await this.#rewind(sessionId, session, event, sender);
         return;
+      case 'session.context.request': {
+        const reply = (body: EventBody): void => {
+          this.#deps.emitter.emit(body, sessionId, { to: sender.deviceId });
+        };
+        try {
+          const context = await session.refreshContextNow();
+          reply({ type: 'session.context.response', reqId: event.reqId, ok: true, context });
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          this.#log(`[router] 刷新 context 失败 session=${sessionId}: ${message}`);
+          reply({
+            type: 'session.context.response',
+            reqId: event.reqId,
+            ok: false,
+            error: { code: 'failed', message: message.slice(0, 300) },
+          });
+        }
+        return;
+      }
       default:
         this.#log(`[router] 未处理的会话级事件 type=${event.type}`);
     }

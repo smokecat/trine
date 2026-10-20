@@ -33,7 +33,9 @@ import type { MachineInfo, RateLimits } from '@trine/core';
 // - 0.12.0 起 SessionMeta 带 context（context 用量）、MachineInfo 带 rateLimits（5 小时 /
 //   7 天订阅限额用量），支持 machine.usage.request 手动刷新；本地斜杠命令的输出在
 //   assistant.done 上带 command（web 按命令卡渲染）
-export const AGENT_VERSION = '0.12.0';
+// - 0.13.0 起支持 session.context.request（手动刷新会话 context 用量）；
+//   session.status.response 的 context 字段填最近一次已知值（此前恒为 0/0）
+export const AGENT_VERSION = '0.13.0';
 
 export function buildMachineInfo(input: {
   name: string;

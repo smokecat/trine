@@ -483,7 +483,7 @@ export class ClaudeSession {
    * 调用方负责先确认会话空闲、目标消息在转录里。
    */
   previewFiles(userMessageUuid: string): Promise<RewindFilesResult> {
-    return this.#withFilesQuery((q) => q.rewindFiles(userMessageUuid, { dryRun: true }));
+    return this.#withQuery((q) => q.rewindFiles(userMessageUuid, { dryRun: true }), '读取文件快照超时', REWIND_FILES_TIMEOUT_MS);
   }
 
   /**
@@ -491,7 +491,7 @@ export class ClaudeSession {
    * 实测），所以在同一个 query 上先 dryRun 取统计、再还原，结果合并两者。
    */
   restoreFiles(userMessageUuid: string): Promise<RewindFilesResult> {
-    return this.#withFilesQuery(async (q) => {
+    return this.#withQuery(async (q) => {
       const preview = await q.rewindFiles(userMessageUuid, { dryRun: true });
       if (!preview.canRewind) return preview;
       const result = await q.rewindFiles(userMessageUuid);
@@ -502,25 +502,60 @@ export class ClaudeSession {
         insertions: result.insertions ?? preview.insertions ?? 0,
         deletions: result.deletions ?? preview.deletions ?? 0,
       };
-    });
+    }, '读取文件快照超时', REWIND_FILES_TIMEOUT_MS);
   }
 
-  /** 在活跃 query 上跑文件快照请求；没有就起一个临时 query（不发消息、带超时、用完即关） */
-  async #withFilesQuery<T>(fn: (q: Query) => Promise<T>): Promise<T> {
+  /**
+   * 手动刷新 context 用量（协议 session.context.request）：有活跃 query 就直接查；没有
+   * 就临时起一个 resume 本会话、不发消息的 query 查完即关（实测约 2 秒，不写转录）。
+   * 有待生效的对话截断点时从截断点 resume，查的是回退后的上下文。取到即更新 meta。
+   *
+   * @throws 会话还没开始过（没有转录可 resume）、超时、应答形状不认识
+   */
+  async refreshContextNow(): Promise<ContextUsage> {
+    if (this.#query === undefined && !this.#resumeRequested) {
+      throw new Error('会话还没有开始，没有可统计的上下文');
+    }
+    const rewind = this.#pendingRewind;
+    const response = await this.#withQuery(
+      (q) => q.getContextUsage(),
+      '读取 context 用量超时',
+      CONTEXT_USAGE_TIMEOUT_MS,
+      rewind === undefined ? {} : { resumeSessionAt: rewind.resumeAt },
+    );
+    const context = contextUsageFrom(response, this.#now());
+    if (context === undefined) throw new Error('context 用量的格式不认识（Claude Code 版本变化？）');
+    if (!this.#closed) {
+      this.#context = context;
+      this.#onMeta?.(this.meta());
+    }
+    return context;
+  }
+
+  /**
+   * 在活跃 query 上跑控制请求；没有就起一个 resume 本会话的临时 query（不发消息、
+   * 带超时、用完即关）。读文件快照与手动刷新 context 共用。
+   */
+  async #withQuery<T>(
+    fn: (q: Query) => Promise<T>,
+    timeoutMessage: string,
+    timeoutMs: number,
+    extraOptions: Partial<Options> = {},
+  ): Promise<T> {
     this.#touch();
     const live = this.#query;
     if (live !== undefined) return fn(live);
     const abort = new AbortController();
     const q = this.#queryFn({
       prompt: idleInput(abort.signal),
-      options: { ...this.#baseOptions(), resume: this.sessionId, abortController: abort },
+      options: { ...this.#baseOptions(), resume: this.sessionId, abortController: abort, ...extraOptions },
     });
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       return await Promise.race([
         fn(q),
         new Promise<never>((_, reject) => {
-          timer = setTimeout(() => reject(new Error('读取文件快照超时')), REWIND_FILES_TIMEOUT_MS);
+          timer = setTimeout(() => reject(new Error(timeoutMessage)), timeoutMs);
         }),
       ]);
     } finally {

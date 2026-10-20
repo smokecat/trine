@@ -141,7 +141,7 @@ SessionMeta 新增**可选**字段（旧 agent 不发、旧 client 收到会被 
 
 - `headless?: boolean`（session-ux，2026-10-20）— 非交互会话：转录里第一条带 `entrypoint` 的行是 `sdk-cli`（`claude -p`）或 `sdk-py`（Python SDK）。终端交互（`cli`）与 trine 自己开的会话（TS SDK，`sdk-ts`）都不算。agent 读转录开头判定、按 sessionId 缓存；省略 = 不是 / 不知道 / 旧 agent。client 把它与「cwd 在系统临时目录下」一起归为临时会话，列表默认隐藏
 - `live?: boolean`（live-sessions，agent ≥ 0.10.0）— 会话当前在 agent 上有子进程，占一个活跃名额（上限见 `machine.info.maxSessions`）。子进程拉起（新建 / resume）与关闭（空闲回收、满额腾位、归档、切目录）后都会广播一次 `session.updated`；归档会话时若它不忙且没有后台任务，顺带回收子进程；省略 = 没有 / 旧 agent。名额满时 agent 先回收最久未活动且不忙（不在跑、不等批准、无排队输入、无后台任务）的会话，全都在忙才回 `error.fatal(config)`
-- `context?: { usedTokens, maxTokens, percent, at }`（usage-display，agent ≥ 0.12.0）— 最近一次已知的 context 用量。agent 在主 agent 每轮结束（result）后，在同一个 SDK query 上调 `getContextUsage()` 取值（不消耗模型 token）；`maxTokens` 是自动压缩窗口，`percent` 超窗时可 > 100。子进程回收后保留最后一次的值（agent 重启后清空，等下一轮再取）；省略 = 还没取到 / 旧 agent
+- `context?: { usedTokens, maxTokens, percent, at }`（usage-display，agent ≥ 0.12.0）— 最近一次已知的 context 用量。agent 在主 agent 每轮结束（result）后，在同一个 SDK query 上调 `getContextUsage()` 取值（不消耗模型 token），也可由 client 发 `session.context.request { reqId }`（会话级，agent ≥ 0.13.0）手动刷新：有子进程就直接查，没有就临时起一个 resume 该会话、不发消息的 claude 查完即关（约 2 秒，不写转录；有待生效的截断点时从截断点 resume）。新值随 `session.updated` 广播，应答 `session.context.response { reqId, ok, context?, error?: { code: not_found|failed, message } }` 只发给请求方（会话打不开时为机器级 `not_found`）。`session.status.response` 的 `contextUsedTokens / contextLimitTokens` 填这个最近值（0.13.0 之前恒为 0/0）；`maxTokens` 是自动压缩窗口，`percent` 超窗时可 > 100。子进程回收后保留最后一次的值（agent 重启后清空，等下一轮再取）；省略 = 还没取到 / 旧 agent
 
 agent 侧所有产出 SessionMeta 的出口（list、session.created、session.updated、各命令成功后的广播）都经同一处合并归档标记、`headless` 与 `live`，活跃会话的状态迁移不会冲掉 title / firstPrompt / archived 等非运行时字段。
 

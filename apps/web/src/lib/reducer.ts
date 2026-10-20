@@ -680,6 +680,7 @@ export function applyEvent(tl: Timeline, event: AgentToClientEvent): Timeline {
     // 回退的预览 / 结果由 client 按 reqId 关联；时间线的变化走 session.rewound
     case 'session.rewind.preview.response':
     case 'session.rewind.response':
+    case 'session.context.response':
     case 'session.capabilities':
       return { ...tl, lastAppliedSeq: Math.max(tl.lastAppliedSeq, seq) };
     // 机器级：不属于任何时间线
