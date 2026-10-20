@@ -48,6 +48,8 @@ import { HistoryHead, InfoCard, type HistoryHeadState } from '@/components/chat/
 import { HeartbeatFooter } from '@/components/chat/HeartbeatFooter.tsx';
 import { BgTaskBar } from '@/components/chat/BgTaskBar.tsx';
 import { Timeline, type TimelineHandlers } from '@/components/chat/Timeline.tsx';
+import { lastEditable, PendingTray } from '@/components/chat/PendingTray.tsx';
+import type { PendingActionKind } from '@/components/chat/entry-status.ts';
 import { RewindDialog } from '@/components/chat/RewindDialog.tsx';
 import { rewindDoneMessage } from '@/components/chat/rewind-model.ts';
 import type { PermissionDecision } from '@/components/chat/PermissionCard.tsx';
@@ -81,9 +83,11 @@ import {
   bgRunningCount,
   bgTasksStale,
   emptyTimeline,
+  isPendingEntry,
   rewindTargetId,
   shouldAutoLoadHistory,
   type PermissionEntry,
+  type TimelineEntry,
   type UserEntry,
 } from '@/lib/reducer.ts';
 import { timelineKey } from '@/lib/storage.ts';
@@ -334,6 +338,46 @@ export function ChatView(): React.JSX.Element {
     };
   }, [addAttachments, attachDisabledReason]);
 
+  // 还没进入对话的本设备消息进输入框上方的托盘，其余照常进时间线（reducer isPendingEntry）
+  const [timelineEntries, pendingEntries] = useMemo(() => {
+    const shown: TimelineEntry[] = [];
+    const pending: UserEntry[] = [];
+    for (const e of timeline.entries) {
+      if (isPendingEntry(e, running)) pending.push(e);
+      else shown.push(e);
+    }
+    return [pending.length === 0 ? timeline.entries : shown, pending] as const;
+  }, [timeline.entries, running]);
+
+  const onPendingAction = useCallback(
+    (action: PendingActionKind, entry: UserEntry) => {
+      if (!client) return;
+      const edit = action === 'edit';
+      switch (action) {
+        case 'edit':
+        case 'recall':
+          if (entry.status === 'queued') client.recallQueued(machineId, sessionId, entry.id, { edit });
+          else if (entry.status === 'parked') client.recallParked(machineId, sessionId, entry.id);
+          else client.discardPending(machineId, sessionId, entry.id, { edit });
+          break;
+        case 'resend':
+          client.resendPending(machineId, sessionId, entry.id);
+          break;
+        case 'discard':
+          client.discardPending(machineId, sessionId, entry.id);
+          break;
+      }
+    },
+    [client, machineId, sessionId],
+  );
+
+  const editLastPending = useCallback((): boolean => {
+    const target = lastEditable(pendingEntries);
+    if (target === undefined) return false;
+    onPendingAction('edit', target);
+    return true;
+  }, [pendingEntries, onPendingAction]);
+
   const handlers: TimelineHandlers = useMemo(
     () => ({
       onUserAction: (action, entry) => {
@@ -349,8 +393,10 @@ export function ChatView(): React.JSX.Element {
             client.retryInput(machineId, sessionId, entry.id);
             break;
           case 'resend':
-            // expired 的条目已是终态，只能以新 clientMsgId 重发
-            client.sendInput(machineId, sessionId, entry.text, attachmentRefs(entry));
+            // expired / cancelled 的条目已是终态，只能以新 clientMsgId 重发（旧条目随之删掉）
+            if (!client.resendPending(machineId, sessionId, entry.id)) {
+              client.sendInput(machineId, sessionId, entry.text, attachmentRefs(entry));
+            }
             break;
         }
       },
@@ -627,7 +673,7 @@ export function ChatView(): React.JSX.Element {
         <TimelineSkeleton />
       ) : (
         <Timeline
-          entries={timeline.entries}
+          entries={timelineEntries}
           syncing={syncing}
           deviceId={deviceId}
           now={now}
@@ -683,6 +729,8 @@ export function ChatView(): React.JSX.Element {
         snippets={prefs.promptSnippets}
         onManageSnippets={() => navigate('/settings')}
         sendKey={prefs.sendKey}
+        pending={pendingEntries.length > 0 ? <PendingTray entries={pendingEntries} onAction={onPendingAction} /> : undefined}
+        onEditLast={editLastPending}
         attachments={{
           drafts: attach.drafts,
           ready: attach.ready,

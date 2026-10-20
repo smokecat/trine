@@ -111,6 +111,9 @@ function makePrinter(): (out: OutboundEvent) => void {
       case 'input.queued':
         console.log(`${seq} ${color.dim(`📬 已排队 ${event.clientMsgId}`)}`);
         return;
+      case 'input.cancelled':
+        console.log(`${seq} ${color.dim(`📭 排队消息未执行（${event.reason}）${event.clientMsgId}`)}`);
+        return;
       case 'error.transient':
         console.log(`${seq} ${color.yellow(`⚠ 瞬时错误（第 ${event.attempt} 次自动恢复）：${event.reason}`)}`);
         return;

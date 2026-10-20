@@ -672,6 +672,20 @@ describe('子 agent 过程（subagent-view）', () => {
   });
 });
 
+describe('排队消息出队（input.cancelled）', () => {
+  test('a2c、要求 clientMsgId、reason 封闭枚举', () => {
+    for (const reason of ['recalled', 'stopped', 'closed']) {
+      const frame = { type: 'input.cancelled', ...a2c, clientMsgId: 'c1', reason };
+      expect(AgentToClientEventSchema.parse(frame)).toEqual(frame as never);
+      expect(ClientToAgentEventSchema.safeParse(frame).success).toBe(false);
+    }
+    const base = { type: 'input.cancelled', ...a2c, clientMsgId: 'c1' };
+    expect(AgentToClientEventSchema.safeParse({ ...base, reason: 'expired' }).success).toBe(false);
+    expect(AgentToClientEventSchema.safeParse({ ...base, clientMsgId: '', reason: 'recalled' }).success).toBe(false);
+    expect(AgentToClientEventSchema.safeParse(base).success).toBe(false);
+  });
+});
+
 describe('回退（rewind）', () => {
   test('user.message 可带 uuid（非空串），省略照过', () => {
     const frame = { type: 'user.message', ...a2c, messageId: 'c1', clientMsgId: 'c1', text: 'hi', uuid: 'u-1' };

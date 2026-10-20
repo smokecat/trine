@@ -3,9 +3,10 @@
  *
  * ## 运行中照样能发（NOTES.chat 第 4 条）
  *
- * 不禁输入、不打断任务：运行中发送就是**排队**，回执可撤回，任务结束按序
- * 出队。所以发送按钮与停止按钮 ■ **并存**——一个是「再说一句」，一个是
- * 「别干了」，是两回事。
+ * 不禁输入、不打断任务：运行中发送就是**排队**，任务结束按序出队。所以发送按钮
+ * 与停止按钮 ■ **并存**——一个是「再说一句」，一个是「别干了」，是两回事。
+ * 排着的消息显示在输入框正上方的托盘里（`pending`，见 PendingTray），可撤回 / 编辑；
+ * PC 上输入框为空时按 ↑ 编辑最后一条（`onEditLast`）。
  *
  * ## 机器离线也能发
  *
@@ -97,6 +98,8 @@ export function Composer({
   onManageSnippets,
   sendKey,
   attachments,
+  pending,
+  onEditLast,
 }: {
   value: string;
   onChange: (text: string) => void;
@@ -117,12 +120,17 @@ export function Composer({
   sendKey: SendKey;
   /** 附件；不给 = 不显示附件入口 */
   attachments?: ComposerAttachments | undefined;
+  /** 输入框正上方的排队托盘（PendingTray）；没有就不给 */
+  pending?: React.ReactNode;
+  /** 输入框为空时按 ↑：编辑最后一条排队消息，返回是否接手了这次按键 */
+  onEditLast?: (() => boolean) | undefined;
 }): React.JSX.Element {
   const rootRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const drafts = attachments?.drafts ?? [];
+  const hasPending = pending !== undefined && pending !== null && pending !== false;
   const canAttach = attachments !== undefined && attachments.disabledReason === undefined;
   const canSend = (value.trim() !== '' || drafts.length > 0) && (attachments?.ready ?? true);
   const desktop = useIsDesktop();
@@ -258,6 +266,21 @@ export function Composer({
         setMenuDismissed(true);
         return;
       }
+    }
+    // 空输入框按 ↑ 编辑最后一条排队消息（Claude Code 的习惯）；有字时 ↑ 照常移动光标
+    if (
+      e.key === 'ArrowUp' &&
+      value === '' &&
+      drafts.length === 0 &&
+      !e.shiftKey &&
+      !e.metaKey &&
+      !e.ctrlKey &&
+      !e.altKey &&
+      !e.nativeEvent.isComposing &&
+      onEditLast?.() === true
+    ) {
+      e.preventDefault();
+      return;
     }
     if (e.key === 'Escape' && (pickerOpen || trayOpen)) {
       e.preventDefault();
@@ -409,6 +432,7 @@ export function Composer({
       >
         {panels}
         {offline}
+        {hasPending && <div className="pb-2">{pending}</div>}
         <div
           data-testid="composer-card"
           className={cn(
@@ -479,13 +503,14 @@ export function Composer({
     <div ref={rootRef} className="relative shrink-0">
       {panels}
       {offline}
+      {hasPending && <div className="border-border bg-background border-t px-3 pt-2">{pending}</div>}
       {attachments !== undefined && (
         <AttachmentStrip drafts={drafts} onRemove={attachments.onRemove} onRetry={attachments.onRetry} />
       )}
       <div
         className={cn(
           'border-border bg-background pb-[max(0.625rem,env(safe-area-inset-bottom))]',
-          drafts.length === 0 && 'border-t',
+          drafts.length === 0 && !hasPending && 'border-t',
         )}
       >
         {/* 「+」托盘：grid 0fr ⇄ 1fr 做高度过渡；收起时 inert，不进 Tab 序列 */}

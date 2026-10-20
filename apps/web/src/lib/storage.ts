@@ -47,7 +47,7 @@ import { z } from 'zod';
 import type { DocStore, KvAdapter } from './adapters.ts';
 import type { HistoryState, MachineCwd, Timeline, TimelineEntry, ToolEntry } from './reducer.ts';
 import { dropPending, isSubagentTool, type PendingChildren } from './tool-tree.ts';
-import { BgTasksSchema, HistoryStateSchema, isHistoryEntry, PendingChildrenSchema, TimelineEntrySchema } from './reducer.ts';
+import { BgTasksSchema, HistoryStateSchema, isHistoryEntry, isPendingEntry, PendingChildrenSchema, TimelineEntrySchema } from './reducer.ts';
 
 export const KV_IDENTITY = 'trine.identity';
 export const KV_PEER = 'trine.peer';
@@ -379,7 +379,10 @@ export function trimTimelineForSave(timeline: Timeline): {
   if (over <= 0) {
     return { entries: timeline.entries, ...(timeline.history === undefined ? {} : { history: timeline.history }), ...keepPending, ...keepTrimmed };
   }
-  const entries = timeline.entries.slice(over);
+  // 没送进对话的本设备消息（如停止任务时丢下、用户还没处理的）不裁：它们从没执行过，
+  // 转录里没有，裁掉就再也找不回来了
+  const rescued = timeline.entries.slice(0, over).filter((e) => isPendingEntry(e, false));
+  const entries = [...rescued, ...timeline.entries.slice(over)];
   // 裁掉的 Agent/Task 条目（含子树里的）记下来：之后再来的子帧不该进暂存区永远等它
   // （评审 m2）；已在暂存区等它们的组一并丢掉
   const cut = trimmedParentIds(timeline.entries.slice(0, over));

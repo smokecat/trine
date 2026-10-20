@@ -20,11 +20,15 @@
  *
  * 用户发出的消息先以 `sending` 进时间线，随后按回执迁移：
  *
- *   sending → queued → confirmed
+ *   sending → queued → confirmed | cancelled | （撤回成功：条目删除）
  *   sending → parked → confirmed | expired
  *   sending → failed
  *
- * 终态（confirmed / expired / failed）**不被任何前态覆盖**——agent 的队列
+ * 还没进入对话的条目（见 `isPendingEntry`）不在时间线里画，在输入框上方的排队托盘里；
+ * 确认（`user.message` 回显）时移到时间线末尾——agent ≥ 0.15.0 出队开始执行才回显，
+ * 那一刻才是它在对话里的真实位置。
+ *
+ * 终态（confirmed / expired / failed / cancelled / recalled）**不被任何前态覆盖**——agent 的队列
  * 对重复 clientMsgId 仍回 `input.queued`，parked 投递与 agent 自己的补发
  * 也可能让同一条 input.send 两次进 agent，于是 `input.queued` 可能在
  * `confirmed` 之后才到（评审 C4）。
@@ -73,14 +77,24 @@ import {
 // ---------------------------------------------------------------------------
 
 /**
- * 本地条目状态。`recalled` 是评审 C-2 补的终态——**加法改动**，
+ * 本地条目状态。`recalled` / `cancelled` 都是后补的终态——**加法改动**，
  * `store/types.ts` 冻结契约只允许加不允许改。
  *
- * 为什么单独一个终态而不是复用 `failed`：撤回成功时消息**确实没被执行**，
- * 这是用户要的结果，标成「发送失败」完全误导；而它又必须是终态，否则
- * 「已撤回」会被后到的 queued/parked 覆盖掉。
+ * - `recalled`：撤回成功。现在撤回成功的条目直接删掉，这个值只出现在旧版落盘的时间线里。
+ * - `cancelled`：排队中被 agent 丢弃、没有执行（`input.cancelled` 的 stopped / closed）。
+ *   不复用 `failed`：failed 的「重发」沿用同一个 clientMsgId，而 agent 的去重表还记着它，
+ *   重发会被吃掉；cancelled 只能以新 clientMsgId 重发。
  */
-export const LocalStatusSchema = z.enum(['sending', 'queued', 'parked', 'confirmed', 'expired', 'failed', 'recalled']);
+export const LocalStatusSchema = z.enum([
+  'sending',
+  'queued',
+  'parked',
+  'confirmed',
+  'expired',
+  'failed',
+  'recalled',
+  'cancelled',
+]);
 export type LocalStatus = z.infer<typeof LocalStatusSchema>;
 
 const entryBase = {
@@ -112,17 +126,15 @@ export const UserEntrySchema = z.object({
   /** input.parked 回执里的 seq，撤回（park.recall）与 park.expired 对账用 */
   parkedSeq: z.number().int().nonnegative().optional(),
   /**
-   * `input.recall` 已发出的时刻（乐观态，评审 M6）。
+   * `input.recall` 已发出的时刻（等回执期间按钮显示「撤回中…」并禁用）。
    *
-   * 协议上 agent 对 `input.recall` **没有回执**（router 只 log，
-   * bridge/session.ts 自己也注明了这个缺口），所以这里只能做乐观态：
-   * 置上后按钮显示「撤回中…」并禁用，`RECALL_PENDING_MS` 内没有任何后续
-   * 就当撤成了。**刻意不像 parked 那样直接标 failed**——failed 是终态，
-   * 会挡住后到的 confirmed，撤回失败（消息其实已执行）时会显示成
-   * 「发送失败」而完全误导。撤回失败的真实信号是随后到达的 `user.message`
-   * 回显把它升成 confirmed，那时这个字段自然被清掉。
+   * 撤回成功 = `input.cancelled(recalled)`，条目删除；来不及 = 这条的 `user.message`
+   * 回显（出队时发，早于撤回到达）把它升成 confirmed，这个字段随之清掉。
+   * `RECALL_PENDING_MS` 内两样都没等到（帧丢了 / 旧 agent）就清掉它，按钮恢复可点。
    */
   recallingAt: z.number().optional(),
+  /** 撤回是为了编辑：撤回成功时把文本放回输入框。超时不清（回执可能只是迟到），下次撤回重新设定 */
+  recallForEdit: z.boolean().optional(),
   expiresAt: z.number().optional(),
   failReason: z.string().optional(),
   ...entryBase,
@@ -379,7 +391,7 @@ export function emptyMachine(machineId: string, name?: string): MachineState {
 // 本地条目状态机
 // ---------------------------------------------------------------------------
 
-const TERMINAL_STATUSES: ReadonlySet<LocalStatus> = new Set(['confirmed', 'expired', 'failed', 'recalled']);
+const TERMINAL_STATUSES: ReadonlySet<LocalStatus> = new Set(['confirmed', 'expired', 'failed', 'recalled', 'cancelled']);
 
 export function isTerminalStatus(status: LocalStatus): boolean {
   return TERMINAL_STATUSES.has(status);
@@ -475,11 +487,16 @@ export function applyEvent(tl: Timeline, event: AgentToClientEvent): Timeline {
       if (event.clientMsgId !== undefined) {
         const idx = tl.entries.findIndex((e) => e.kind === 'user' && e.local && e.id === event.clientMsgId);
         if (idx >= 0) {
-          const cur = tl.entries[idx] as UserEntry;
+          const { recallingAt: _r, recallForEdit: _e, ...cur } = tl.entries[idx] as UserEntry;
           const status = transitionLocalStatus(cur.status ?? 'sending', 'confirmed');
+          // 回显的位置就是它进入对话的位置：挪到末尾。排队 / 离线暂存的自不必说；sending
+          // 也要挪——上一轮快结束时发出的，到 agent 时可能已空闲、直接执行，而上一轮最后
+          // 的回复已经追加在这条本地条目后面了
+          const moved = cur.status === undefined || !isTerminalStatus(cur.status);
+          const entries = moved ? [...tl.entries.slice(0, idx), ...tl.entries.slice(idx + 1), tl.entries[idx]!] : tl.entries;
           return withEntries(
             tl,
-            replaceEntry(tl.entries, idx, {
+            replaceEntry(entries, moved ? entries.length - 1 : idx, {
               ...cur,
               status,
               messageId: event.messageId,
@@ -674,6 +691,26 @@ export function applyEvent(tl: Timeline, event: AgentToClientEvent): Timeline {
         seq,
       );
     }
+    case 'input.cancelled': {
+      const idx = tl.entries.findIndex((e) => e.kind === 'user' && e.local && e.id === event.clientMsgId);
+      if (idx < 0) return withEntries(tl, tl.entries, seq);
+      const cur = tl.entries[idx] as UserEntry;
+      if (cur.status !== undefined && isTerminalStatus(cur.status)) return withEntries(tl, tl.entries, seq);
+      // 撤回成功：用户要的就是它消失（要编辑的，文本由 client 放回输入框）
+      if (event.reason === 'recalled') {
+        return withEntries(tl, [...tl.entries.slice(0, idx), ...tl.entries.slice(idx + 1)], seq);
+      }
+      const { recallingAt: _r, recallForEdit: _e, ...rest } = cur;
+      return withEntries(
+        tl,
+        replaceEntry(tl.entries, idx, {
+          ...rest,
+          status: 'cancelled',
+          failReason: event.reason === 'stopped' ? '已停止，未发送' : '会话关闭，未发送',
+        }),
+        seq,
+      );
+    }
     case 'input.queued': {
       const idx = tl.entries.findIndex((e) => e.kind === 'user' && e.local && e.id === event.clientMsgId);
       if (idx < 0) return withEntries(tl, tl.entries, seq);
@@ -835,13 +872,14 @@ export function setLocalStatus(
   if (status === cur.status && Object.keys(extra).length === 0) return tl;
   // 进了终态就不再是「撤回中」：confirmed 说明撤回没赶上（消息已执行），
   // failed/expired 说明它彻底没送到——两种情况「撤回中…」都该消失
-  const { recallingAt: _drop, ...rest } = cur;
+  const { recallingAt: _drop, recallForEdit: _edit, ...rest } = cur;
   const keepRecalling = !isTerminalStatus(status) && cur.recallingAt !== undefined;
   return {
     ...tl,
     entries: replaceEntry(tl.entries, idx, {
       ...rest,
       ...(keepRecalling ? { recallingAt: cur.recallingAt } : {}),
+      ...(keepRecalling && cur.recallForEdit === true ? { recallForEdit: true } : {}),
       status,
       ...(extra.parkedSeq === undefined ? {} : { parkedSeq: extra.parkedSeq }),
       ...(extra.expiresAt === undefined ? {} : { expiresAt: extra.expiresAt }),
@@ -850,48 +888,78 @@ export function setLocalStatus(
   };
 }
 
-/** `input.recall` 已发出：置乐观态（非终态，见 UserEntry.recallingAt） */
-export function markRecalling(tl: Timeline, clientMsgId: string, at: number): Timeline {
+/** `input.recall` 已发出：置「撤回中」（见 UserEntry.recallingAt）；`forEdit` = 撤回成功后放回输入框 */
+export function markRecalling(tl: Timeline, clientMsgId: string, at: number, forEdit = false): Timeline {
   const idx = tl.entries.findIndex((e) => e.kind === 'user' && e.local && e.id === clientMsgId);
   if (idx < 0) return tl;
   const cur = tl.entries[idx] as UserEntry;
   if (cur.status !== 'queued' || cur.recallingAt !== undefined) return tl;
-  return { ...tl, entries: replaceEntry(tl.entries, idx, { ...cur, recallingAt: at }) };
+  // 每次撤回重新表态：上次超时留下的「为编辑」不能带到这次单纯的撤回上
+  const { recallForEdit: _prev, ...rest } = cur;
+  return {
+    ...tl,
+    entries: replaceEntry(tl.entries, idx, { ...rest, recallingAt: at, ...(forEdit ? { recallForEdit: true } : {}) }),
+  };
 }
 
 /**
- * 「撤回中…」最多等多久就当撤成了。
- *
- * `input.recall` 在协议上没有回执（agent 的 router 只 log，bridge/session.ts
- * 自己注明了这个缺口），撤回成功就是「什么都没发生」。定义在这里而不是
- * UI 层：它是状态机迁移的判据，client 的结算定时器与角标文案共用同一个值。
+ * 「撤回中…」最多等多久。agent ≥ 0.15.0 对撤回总有答复（成功 `input.cancelled`，
+ * 来不及则回显早已到达），等不到说明帧丢了或 agent 太旧——不再猜「撤成了」，
+ * 只把按钮恢复成可点。client 的定时器与托盘文案共用这个值。
  */
 export const RECALL_PENDING_MS = 5_000;
 
 /**
- * 撤回的**成功**路径落地（评审 C-2）。
+ * 清掉超时的「撤回中」（条目仍是 queued，按钮恢复可点）。
  *
- * `input.recall` 在协议上没有回执，撤回成功就是「什么都没发生」——所以判据
- * 只能是「`RECALL_PENDING_MS` 内没有 `user.message` 回显把它升成 confirmed」。
- * 早先这条路径**什么都不做**：`recallingAt` 永远留着，条目永远参与 tick，
- * 角标从「撤回中…」悄悄变回「撤回」，用户不知道到底撤没撤成。
- *
- * 现在到点就清掉 `recallingAt` 并进 `recalled` 终态（「已撤回」）。
+ * 早先没有撤回回执时，这里到点就把条目判成「已撤回」——旧 agent 上撤回失败也会
+ * 显示成撤回成功。现在成功有 `input.cancelled`，超时只意味着「不知道」。
  *
  * @param olderThan 早于这个时刻发出的撤回才算超时（调用方传 `now - 超时`）
  */
-export function settleRecalls(tl: Timeline, olderThan: number): Timeline {
+export function clearStaleRecalls(tl: Timeline, olderThan: number): Timeline {
   let changed = false;
   const entries = tl.entries.map((e) => {
     if (e.kind !== 'user' || !e.local) return e;
     if (e.recallingAt === undefined || e.recallingAt > olderThan) return e;
-    // 期间已被别的事件推进（confirmed / failed / parked）就不再插手
-    if (e.status !== 'queued') return e;
     changed = true;
+    // recallForEdit 留着：回执只是迟到的话，撤回成功时仍要把文本放回输入框
     const { recallingAt: _drop, ...rest } = e;
-    return { ...rest, status: 'recalled' as const };
+    return rest;
   });
   return changed ? { ...tl, entries } : tl;
+}
+
+/** 删掉一条本地条目（托盘里的「丢弃」、离线暂存的撤回、重发前清掉旧条目） */
+export function removeLocalEntry(tl: Timeline, clientMsgId: string): Timeline {
+  const idx = tl.entries.findIndex((e) => e.kind === 'user' && e.local && e.id === clientMsgId);
+  if (idx < 0) return tl;
+  return { ...tl, entries: [...tl.entries.slice(0, idx), ...tl.entries.slice(idx + 1)] };
+}
+
+/**
+ * 这条是不是**还没进入对话**的本设备消息：画在输入框上方的排队托盘里，不进时间线。
+ *
+ * - queued / parked：在 agent / 服务端排着；cancelled / expired / failed：没送进去，等用户
+ *   重发或丢弃。
+ * - sending 只在会话运行中算：运行中发出的马上会排队，先放托盘免得在时间线末尾闪一下；
+ *   空闲时发出的马上就会执行，留在时间线里。
+ * - 旧版落盘的 recalled 留在时间线里（显示「已撤回」）。
+ */
+export function isPendingEntry(entry: TimelineEntry, running: boolean): entry is UserEntry {
+  if (entry.kind !== 'user' || !entry.local) return false;
+  switch (entry.status) {
+    case 'queued':
+    case 'parked':
+    case 'cancelled':
+    case 'expired':
+    case 'failed':
+      return true;
+    case 'sending':
+      return running;
+    default:
+      return false;
+  }
 }
 
 /** park.expired{seq}：按 parkedSeq 找条目 */

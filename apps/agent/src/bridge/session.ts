@@ -106,6 +106,12 @@
  *   才算生效并通知调用方清掉持久化的副本。
  * - 用户消息的转录 uuid 就是推送时打的 `SDKUserMessage.uuid`（实测一致）。它在
  *   `send()` 入队时生成并随 `user.message` 回显出去，client 回退时用它指认目标。
+ *
+ * ## 回显时机（agent ≥ 0.15.0）
+ *
+ * `user.message` 回显在消息**出队开始执行**时发（空闲时收到的消息就是立刻），排队
+ * 期间只有 `input.queued`。回显的位置因此就是它真正进入对话的位置，client 也能据
+ * 回显判断「撤回来不及了」。没执行就离开队列的（撤回 / 停止）发 `input.cancelled`。
  */
 import { randomUUID } from 'node:crypto';
 import {
@@ -137,7 +143,7 @@ import {
   translateMessage,
   type TranslateState,
 } from './translate.ts';
-import type { EventBody } from './types.ts';
+import type { EventBody, EventBodyOf } from './types.ts';
 import { contextUsageFrom, rateLimitPatchFromEvent, type RateLimitPatch } from './usage.ts';
 
 /** 自动续跑最大次数，超过就报 fatal（防无限重试烧额度） */
@@ -283,6 +289,8 @@ export class ClaudeSession {
   readonly #additionalDirectories: string[];
 
   readonly #queue: InputQueue;
+  /** 排队中消息的回显（clientMsgId → user.message 事件体），出队时发出（见文件头「回显时机」） */
+  readonly #pendingEchoes = new Map<string, EventBodyOf<'user.message'>>();
   readonly #heartbeat: Heartbeat;
   readonly permissions: PermissionBridge;
   /** 后台任务表（bgtask.snapshot 的来源） */
@@ -649,8 +657,9 @@ export class ClaudeSession {
     // 转录 uuid 入队时就定下来（推送时沿用），随回显发出去供回退指认
     const uuid = randomUUID();
     this.#rememberUuid(clientMsgId, uuid);
-    // 回显给所有客户端设备（协议 §1.1 user.message）
-    this.#emit({
+    // 回显给所有客户端设备（协议 §1.1 user.message）：出队时由 #drain 发出。
+    // 空闲时 #startDrain 同步取走它，回显仍在本次 send() 内发出
+    this.#pendingEchoes.set(clientMsgId, {
       type: 'user.message',
       messageId: clientMsgId,
       clientMsgId,
@@ -673,10 +682,24 @@ export class ClaudeSession {
     return { duplicate: false, uuid };
   }
 
-  /** 撤回排队中的消息（协议 `input.recall`） */
+  /**
+   * 撤回排队中的消息（协议 `input.recall`）。成功发 `input.cancelled`；没命中
+   * （已开始执行 / 不认识）什么都不发——已执行的那条回显早已发出。
+   */
   recall(clientMsgId: string): boolean {
     this.#touch();
-    return this.#queue.recall(clientMsgId);
+    if (!this.#queue.recall(clientMsgId)) return false;
+    this.#pendingEchoes.delete(clientMsgId);
+    this.#emit({ type: 'input.cancelled', clientMsgId, reason: 'recalled' });
+    return true;
+  }
+
+  /** 出队即将执行：发出这条消息的回显（见文件头「回显时机」） */
+  #flushEcho(clientMsgId: string): void {
+    const echo = this.#pendingEchoes.get(clientMsgId);
+    if (echo === undefined) return;
+    this.#pendingEchoes.delete(clientMsgId);
+    this.#emit(echo);
   }
 
   /** 应答一次权限请求 */
@@ -695,14 +718,13 @@ export class ClaudeSession {
   async stop(): Promise<void> {
     this.#touch();
     // 「停止」= 停住这次运行**以及**它后面排着的：只停当前 turn 而让队列继续跑，
-    // 等于用户按了停止却看着任务一条条接着执行。被丢弃的排队消息发 invalidated
-    // 语义的回执由上层决定，这里先保证不再执行。
-    // NOTE(协议缺口)：被丢弃的排队消息目前没有对应的回执帧——协议里
-    // `input.queued` 有、「排队消息被取消」没有。client 侧可由 run.state:stopped
-    // 推断（停止后队列必然清空），但显式回执更好。待协议补 `input.dropped`
-    // 之类的帧后在这里补发。
+    // 等于用户按了停止却看着任务一条条接着执行。被丢弃的排队消息逐条发
+    // `input.cancelled(stopped)`，client 据此让用户重发或丢弃，不会静默丢输入。
     this.#stopped = true;
-    this.#queue.clear();
+    for (const dropped of this.#queue.clear()) {
+      this.#pendingEchoes.delete(dropped.clientMsgId);
+      this.#emit({ type: 'input.cancelled', clientMsgId: dropped.clientMsgId, reason: 'stopped' });
+    }
     // pending 权限请求先作废，否则 interrupt 后它们还挂着，query 迭代器不结束
     this.permissions.invalidateAll('用户停止了当前任务');
     try {
@@ -785,7 +807,11 @@ export class ClaudeSession {
     this.#closed = true;
     this.#heartbeat.stop();
     this.permissions.invalidateAll(reason);
-    this.#queue.clear();
+    // 排队消息随会话一起没了（agent 退出 / 回收 / 删除）：告诉发起端，别让它永远「排队中」
+    for (const dropped of this.#queue.clear()) {
+      this.#emit({ type: 'input.cancelled', clientMsgId: dropped.clientMsgId, reason: 'closed' });
+    }
+    this.#pendingEchoes.clear();
     this.#round = undefined;
     this.#endInput?.();
     this.#abort?.abort();
@@ -838,6 +864,7 @@ export class ClaudeSession {
       // 同宏任务内新来的消息（见下面的代际守卫），跑着时 run 状态仍归它
       this.#drainBusy = true;
       this.#currentMsgId = next.clientMsgId;
+      this.#flushEcho(next.clientMsgId);
       await this.#runOne(next.content ?? next.text, next.clientMsgId, generation);
     }
 

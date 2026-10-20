@@ -930,7 +930,7 @@ export class Router {
         return;
       case 'input.recall': {
         const ok = session.recall(event.clientMsgId);
-        // 协议没有 recall 回执帧（记遗留），失败只能 log
+        // 成功由会话发 input.cancelled；未命中（多半已开始执行，回显早已发出）只 log
         if (!ok) this.#log(`[router] input.recall 未命中排队消息 clientMsgId=${event.clientMsgId}`);
         return;
       }

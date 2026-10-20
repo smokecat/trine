@@ -55,6 +55,8 @@
 - 排队语义：**会话运行中**由 agent 端排队（回执 `input.queued`）；**agent 离线**由 server 排队†（server 只见密文帧 + 目标，回执由 server 发 `input.parked`？）
   - 开放：两级排队的回执如何区分显示（原型统一显示「已排队」+ 不同副文案）
 - `input.recall`（client→server/agent）— 撤回排队消息：`{ clientMsgId }`
+- 回显时机（agent ≥ 0.15.0）：排队中的消息在**出队开始执行**时才回显 `user.message`（此前入队即回显，client 收到回显就当已确认，撤回入口永远不出现）
+- `input.cancelled`（agent→client，agent ≥ 0.15.0）— 排队消息没执行就离开了队列：`{ clientMsgId, reason: recalled | stopped | closed }`。撤回成功、停止任务清队、会话关闭时发；撤回没赶上不发（回显已先到）
 - `run.stop`（client→agent）— 停止当前任务；agent 回 `run.state: stopped` + 已产出内容保留
 
 ### 1.6 完成卡

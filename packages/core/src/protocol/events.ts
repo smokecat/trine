@@ -347,11 +347,32 @@ export const InputSendSchema = z
     message: 'text and attachments cannot both be empty',
   });
 
-/** agent → client：会话运行中，agent 端已排队的回执 */
+/**
+ * agent → client：会话运行中，agent 端已排队的回执。排队期间可 `input.recall` 撤回；
+ * 出队开始执行时 agent 才发这条消息的 `user.message` 回显（agent ≥ 0.15.0）。
+ */
 export const InputQueuedSchema = z.object({
   type: z.literal('input.queued'),
   ...a2cBase,
   clientMsgId: z.string().min(1),
+});
+
+/**
+ * agent → client：一条排队中的消息**没有执行**就离开了 agent 队列（agent ≥ 0.15.0）。
+ *
+ * - `recalled`：`input.recall` 撤回成功。撤回没赶上（消息已开始执行）时不发本帧——
+ *   那条消息的 `user.message` 回显早于撤回到达，client 据回显判定「来不及了」。
+ * - `stopped`：`run.stop` 停止当前任务时，后面排着的消息一并丢弃（不再执行）。
+ * - `closed`：会话被关闭（agent 退出、空闲回收、会话删除），队列随之清空。
+ *
+ * 排队中的消息 agent 不回显 `user.message`，出队开始执行时才回显（agent ≥ 0.15.0；
+ * 更早的 agent 入队即回显）。所有设备都收到本帧，只有发起端有对应的本地条目。
+ */
+export const InputCancelledSchema = z.object({
+  type: z.literal('input.cancelled'),
+  ...a2cBase,
+  clientMsgId: z.string().min(1),
+  reason: z.enum(['recalled', 'stopped', 'closed']),
 });
 
 /**
@@ -1192,6 +1213,7 @@ export const AgentToClientEventSchema = z.discriminatedUnion('type', [
   PermissionResolvedSchema,
   PermissionInvalidatedSchema,
   InputQueuedSchema,
+  InputCancelledSchema,
   InputRejectedSchema,
   BgTaskSnapshotSchema,
   SessionListResponseSchema,

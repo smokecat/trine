@@ -53,9 +53,10 @@ import {
   isDeletedResponse,
   expireParkedBySeq,
   failSendingEntries,
+  clearStaleRecalls,
   markRecalling,
   RECALL_PENDING_MS,
-  settleRecalls,
+  removeLocalEntry,
   markSendingAsFailed,
   agentSupportsCommands,
   mergeCommandDescriptions,
@@ -135,6 +136,8 @@ export interface ClientEvents {
   capabilities: (machineId: string, sessionId: string, capabilities: Capabilities) => void;
   prefs: (prefs: Prefs) => void;
   notice: (notice: ClientNotice) => void;
+  /** 排队消息为编辑而撤回成功（或未送达的消息点了编辑）：把文本放回该会话的输入框 */
+  restoreDraft: (machineId: string, sessionId: string, text: string) => void;
   /** 每条已应用的 a2c 事件（调试 / e2e 断言用） */
   event: (machineId: string, event: AgentToClientEvent) => void;
   /**
@@ -662,7 +665,11 @@ export class TrineClient {
     } else if (event.sessionId !== undefined) {
       const sessionId = event.sessionId;
       this.#touchSession(machineId, sessionId, event.ts);
+      // 为编辑而撤回的：条目随这帧删除，删之前取文本放回输入框
+      const restore =
+        event.type === 'input.cancelled' && event.reason === 'recalled' ? this.#editableText(machineId, sessionId, event.clientMsgId, true) : undefined;
       this.#updateTimeline(machineId, sessionId, (tl) => applyEvent(tl, event));
+      if (restore !== undefined) this.#emit('restoreDraft', machineId, sessionId, restore);
       if (event.type === 'run.state') {
         this.#updateSessions(machineId, (s) => applySessionsEvent(s, event));
       }
@@ -802,45 +809,80 @@ export class TrineClient {
     this.#updateTimeline(machineId, scope, (tl) => failSendingEntries(tl, clientMsgIds, reason));
   }
 
-  /** 撤回排队在服务端的消息（park.recall）；本地条目转 failed 允许重发 */
-  recallParked(machineId: string, sessionId: string, clientMsgId: string): boolean {
-    const entry = this.timeline(machineId, sessionId).entries.find(
+  /** 本设备的一条本地条目 */
+  #localEntry(machineId: string, sessionId: string, clientMsgId: string): UserEntry | undefined {
+    return this.timeline(machineId, sessionId).entries.find(
       (e): e is UserEntry => e.kind === 'user' && e.local && e.id === clientMsgId,
     );
+  }
+
+  /** 可以放回输入框的文本（带附件的放不回去：草稿附件要原始文件）；`onlyIfMarked` = 只认为编辑而撤回的 */
+  #editableText(machineId: string, sessionId: string, clientMsgId: string, onlyIfMarked = false): string | undefined {
+    const entry = this.#localEntry(machineId, sessionId, clientMsgId);
+    if (entry === undefined || (onlyIfMarked && entry.recallForEdit !== true)) return undefined;
+    if (entry.attachments !== undefined && entry.attachments.length > 0) return undefined;
+    return entry.text;
+  }
+
+  /**
+   * 撤回排队在服务端的消息（park.recall）。服务端对它没有回执，所以直接删掉本地条目；
+   * 万一撤回与上线投递撞上、消息其实送到了，随后的回显会以普通消息出现在时间线里。
+   * 也因为没有回执，不提供「撤回并编辑」：撞上时旧消息照样执行，再发就是两条。
+   */
+  recallParked(machineId: string, sessionId: string, clientMsgId: string): boolean {
+    const entry = this.#localEntry(machineId, sessionId, clientMsgId);
     if (!entry || entry.status !== 'parked' || entry.parkedSeq === undefined) return false;
     const sent = this.#connection?.send({ type: 'park.recall', machineId, sessionId, seq: entry.parkedSeq }) ?? false;
-    if (sent) {
-      this.#updateTimeline(machineId, sessionId, (tl) => setLocalStatus(tl, clientMsgId, 'failed', { failReason: '已撤回' }));
-    }
+    if (sent) this.#updateTimeline(machineId, sessionId, (tl) => removeLocalEntry(tl, clientMsgId));
     return sent;
   }
 
   /**
    * 撤回 agent 端排队中的消息（`input.recall`）。
    *
-   * 协议无回执（agent 的 router 只 log），所以只置乐观态：条目进「撤回中…」
-   * 并禁用按钮。撤回失败的真实信号是随后到达的 `user.message` 回显——它把
-   * 条目升成 confirmed，乐观态随之清掉（见 reducer 的 `recallingAt`）。
+   * 条目先进「撤回中…」：成功的回执是 `input.cancelled(recalled)`（条目删除，`edit` 的
+   * 把文本放回输入框）；来不及的信号是这条的 `user.message` 回显（升 confirmed、
+   * 移进时间线）。都等不到就在 RECALL_PENDING_MS 后恢复按钮。
    */
-  recallQueued(machineId: string, sessionId: string, clientMsgId: string): void {
+  recallQueued(machineId: string, sessionId: string, clientMsgId: string, options: { edit?: boolean } = {}): void {
     if (!this.#safeSend(machineId, { type: 'input.recall', sessionId, clientMsgId })) return;
     this.#updateTimeline(machineId, sessionId, (tl) =>
-      markRecalling(tl, clientMsgId, this.deps.clock.now()),
+      markRecalling(tl, clientMsgId, this.deps.clock.now(), options.edit === true),
     );
     this.#armRecallSettle(machineId, sessionId);
   }
 
   /**
-   * 撤回的成功路径需要一个定时器（评审 C-2）。
-   *
-   * 协议无回执，「撤回成功」就是「RECALL_PENDING_MS 内什么都没发生」——
-   * 没有任何入站事件会触发这次状态迁移。早先它靠 ChatView 的 1s tick 顺带
-   * 重渲染，而那个 tick **只在 `running || pendingPermission` 时才挂**：
-   * 运行结束后的空闲会话里点撤回，没有任何东西触发重渲染，「撤回中…」
-   * 不会在 5s 后恢复，直到用户做别的操作。
-   *
-   * 放在 client 而不是视图里：它是条目状态机的一次真实迁移（要落盘、要让
-   * 别的视图也看到），而且不该依赖「恰好有人在看这个会话」。
+   * 没送进对话的消息（cancelled / expired / failed）：放回输入框（`edit`）或直接丢弃，
+   * 两种都删掉本地条目。排队中 / 离线暂存的要先撤回，走 recallQueued / recallParked。
+   */
+  discardPending(machineId: string, sessionId: string, clientMsgId: string, options: { edit?: boolean } = {}): boolean {
+    const entry = this.#localEntry(machineId, sessionId, clientMsgId);
+    if (!entry || (entry.status !== 'cancelled' && entry.status !== 'expired' && entry.status !== 'failed')) return false;
+    const text = options.edit === true ? this.#editableText(machineId, sessionId, clientMsgId) : undefined;
+    this.#updateTimeline(machineId, sessionId, (tl) => removeLocalEntry(tl, clientMsgId));
+    if (text !== undefined) this.#emit('restoreDraft', machineId, sessionId, text);
+    return true;
+  }
+
+  /**
+   * 重发没送进对话的消息。failed 沿用 clientMsgId（agent 没收下过，去重表里没有它）；
+   * cancelled / expired 换新 clientMsgId（agent 的去重表可能还记着旧的），旧条目删掉。
+   */
+  resendPending(machineId: string, sessionId: string, clientMsgId: string): boolean {
+    const entry = this.#localEntry(machineId, sessionId, clientMsgId);
+    if (!entry) return false;
+    if (entry.status === 'failed') return this.retryInput(machineId, sessionId, clientMsgId);
+    if (entry.status !== 'cancelled' && entry.status !== 'expired') return false;
+    this.#updateTimeline(machineId, sessionId, (tl) => removeLocalEntry(tl, clientMsgId));
+    this.sendInput(machineId, sessionId, entry.text, attachmentRefs(entry));
+    return true;
+  }
+
+  /**
+   * 「撤回中…」的超时（见 RECALL_PENDING_MS）：成功 / 失败都有入站事件，只有「等不到」
+   * 没有，得靠定时器把按钮恢复。放在 client 而不是视图里：它是条目状态的真实迁移
+   * （要落盘、要让别的视图也看到），不该依赖「恰好有人在看这个会话」。
    */
   #armRecallSettle(machineId: string, sessionId: string): void {
     const key = timelineKey(machineId, sessionId);
@@ -848,7 +890,7 @@ export class TrineClient {
     const handle = this.deps.clock.setTimeout(() => {
       this.#recallTimers.delete(key);
       this.#updateTimeline(machineId, sessionId, (tl) =>
-        settleRecalls(tl, this.deps.clock.now() - RECALL_PENDING_MS),
+        clearStaleRecalls(tl, this.deps.clock.now() - RECALL_PENDING_MS),
       );
       // 还有没到点的撤回（这次结算期间又点了一次）就再排一轮
       const rest = this.#timelines.get(key)?.entries.some((e) => e.kind === 'user' && e.recallingAt !== undefined);

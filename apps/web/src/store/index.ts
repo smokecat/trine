@@ -84,6 +84,14 @@ export function bindClient(store: TrineStore, client: TrineClient, now: () => nu
       store.setState((s) => ({ capabilities: { ...s.capabilities, [timelineKey(machineId, sessionId)]: caps } })),
     ),
     client.on('prefs', (prefs) => store.setState({ prefs })),
+    // 撤回来编辑的消息放回输入框：输入框里已有字就放在前面，不覆盖用户正在写的
+    client.on('restoreDraft', (machineId, sessionId, text) =>
+      store.setState((s) => {
+        const key = timelineKey(machineId, sessionId);
+        const current = s.drafts[key] ?? '';
+        return { drafts: { ...s.drafts, [key]: current.trim() === '' ? text : `${text}\n\n${current}` } };
+      }),
+    ),
     // 会话被永久删除：sessions 已由 'sessions' 事件同步，这里清掉按 key 镜像的几份
     client.on('sessionRemoved', (machineId, sessionId) =>
       store.setState((s) => {

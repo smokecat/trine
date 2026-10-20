@@ -38,7 +38,9 @@ import type { MachineInfo, RateLimits } from '@trine/core';
 // - 0.14.0 起支持置顶：session.pin（SessionMeta 带 pinnedAt）、cwd.pin（cwd.updated /
 //   cwd.list.response 带 pinned）；归档会清掉会话置顶；支持 machine.stats.request（机器资源数据，
 //   按设备订阅定时推送）
-export const AGENT_VERSION = '0.14.0';
+// - 0.15.0 起排队中的消息出队开始执行时才回显 user.message（此前入队即回显）；撤回成功、
+//   停止任务或会话关闭丢弃排队消息时发 input.cancelled（旧 web 会丢掉这帧——先部署 web 再重启 agent）
+export const AGENT_VERSION = '0.15.0';
 
 export function buildMachineInfo(input: {
   name: string;

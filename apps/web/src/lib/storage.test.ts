@@ -167,6 +167,21 @@ describe('storage · timeline', () => {
     expect(await listTimelineKeys(docs)).toEqual(['mbp/s1']);
   });
 
+  test('裁剪不丢没送进对话的本设备消息（停止任务丢下、还没处理的）', async () => {
+    const docs = new MemoryDocStore();
+    const entries: TimelineEntry[] = [
+      { kind: 'user', id: 'c-left', text: '没发出去', local: true, status: 'cancelled', seq: 0, ts: 0 },
+      { kind: 'user', id: 'c-done', text: '发出去了', local: true, status: 'confirmed', seq: 1, ts: 0 },
+    ];
+    for (let i = 2; i <= TIMELINE_MAX_ENTRIES + 10; i++) {
+      entries.push({ kind: 'run_state', id: `run.state:${i}`, state: 'idle', seq: i, ts: i });
+    }
+    await saveTimeline(docs, 'mbp/s1', { ...emptyTimeline(), entries, lastAppliedSeq: 510 });
+    const loaded = await loadTimeline(docs, 'mbp/s1');
+    const users = loaded?.entries.filter((e) => e.kind === 'user').map((e) => e.id);
+    expect(users).toEqual(['c-left']);
+  });
+
   test('不存在 / 坏数据 → null', async () => {
     const docs = new MemoryDocStore();
     expect(await loadTimeline(docs, 'mbp/none')).toBeNull();

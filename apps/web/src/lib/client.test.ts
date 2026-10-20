@@ -167,44 +167,99 @@ describe('client · 本地消息与 parked', () => {
     expect(localEntry(h, 's1', id).status).toBe('expired');
   });
 
-  test('park.expired 帧 → expired；撤回 parked → park.recall 帧 + 本地 failed 可重发；重发沿用 clientMsgId', async () => {
+  test('撤回 parked → park.recall 帧 + 本地条目删除；park.expired → expired，重发换新 clientMsgId', async () => {
     const h = await connected();
+    const restored: string[] = [];
+    h.client.on('restoreDraft', (_m, _s, text) => restored.push(text));
     const id = h.client.sendInput('mbp', 's1', 'a');
     const seq = (h.sockets.last.sentFrames.at(-1) as { seq: number }).seq;
     h.sockets.last.emitMessage({ type: 'input.parked', machineId: 'mbp', sessionId: 's1', seq, expiresAt: h.clock.now() + 9e9 });
     expect(h.client.recallParked('mbp', 's1', id)).toBe(true);
     expect(h.sockets.last.sentFrames.at(-1)).toEqual({ type: 'park.recall', machineId: 'mbp', sessionId: 's1', seq });
-    expect(localEntry(h, 's1', id)).toMatchObject({ status: 'failed', failReason: '已撤回' });
-    expect(h.client.retryInput('mbp', 's1', id)).toBe(true);
-    expect(localEntry(h, 's1', id).status).toBe('sending');
+    expect(localEntry(h, 's1', id)).toBeUndefined();
+    expect(restored).toEqual([]);
 
     const id2 = h.client.sendInput('mbp', 's1', 'b');
     const seq2 = (h.sockets.last.sentFrames.at(-1) as { seq: number }).seq;
     h.sockets.last.emitMessage({ type: 'input.parked', machineId: 'mbp', sessionId: 's1', seq: seq2, expiresAt: h.clock.now() + 9e9 });
     h.sockets.last.emitMessage({ type: 'park.expired', machineId: 'mbp', sessionId: 's1', seq: seq2 });
     expect(localEntry(h, 's1', id2).status).toBe('expired');
+    expect(h.client.resendPending('mbp', 's1', id2)).toBe(true);
+    expect(localEntry(h, 's1', id2)).toBeUndefined();
+    const resent = h.client.timeline('mbp', 's1').entries.filter((e): e is UserEntry => e.kind === 'user');
+    expect(resent.map((e) => [e.text, e.status])).toEqual([['b', 'sending']]);
+    expect(resent[0]!.id).not.toBe(id2);
   });
 
-  test('撤回 agent 队列：5s 内无回显 → 自动结算成「已撤回」终态（C-2）', async () => {
+  test('撤回 agent 队列：input.cancelled(recalled) → 条目删除；为编辑撤回的放回输入框', async () => {
+    const h = await connected();
+    const restored: string[] = [];
+    h.client.on('restoreDraft', (_m, _s, text) => restored.push(text));
+    const a = h.client.sendInput('mbp', 's1', '撤掉');
+    const b = h.client.sendInput('mbp', 's1', '改一下');
+    h.sockets.last.emitMessage({ type: 'sync.done', machineId: 'mbp', sessionId: 's1', upTo: 0 });
+    h.sockets.last.emitMessage(h.a2c({ type: 'input.queued', sessionId: 's1', clientMsgId: a }, 1));
+    h.sockets.last.emitMessage(h.a2c({ type: 'input.queued', sessionId: 's1', clientMsgId: b }, 2));
+
+    h.client.recallQueued('mbp', 's1', a);
+    h.client.recallQueued('mbp', 's1', b, { edit: true });
+    expect(localEntry(h, 's1', a).recallingAt).toBe(h.clock.now());
+    expect(localEntry(h, 's1', b).recallForEdit).toBe(true);
+
+    h.sockets.last.emitMessage(h.a2c({ type: 'input.cancelled', sessionId: 's1', clientMsgId: a, reason: 'recalled' }, 3));
+    h.sockets.last.emitMessage(h.a2c({ type: 'input.cancelled', sessionId: 's1', clientMsgId: b, reason: 'recalled' }, 4));
+    expect(localEntry(h, 's1', a)).toBeUndefined();
+    expect(localEntry(h, 's1', b)).toBeUndefined();
+    expect(restored).toEqual(['改一下']);
+  });
+
+  test('撤回 5s 内没有任何答复：恢复按钮，不猜成撤回成功；回执迟到仍放回输入框', async () => {
     const h = await connected();
     const id = h.client.sendInput('mbp', 's1', 'hi');
     h.sockets.last.emitMessage({ type: 'sync.done', machineId: 'mbp', sessionId: 's1', upTo: 0 });
-    // agent 收下排队（运行中发消息的正常路径）
     h.sockets.last.emitMessage(h.a2c({ type: 'input.queued', sessionId: 's1', clientMsgId: id }, 1));
-    expect(localEntry(h, 's1', id).status).toBe('queued');
+    h.client.recallQueued('mbp', 's1', id, { edit: true });
 
-    h.client.recallQueued('mbp', 's1', id);
-    expect(localEntry(h, 's1', id).recallingAt).toBe(h.clock.now());
-
-    // 关键：这是**空闲会话**（没有 run.state running、没有 pending 权限卡），
-    // ChatView 的 1s tick 根本没挂——早先没有任何东西会触发这次迁移，
-    // 「撤回中…」永远留着（评审 C-2）
+    // 空闲会话里 ChatView 的 1s tick 没挂，靠 client 自己的定时器结算
     await h.clock.advance(4_999);
-    expect(localEntry(h, 's1', id).status).toBe('queued');
+    expect(localEntry(h, 's1', id).recallingAt).toBeDefined();
     await h.clock.advance(1);
     const settled = localEntry(h, 's1', id);
-    expect(settled.status).toBe('recalled');
+    expect(settled.status).toBe('queued');
     expect(settled.recallingAt).toBeUndefined();
+
+    const restored: string[] = [];
+    h.client.on('restoreDraft', (_m, _s, text) => restored.push(text));
+    h.sockets.last.emitMessage(h.a2c({ type: 'input.cancelled', sessionId: 's1', clientMsgId: id, reason: 'recalled' }, 2));
+    expect(localEntry(h, 's1', id)).toBeUndefined();
+    expect(restored).toEqual(['hi']);
+  });
+
+  test('停止任务丢弃的排队消息 → cancelled；可放回输入框或以新 clientMsgId 重发', async () => {
+    const h = await connected();
+    const restored: string[] = [];
+    h.client.on('restoreDraft', (_m, _s, text) => restored.push(text));
+    const a = h.client.sendInput('mbp', 's1', '一');
+    const b = h.client.sendInput('mbp', 's1', '二');
+    h.sockets.last.emitMessage({ type: 'sync.done', machineId: 'mbp', sessionId: 's1', upTo: 0 });
+    h.sockets.last.emitMessage(h.a2c({ type: 'input.queued', sessionId: 's1', clientMsgId: a }, 1));
+    h.sockets.last.emitMessage(h.a2c({ type: 'input.queued', sessionId: 's1', clientMsgId: b }, 2));
+    h.sockets.last.emitMessage(h.a2c({ type: 'input.cancelled', sessionId: 's1', clientMsgId: a, reason: 'stopped' }, 3));
+    h.sockets.last.emitMessage(h.a2c({ type: 'input.cancelled', sessionId: 's1', clientMsgId: b, reason: 'closed' }, 4));
+    expect(localEntry(h, 's1', a)).toMatchObject({ status: 'cancelled', failReason: '已停止，未发送' });
+    expect(localEntry(h, 's1', b)).toMatchObject({ status: 'cancelled', failReason: '会话关闭，未发送' });
+
+    expect(h.client.discardPending('mbp', 's1', a, { edit: true })).toBe(true);
+    expect(localEntry(h, 's1', a)).toBeUndefined();
+    expect(restored).toEqual(['一']);
+
+    expect(h.client.resendPending('mbp', 's1', b)).toBe(true);
+    const sent = h.sockets.last.sentFrames.at(-1) as { seq: number };
+    expect(localEntry(h, 's1', b)).toBeUndefined();
+    const users = h.client.timeline('mbp', 's1').entries.filter((e): e is UserEntry => e.kind === 'user');
+    expect(users.map((e) => [e.text, e.status])).toEqual([['二', 'sending']]);
+    expect(users[0]!.id).not.toBe(b);
+    expect(sent.seq).toBeGreaterThan(0);
   });
 
   test('撤回没赶上（回显先到）：条目升 confirmed，结算定时器不把它改回去', async () => {

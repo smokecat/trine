@@ -399,6 +399,40 @@ describe('ClaudeSession · 排队与去重', () => {
     );
     expect(texts).toContain('一');
     expect(texts).not.toContain('二');
+    // 撤回有回执；被撤回的消息从没回显过
+    expect(events.filter((e) => e.type === 'input.cancelled')).toEqual([
+      expect.objectContaining({ clientMsgId: 'm2', reason: 'recalled' }),
+    ]);
+    expect(events.some((e) => e.type === 'user.message' && e.clientMsgId === 'm2')).toBe(false);
+    // 撤回不命中（已执行 / 不认识）不发回执
+    expect(session.recall('m1')).toBe(false);
+    expect(session.recall('nope')).toBe(false);
+    expect(events.filter((e) => e.type === 'input.cancelled')).toHaveLength(1);
+    await session.close();
+  });
+
+  test('排队中的消息出队时才回显：回显在上一轮 run.done 之后、本轮回复之前', async () => {
+    const { session, events } = makeSession([
+      [assistantMessage('A'), resultMessage()],
+      [assistantMessage('B'), resultMessage()],
+    ]);
+
+    session.send('m1', '一');
+    // 空闲时收到的消息：本次 send() 内就回显
+    expect(events.filter((e) => e.type === 'user.message').map((e) => e.clientMsgId)).toEqual(['m1']);
+    session.send('m2', '二');
+    expect(events.some((e) => e.type === 'user.message' && e.clientMsgId === 'm2')).toBe(false);
+    expect(events.some((e) => e.type === 'input.queued' && e.clientMsgId === 'm2')).toBe(true);
+
+    await waitFor(() => events.filter((e) => e.type === 'run.done').length === 2, 3_000);
+    const order = events
+      .filter((e) => e.type === 'user.message' || e.type === 'run.done' || e.type === 'assistant.done')
+      .map((e) => (e.type === 'user.message' ? `user:${e.clientMsgId}` : e.type === 'assistant.done' ? 'assistant' : 'done'));
+    expect(order).toEqual(['user:m1', 'assistant', 'done', 'user:m2', 'assistant', 'done']);
+    // 回显的 uuid 与入队时返回的一致（回退要用）
+    const echo = events.find((e) => e.type === 'user.message' && e.clientMsgId === 'm2');
+    expect(echo).toMatchObject({ text: '二' });
+    expect(typeof (echo as { uuid?: unknown }).uuid).toBe('string');
     await session.close();
   });
 });
@@ -610,7 +644,27 @@ describe('ClaudeSession · 停止与关闭', () => {
     expect(texts).not.toContain('第二条');
     expect(session.state).toBe('stopped');
     expect(session.queueLength).toBe(0);
+    // 被丢弃的排队消息有回执，且从没回显过
+    expect(events.filter((e) => e.type === 'input.cancelled')).toEqual([
+      expect.objectContaining({ clientMsgId: 'm2', reason: 'stopped' }),
+    ]);
+    expect(events.some((e) => e.type === 'user.message' && e.clientMsgId === 'm2')).toBe(false);
     await session.close();
+  });
+
+  test('close 丢弃排队消息时发 input.cancelled(closed)', async () => {
+    const { session, events } = makeSession([
+      [assistantMessage('第一轮'), resultMessage()],
+      [assistantMessage('第二轮'), resultMessage()],
+    ]);
+    session.send('m1', '第一条');
+    session.send('m2', '第二条');
+    session.send('m3', '第三条');
+    await session.close();
+    expect(events.filter((e) => e.type === 'input.cancelled')).toEqual([
+      expect.objectContaining({ clientMsgId: 'm2', reason: 'closed' }),
+      expect.objectContaining({ clientMsgId: 'm3', reason: 'closed' }),
+    ]);
   });
 
   test('stop 之后再 send 可以重新开跑', async () => {

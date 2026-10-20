@@ -691,6 +691,9 @@ class DemoClient {
       case 'input.queued':
         this.#say(`${seq} ${color.dim(`📬 已排队 ${event.clientMsgId}`)}`);
         return;
+      case 'input.cancelled':
+        this.#say(`${seq} ${color.dim(`📭 排队消息未执行（${event.reason}）${event.clientMsgId}`)}`);
+        return;
       case 'error.transient':
         this.#say(`${seq} ${color.yellow(`⚠ 瞬时错误（第 ${event.attempt} 次自动恢复）：${event.reason}`)}`);
         return;

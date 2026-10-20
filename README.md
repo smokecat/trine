@@ -153,6 +153,16 @@ new line; tap the send button to send. With a physical keyboard, Settings → Se
 chooses between Enter to send (Shift+Enter for a new line, the default) and Cmd/Ctrl+Enter
 to send (Enter for a new line). Cmd/Ctrl+Enter sends in both modes.
 
+Messages sent while Claude is working wait in a queue above the message box and run in order
+when the current task ends. Each queued message can be recalled, or recalled and put back into
+the message box for editing; with an empty message box, the Up arrow edits the last one. A queued
+message enters the conversation only when it starts running. Stopping the task keeps the queued
+messages it dropped in the queue area, where you can resend, edit or discard them. Messages held
+by the relay while the machine is offline can only be recalled. Recall and these receipts need
+agent 0.15.0 or later; with older agents, queued messages appear in the conversation straight
+away and cannot be recalled. Update the web app before restarting agents on 0.15.0: older web
+apps ignore the new receipts, so messages dropped by a stop would stay marked as queued.
+
 To rewind, hover over (or tap) one of your messages and choose **Rewind to here** (agent 0.9.0
 or later, session idle). The dialog previews the change and offers the same three options as
 Claude Code's `/rewind`: restore code and conversation, conversation only, or code only.

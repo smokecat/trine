@@ -19,6 +19,8 @@ import {
   emptyTimeline,
   expireParked,
   expireParkedBySeq,
+  isPendingEntry,
+  markRecalling,
   markSendingAsFailed,
   mergeHistory,
   nextParkedExpiry,
@@ -205,6 +207,76 @@ describe('reducer · 运行状态与错误', () => {
     expect(m.lastError).toMatchObject({ kind: 'other', message: '出站序号自愈失败' });
     // 会话级 fatal 不进机器级
     expect(applyMachineEvent(emptyMachine('mbp'), ev({ type: 'error.fatal', ...S, kind: 'auth', message: 'x' })).lastError).toBeNull();
+  });
+});
+
+describe('reducer · 排队消息（agent ≥ 0.15.0 出队才回显）', () => {
+  const users = (tl: Timeline) => tl.entries.filter((e): e is UserEntry => e.kind === 'user');
+  const kinds = (tl: Timeline) => tl.entries.map((e) => (e.kind === 'user' ? `user:${e.id}` : e.kind));
+
+  test('排队中的条目在出队回显时移到时间线末尾（它前面那轮的回复之后）', () => {
+    let tl = addLocalUserEntry(emptyTimeline(), { clientMsgId: 'c1', text: '一', ts: 1 });
+    tl = apply(tl, ev({ type: 'user.message', ...S, messageId: 'c1', clientMsgId: 'c1', text: '一' }));
+    tl = addLocalUserEntry(tl, { clientMsgId: 'c2', text: '二', ts: 2 });
+    tl = apply(tl, ev({ type: 'input.queued', ...S, clientMsgId: 'c2' }));
+    // 第一轮的回复在 c2 入队之后才到，追加在它后面
+    tl = apply(tl, ev({ type: 'assistant.done', ...S, messageId: 'a1', text: '回复一' }));
+    expect(kinds(tl)).toEqual(['user:c1', 'user:c2', 'assistant']);
+    tl = apply(tl, ev({ type: 'user.message', ...S, messageId: 'c2', clientMsgId: 'c2', text: '二' }));
+    expect(kinds(tl)).toEqual(['user:c1', 'assistant', 'user:c2']);
+    expect(users(tl)[1]).toMatchObject({ status: 'confirmed', ts: tl.entries[2]!.ts });
+  });
+
+  test('sending 的确认也挪到末尾：上一轮快结束时发出、到 agent 时已空闲直接执行的', () => {
+    let tl = addLocalUserEntry(emptyTimeline(), { clientMsgId: 'c1', text: '问题 B', ts: 1 });
+    // 上一轮最后的回复在 B 发出之后才到，追加在 B 后面；agent 收到 B 时已空闲，没有 input.queued
+    tl = apply(tl, ev({ type: 'assistant.done', ...S, messageId: 'a0', text: '回复 A' }));
+    tl = apply(tl, ev({ type: 'user.message', ...S, messageId: 'c1', clientMsgId: 'c1', text: '问题 B' }));
+    expect(kinds(tl)).toEqual(['assistant', 'user:c1']);
+  });
+
+  test('input.cancelled：recalled 删条目；stopped / closed 进 cancelled 终态', () => {
+    let tl = emptyTimeline();
+    for (const id of ['c1', 'c2', 'c3']) {
+      tl = addLocalUserEntry(tl, { clientMsgId: id, text: id, ts: 1 });
+      tl = apply(tl, ev({ type: 'input.queued', ...S, clientMsgId: id }));
+    }
+    tl = markRecalling(tl, 'c1', 5, true);
+    tl = apply(tl, ev({ type: 'input.cancelled', ...S, clientMsgId: 'c1', reason: 'recalled' }));
+    tl = apply(tl, ev({ type: 'input.cancelled', ...S, clientMsgId: 'c2', reason: 'stopped' }));
+    tl = apply(tl, ev({ type: 'input.cancelled', ...S, clientMsgId: 'c3', reason: 'closed' }));
+    expect(users(tl).map((e) => [e.id, e.status, e.failReason])).toEqual([
+      ['c2', 'cancelled', '已停止，未发送'],
+      ['c3', 'cancelled', '会话关闭，未发送'],
+    ]);
+    // 终态：后到的 queued / 重复的 cancelled 都不动它
+    const before = tl;
+    tl = apply(tl, ev({ type: 'input.queued', ...S, clientMsgId: 'c2' }));
+    tl = apply(tl, ev({ type: 'input.cancelled', ...S, clientMsgId: 'c2', reason: 'recalled' }));
+    expect(users(tl)).toEqual(users(before));
+  });
+
+  test('input.cancelled 不碰已确认的、别的设备的条目（没有本地条目就只推进 seq）', () => {
+    let tl = addLocalUserEntry(emptyTimeline(), { clientMsgId: 'c1', text: 'hi', ts: 1 });
+    tl = apply(tl, ev({ type: 'user.message', ...S, messageId: 'c1', clientMsgId: 'c1', text: 'hi' }));
+    const confirmed = tl.entries;
+    tl = apply(tl, ev({ type: 'input.cancelled', ...S, clientMsgId: 'c1', reason: 'recalled' }, 77));
+    expect(tl.entries).toEqual(confirmed);
+    tl = apply(tl, ev({ type: 'input.cancelled', ...S, clientMsgId: 'other', reason: 'stopped' }, 78));
+    expect(tl.entries).toEqual(confirmed);
+    expect(tl.lastAppliedSeq).toBe(78);
+  });
+
+  test('isPendingEntry：没进入对话的本设备消息；sending 只在运行中算', () => {
+    const u = (status: UserEntry['status'], local = true): UserEntry => ({ kind: 'user', id: 'x', text: 't', local, status, seq: 0, ts: 0 });
+    for (const status of ['queued', 'parked', 'cancelled', 'expired', 'failed'] as const) {
+      expect(isPendingEntry(u(status), false)).toBe(true);
+    }
+    expect(isPendingEntry(u('sending'), true)).toBe(true);
+    expect(isPendingEntry(u('sending'), false)).toBe(false);
+    expect(isPendingEntry(u('confirmed'), true)).toBe(false);
+    expect(isPendingEntry(u('recalled'), true)).toBe(false);
+    expect(isPendingEntry(u(undefined, false), true)).toBe(false);
   });
 });
 

@@ -8,16 +8,17 @@ import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { matchesPattern } from '@trine/core/permission';
 import {
+  clearStaleRecalls,
   markRecalling,
   setLocalStatus,
-  settleRecalls,
   type PermissionEntry,
   type ToolEntry,
   type UserEntry,
 } from '@/lib/reducer.ts';
 import { resultText } from './ToolCard.tsx';
 import { safeUrlTransform } from './Markdown.tsx';
-import { RECALL_PENDING_MS, userEntryBadge } from './entry-status.ts';
+import { pendingItemView, RECALL_PENDING_MS, userEntryBadge } from './entry-status.ts';
+import { lastEditable, pendingHeadline } from './PendingTray.tsx';
 import { SILENT_WARN_MS, heartbeatView } from './heartbeat-model.ts';
 import {
   editorSeed,
@@ -449,48 +450,90 @@ describe('撤回 agent 队列的乐观态（M6）', () => {
     expect(userEntryBadge(e, () => 'X', T0 + 1_000).label).toBeUndefined();
   });
 
-  // 撤回**成功**的落地（评审 C-2）。早先这条路径什么都不做：recallingAt
-  // 永远留着、条目永远参与 tick，角标从「撤回中…」悄悄变回「撤回」，
-  // 用户不知道到底撤没撤成。
-  describe('撤回成功 → recalled 终态（C-2）', () => {
+  // 撤回成功有回执（input.cancelled，见 reducer.test）；超时只意味着「不知道」，
+  // 不再猜成「已撤回」——旧 agent 上撤回失败也会被显示成撤回成功。
+  describe('撤回超时：只恢复按钮', () => {
     const tl = (over: Partial<UserEntry> = {}) => ({
       lastAppliedSeq: 0,
-      entries: [queued({ recallingAt: T0, ...over })],
+      entries: [queued({ recallingAt: T0, recallForEdit: true, ...over })],
       heartbeat: null,
       state: null,
     });
 
-    test('到点结算：清掉 recallingAt，进「已撤回」终态', () => {
-      const after = settleRecalls(tl(), T0);
-      const e = after.entries[0] as UserEntry;
-      expect(e.status).toBe('recalled');
+    test('到点：清掉 recallingAt，仍是 queued；「为编辑」留着等迟到的回执，下次撤回重新设定', () => {
+      const e = clearStaleRecalls(tl(), T0).entries[0] as UserEntry;
+      expect(e.status).toBe('queued');
       expect(e.recallingAt).toBeUndefined();
-      expect(userEntryBadge(e, () => 'X', T0 + 10_000)).toEqual({ label: '已撤回', tone: 'muted' });
+      expect(e.recallForEdit).toBe(true);
+      const again = markRecalling({ ...tl(), entries: [e] }, 'm-1', T0 + 1).entries[0] as UserEntry;
+      expect(again.recallForEdit).toBeUndefined();
+      expect(pendingItemView(e, () => 'X', T0 + 10_000).actions.map((a) => a.kind)).toEqual(['edit', 'recall']);
     });
 
     test('没到点不动（引用都不变，不触发重渲染）', () => {
       const before = tl();
-      expect(settleRecalls(before, T0 - 1)).toBe(before);
+      expect(clearStaleRecalls(before, T0 - 1)).toBe(before);
     });
 
-    test('recalled 是终态：后到的 queued/parked 覆盖不了它', () => {
-      const recalled = settleRecalls(tl(), T0);
-      expect((setLocalStatus(recalled, 'm-1', 'queued').entries[0] as UserEntry).status).toBe('recalled');
-      expect((setLocalStatus(recalled, 'm-1', 'parked').entries[0] as UserEntry).status).toBe('recalled');
+    test('确认时（撤回没赶上）一并清掉', () => {
+      const e = setLocalStatus(tl(), 'm-1', 'confirmed').entries[0] as UserEntry;
+      expect(e.recallingAt).toBeUndefined();
+      expect(e.recallForEdit).toBeUndefined();
     });
+  });
+});
 
-    test('期间已被别的事件推进（撤回没赶上）就不插手', () => {
-      // user.message 回显先到 → confirmed，recallingAt 已在那时被清掉
-      const confirmed = setLocalStatus(tl(), 'm-1', 'confirmed');
-      expect(settleRecalls(confirmed, T0 + 10_000)).toBe(confirmed);
-      // parked 的撤回走的是另一条路（park.recall 有回执），不该被这里顺手结算
-      const parked = tl({ status: 'parked' });
-      expect(settleRecalls(parked, T0 + 10_000)).toBe(parked);
-    });
+describe('pendingItemView（排队托盘的一行）', () => {
+  const T0 = 1_700_000_000_000;
+  const kinds = (e: UserEntry, now = T0) => pendingItemView(e, expiry, now).actions.map((a) => a.kind);
 
-    test('「已撤回」不给重发按钮——同 clientMsgId 会被 agent 去重表吃掉', () => {
-      const e = settleRecalls(tl(), T0).entries[0] as UserEntry;
-      expect(userEntryBadge(e, () => 'X', T0).action).toBeUndefined();
+  test('排队中：编辑 + 撤回；撤回中：转圈、没有动作', () => {
+    expect(pendingItemView(user({ status: 'queued' }), expiry, T0)).toMatchObject({ label: '排队中', busy: false });
+    expect(kinds(user({ status: 'queued' }))).toEqual(['edit', 'recall']);
+    const recalling = pendingItemView(user({ status: 'queued', recallingAt: T0 }), expiry, T0 + 100);
+    expect(recalling).toEqual({ label: '撤回中…', tone: 'muted', busy: true, actions: [] });
+  });
+
+  test('离线暂存：琥珀色、带有效期，只能撤回', () => {
+    const v = pendingItemView(user({ status: 'parked', expiresAt: 42 }), expiry, T0);
+    expect(v).toMatchObject({ label: '机器离线 · T42 前有效', tone: 'amber' });
+    // 没有回执，编辑可能变成两条，只给撤回
+    expect(v.actions.map((a) => a.kind)).toEqual(['recall']);
+  });
+
+  test('没送进去的：重发 / 编辑 / 丢弃', () => {
+    const cancelled = pendingItemView(user({ status: 'cancelled', failReason: '已停止，未发送' }), expiry, T0);
+    expect(cancelled).toMatchObject({ label: '已停止，未发送', tone: 'muted' });
+    expect(kinds(user({ status: 'cancelled' }))).toEqual(['resend', 'edit', 'discard']);
+    expect(pendingItemView(user({ status: 'expired' }), expiry, T0).tone).toBe('red');
+    expect(pendingItemView(user({ status: 'failed', failReason: 'x' }), expiry, T0).label).toBe('发送失败：x');
+  });
+
+  test('带附件的不给编辑（放不回输入框）', () => {
+    const ref = { blobId: 'b', key: 'k', name: 'a.png', mime: 'image/png', size: 1 } as never;
+    expect(kinds(user({ status: 'queued', attachments: [ref] }))).toEqual(['recall']);
+    expect(kinds(user({ status: 'cancelled', attachments: [ref] }))).toEqual(['resend', 'discard']);
+  });
+
+  test('发送中：转圈、没有动作', () => {
+    expect(pendingItemView(user({ status: 'sending' }), expiry, T0)).toEqual({
+      label: '发送中…',
+      tone: 'muted',
+      busy: true,
+      actions: [],
     });
+  });
+
+  test('标题按类别计数；↑ 的目标是最后一条能编辑的', () => {
+    const list = [
+      user({ id: 'a', status: 'queued' }),
+      user({ id: 'b', status: 'queued', recallingAt: T0 }),
+      user({ id: 'c', status: 'cancelled' }),
+    ];
+    expect(pendingHeadline(list)).toBe('2 条排队中 · 当前任务结束后依次发送 · 1 条未发送');
+    expect(pendingHeadline([user({ status: 'parked' })])).toBe('1 条等机器上线后发送');
+    expect(lastEditable(list, T0)?.id).toBe('c');
+    expect(lastEditable(list.slice(0, 2), T0 + 100)?.id).toBe('a');
+    expect(lastEditable([user({ status: 'sending' })], T0)).toBeUndefined();
   });
 });
