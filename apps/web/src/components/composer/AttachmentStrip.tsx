@@ -10,14 +10,20 @@ export function AttachmentStrip({
   drafts,
   onRemove,
   onRetry,
+  className,
 }: {
   drafts: readonly DraftAttachment[];
   onRemove: (id: string) => void;
   onRetry: (id: string) => void;
+  /** PC 输入卡片里去掉顶边框与底色 */
+  className?: string;
 }): React.JSX.Element | null {
   if (drafts.length === 0) return null;
   return (
-    <div data-testid="attachment-strip" className="border-border bg-background flex gap-2 overflow-x-auto border-t px-3 pt-2">
+    <div
+      data-testid="attachment-strip"
+      className={cn('border-border bg-background flex gap-2 overflow-x-auto border-t px-3 pt-2', className)}
+    >
       {drafts.map((d) => (
         <div
           key={d.id}

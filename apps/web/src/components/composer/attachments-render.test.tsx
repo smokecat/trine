@@ -58,7 +58,8 @@ function renderComposer(value: string, attachments: Partial<ComposerAttachments>
       onSlashPick={() => {}}
       running={false}
       offlineHint={null}
-      sources={{ slashCommands: [], promptSnippets: [] }}
+      sources={{ slashCommands: [] }}
+      snippets={[]}
       sendKey="enter"
       attachments={props}
     />,

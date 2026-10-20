@@ -657,9 +657,10 @@ export function ChatView(): React.JSX.Element {
         offlineHint={offline ? composerOfflineHint(machine) : null}
         sources={{
           slashCommands: caps?.slashCommands ?? [],
-          promptSnippets: prefs.promptSnippets,
           ...(onRename === undefined ? { unavailable: ['rename'] as const } : {}),
         }}
+        snippets={prefs.promptSnippets}
+        onManageSnippets={() => navigate('/settings')}
         sendKey={prefs.sendKey}
         attachments={{
           drafts: attach.drafts,

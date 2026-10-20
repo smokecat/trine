@@ -23,6 +23,9 @@ the agent runs on your own computer.
 - Attaches images and files to messages: pick them, paste them or drop them onto the page.
   Attachments are encrypted in the browser and relayed as ciphertext; small images go to
   Claude inline, other files are saved on the agent's machine and handed over by path.
+- Keeps reusable prompt snippets on the device: edit and copy them in Settings, and insert one at
+  the cursor (or copy it) from the prompt button next to the paperclip. On phones, attachments and
+  snippets live behind a `+` button so the input keeps its width.
 - Lists, resumes, renames and archives sessions across paired machines; right-click or
   multi-select (Ctrl/Cmd/Shift-click) to archive in bulk, and copy a session's working directory.
 - Hides temporary sessions by default (working directory under a system temp directory, or

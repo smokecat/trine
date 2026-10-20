@@ -16,7 +16,7 @@
  */
 import { useEffect, useState } from 'react';
 import { NavLink, useNavigate } from 'react-router';
-import { GripVerticalIcon, PlusIcon, XIcon } from 'lucide-react';
+import { ArrowUpIcon, CopyIcon, PencilIcon, PlusIcon, XIcon } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button.tsx';
 import { Input } from '@/components/ui/input.tsx';
@@ -38,7 +38,8 @@ import { useClient, useTrine } from '@/app/runtime.ts';
 import { setTheme, syncFromPrefs, useTheme, type ThemeMode } from '@/app/theme.ts';
 import { browserKv } from '@/lib/adapters.browser.ts';
 import { KV_IDENTITY, KV_PREFS } from '@/lib/storage.ts';
-import { formatBytes, truncate } from '@/lib/format.ts';
+import { copyText } from '@/lib/clipboard.ts';
+import { formatBytes } from '@/lib/format.ts';
 import { ATTACHMENTS_MAX_COUNT } from '@trine/core/types';
 import { cn } from '@/lib/utils.ts';
 
@@ -90,11 +91,13 @@ function ThemeSwitcher(): React.JSX.Element {
   );
 }
 
-/** 常用 prompt 片段：增、删、上下移（顺序即 composer 菜单里的顺序） */
+/** 常用 prompt 片段：增、删、改、复制、上移（顺序即输入区 prompt 面板里的顺序） */
 function PromptSnippets(): React.JSX.Element {
   const client = useClient();
   const snippets = useTrine((s) => s.prefs.promptSnippets);
   const [draft, setDraft] = useState('');
+  /** 正在编辑的下标；null = 没在编辑 */
+  const [editing, setEditing] = useState<number | null>(null);
 
   const save = (next: string[]): void => client?.updatePrefs({ promptSnippets: next });
   const move = (index: number, delta: number): void => {
@@ -104,41 +107,83 @@ function PromptSnippets(): React.JSX.Element {
     [next[index], next[target]] = [next[target]!, next[index]!];
     save(next);
   };
+  const copy = (text: string): void => {
+    copyText(text).then(
+      () => toast.success('已复制'),
+      () => toast.error('复制失败：浏览器不允许写剪贴板'),
+    );
+  };
 
   return (
     <section className="flex flex-col gap-2" data-testid="prompt-snippets">
       <h2 className="font-medium">常用 prompt 片段</h2>
       <p className="text-text-3 text-xs">
-        存在本设备（不同步到 agent）。在聊天输入框打 <code className="font-mono">/</code> 时可以选用。
+        存在本设备（不同步到 agent）。在聊天输入区点 prompt 按钮（手机上在「+」里）选用：点一下插入输入框，也可以单独复制。
       </p>
       <ul className="flex flex-col gap-1.5">
-        {snippets.map((text, i) => (
-          <li key={`${i}-${text.slice(0, 12)}`} className="flex items-center gap-1">
-            <span className="border-border bg-surface-2 min-w-0 flex-1 truncate rounded-[10px] border px-2.5 py-1.5 text-xs">
-              {truncate(text, 60)}
-            </span>
-            <Button
-              size="icon-sm"
-              variant="ghost"
-              title="上移"
-              aria-label="上移"
-              disabled={i === 0}
-              onClick={() => move(i, -1)}
-            >
-              <GripVerticalIcon className="rotate-90" />
-            </Button>
-            <Button
-              size="icon-sm"
-              variant="ghost"
-              title="删除"
-              aria-label="删除片段"
-              data-testid="snippet-remove"
-              onClick={() => save(snippets.filter((_, j) => j !== i))}
-            >
-              <XIcon />
-            </Button>
-          </li>
-        ))}
+        {snippets.map((text, i) =>
+          editing === i ? (
+            <li key={`${i}-edit`}>
+              <SnippetEditor
+                initial={text}
+                onCancel={() => setEditing(null)}
+                onSave={(next) => {
+                  save(snippets.map((s, j) => (j === i ? next : s)));
+                  setEditing(null);
+                }}
+              />
+            </li>
+          ) : (
+            <li key={`${i}-${text.slice(0, 12)}`} className="flex items-start gap-1" data-testid="snippet-row">
+              <span className="border-border bg-surface-2 line-clamp-3 min-w-0 flex-1 rounded-[10px] border px-2.5 py-1.5 text-xs break-words whitespace-pre-wrap">
+                {text}
+              </span>
+              <Button
+                size="icon-sm"
+                variant="ghost"
+                title="复制"
+                aria-label="复制片段"
+                data-testid="snippet-copy"
+                onClick={() => copy(text)}
+              >
+                <CopyIcon />
+              </Button>
+              <Button
+                size="icon-sm"
+                variant="ghost"
+                title="编辑"
+                aria-label="编辑片段"
+                data-testid="snippet-edit"
+                onClick={() => setEditing(i)}
+              >
+                <PencilIcon />
+              </Button>
+              <Button
+                size="icon-sm"
+                variant="ghost"
+                title="上移"
+                aria-label="上移"
+                disabled={i === 0}
+                onClick={() => move(i, -1)}
+              >
+                <ArrowUpIcon />
+              </Button>
+              <Button
+                size="icon-sm"
+                variant="ghost"
+                title="删除"
+                aria-label="删除片段"
+                data-testid="snippet-remove"
+                onClick={() => {
+                  setEditing(null);
+                  save(snippets.filter((_, j) => j !== i));
+                }}
+              >
+                <XIcon />
+              </Button>
+            </li>
+          ),
+        )}
         {snippets.length === 0 && <li className="text-text-3 text-xs">还没有片段。</li>}
       </ul>
       <div className="flex gap-1.5">
@@ -165,6 +210,48 @@ function PromptSnippets(): React.JSX.Element {
         </Button>
       </div>
     </section>
+  );
+}
+
+/** 片段的行内编辑：保存 / 取消；⌘/Ctrl+Enter 保存，Esc 取消 */
+function SnippetEditor({
+  initial,
+  onSave,
+  onCancel,
+}: {
+  initial: string;
+  onSave: (text: string) => void;
+  onCancel: () => void;
+}): React.JSX.Element {
+  const [text, setText] = useState(initial);
+  const valid = text.trim() !== '';
+  return (
+    <div className="border-brand-border flex flex-col gap-1.5 rounded-[10px] border p-1.5" data-testid="snippet-editor">
+      <Textarea
+        data-testid="snippet-edit-input"
+        autoFocus
+        className="min-h-20 text-xs"
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Escape') {
+            e.preventDefault();
+            onCancel();
+          } else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && valid) {
+            e.preventDefault();
+            onSave(text.trim());
+          }
+        }}
+      />
+      <div className="flex justify-end gap-1.5">
+        <Button size="sm" variant="ghost" data-testid="snippet-edit-cancel" onClick={onCancel}>
+          取消
+        </Button>
+        <Button size="sm" data-testid="snippet-edit-save" disabled={!valid} onClick={() => onSave(text.trim())}>
+          保存
+        </Button>
+      </div>
+    </div>
   );
 }
 

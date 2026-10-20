@@ -1,18 +1,19 @@
 /**
- * 「/」命令菜单的数据模型：三组来源、前缀过滤、键盘导航的扁平索引。
+ * 「/」命令菜单的数据模型：两组来源、前缀过滤、键盘导航的扁平索引。
  *
- * 三组（原型 NOTES.chat 第 7 条）：
+ * 两组（原型 NOTES.chat 第 7 条）：
  *
  * 1. **会话控制**——`/model` `/cwd` `/permission` `/status` `/mcp` `/rename`，走协议帧
  *    （`session.setModel` 等）而不是把文本丢给 Claude：本地即时、零 token。
  * 2. **项目命令**——会话 `capabilities.slashCommands`（agent 从 SDK
  *    system/init 下发），选中后**填入输入框**（`/name `）让用户补参数，再由用户
  *    发送给 Claude 解析；只有命令名已完整打出且带了参数时才直接发送。
- * 3. **常用 prompt 片段**——`prefs.promptSnippets`，本设备保存，选中只填入
- *    输入框不发送（片段通常还要接着补话）。
+ *
+ * 常用 prompt 片段早先是第 3 组，现在走输入区工具栏的 prompt 按钮
+ * （SnippetPicker），「/」菜单只放命令。
  *
  * 过滤按**前缀**匹配：用户打 `/mo` 期望看到 `/model`，而不是所有描述里
- * 含「mo」的东西。第 3 组没有 `/` 前缀（片段是自然语言），所以它按包含匹配。
+ * 含「mo」的东西。
  *
  * 纯数据 + 纯函数，零 React：菜单的分组/过滤/选中下标推进都能单测。
  */
@@ -36,7 +37,7 @@ export type SlashAction =
   | { kind: 'fill'; text: string };
 
 export interface SlashItem {
-  /** 列表左侧的主文案（协议命令与项目命令是 `/xxx`，片段是原文） */
+  /** 列表左侧的主文案（`/xxx`） */
   label: string;
   description?: string;
   /** 右上角来源标签（项目命令才有） */
@@ -104,7 +105,6 @@ function projectCommandAction(cmd: string, typed: string, arg: string, hasArg: b
 
 export interface SlashSources {
   slashCommands: SlashCommand[];
-  promptSnippets: string[];
   /** 当前不可用的会话控制命令（如 agent 不支持重命名时的 `rename`），不出现在菜单里 */
   unavailable?: readonly SessionCommand[];
 }
@@ -144,14 +144,6 @@ export function buildSlashMenu(text: string, sources: SlashSources): SlashGroup[
       action: projectCommandAction(c.name, name, arg, hasArg),
     }));
   if (projectItems.length > 0) groups.push({ title: '项目命令 · agent 下发', items: projectItems });
-
-  // 片段是自然语言，没有 `/` 前缀可言；已经打了参数（有空格）就不再推荐片段
-  const snippetItems: SlashItem[] = hasArg
-    ? []
-    : sources.promptSnippets
-        .filter((s) => name === '' || s.toLowerCase().includes(name))
-        .map((s) => ({ label: s, action: { kind: 'fill', text: s } as SlashAction }));
-  if (snippetItems.length > 0) groups.push({ title: '常用 prompt · 本设备', items: snippetItems });
 
   return groups;
 }

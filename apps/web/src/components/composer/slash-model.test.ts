@@ -16,8 +16,7 @@ const commands: SlashCommand[] = [
   { name: 'code-review', description: '代码审查', source: 'skill' },
   { name: 'commit', description: '规范化提交', source: 'user' },
 ];
-const snippets = ['继续', '跑测试，修掉失败的用例', 'model 相关的备忘'];
-const sources = { slashCommands: commands, promptSnippets: snippets };
+const sources = { slashCommands: commands };
 
 describe('parseSlashInput', () => {
   test('非 / 开头返回 null', () => {
@@ -60,13 +59,9 @@ describe('sessionCommandAction', () => {
 });
 
 describe('buildSlashMenu', () => {
-  test('裸 / 出全部三组', () => {
+  test('裸 / 出全部两组（片段不进 / 菜单，走 prompt 按钮）', () => {
     const groups = buildSlashMenu('/', sources);
-    expect(groups.map((g) => g.title)).toEqual([
-      '会话控制 · 协议级',
-      '项目命令 · agent 下发',
-      '常用 prompt · 本设备',
-    ]);
+    expect(groups.map((g) => g.title)).toEqual(['会话控制 · 协议级', '项目命令 · agent 下发']);
     expect(groups[0]?.items.map((i) => i.label)).toEqual([
       '/model',
       '/cwd',
@@ -76,15 +71,12 @@ describe('buildSlashMenu', () => {
       '/rename',
     ]);
     expect(groups[1]?.items[0]).toMatchObject({ label: '/ws:task', source: 'project' });
-    expect(groups[2]?.items[0]?.action).toEqual({ kind: 'fill', text: '继续' });
   });
 
-  test('前缀过滤：/mo 只留 /model；片段按包含匹配', () => {
+  test('前缀过滤：/mo 只留 /model', () => {
     const groups = buildSlashMenu('/mo', sources);
-    expect(groups.map((g) => g.title)).toEqual(['会话控制 · 协议级', '常用 prompt · 本设备']);
+    expect(groups.map((g) => g.title)).toEqual(['会话控制 · 协议级']);
     expect(groups[0]?.items.map((i) => i.label)).toEqual(['/model']);
-    // 片段没有 `/` 前缀可言，按包含匹配
-    expect(groups[1]?.items.map((i) => i.label)).toEqual(['model 相关的备忘']);
   });
 
   test('项目命令选中后填入命令名（带尾随空格），不直接发送', () => {
@@ -125,10 +117,6 @@ describe('buildSlashMenu', () => {
     expect(project?.items[0]?.action).toEqual({ kind: 'fill', text: '/code-review ' });
   });
 
-  test('已经打出参数后不再推荐 prompt 片段', () => {
-    expect(buildSlashMenu('/model opus', sources).map((g) => g.title)).toEqual(['会话控制 · 协议级']);
-  });
-
   test('无候选返回空数组（菜单整体隐藏）', () => {
     expect(buildSlashMenu('/zzz', sources)).toEqual([]);
     expect(buildSlashMenu('不是命令', sources)).toEqual([]);
@@ -141,7 +129,6 @@ describe('buildSlashMenu', () => {
         { name: 'rename', description: 'CLI 自带', source: 'user' },
         { name: 'Model', source: 'user' },
       ] as SlashCommand[],
-      promptSnippets: [],
     };
     const labels = flattenSlashGroups(buildSlashMenu('/', withDupes)).map((i) => i.label);
     expect(labels.filter((l) => l === '/rename')).toHaveLength(1);
@@ -152,15 +139,14 @@ describe('buildSlashMenu', () => {
   test('不可用的会话控制命令不出现，同名 agent 命令也不回填', () => {
     const src = {
       slashCommands: [{ name: 'rename', source: 'user' }] as SlashCommand[],
-      promptSnippets: [],
       unavailable: ['rename'] as const,
     };
     expect(buildSlashMenu('/ren', src)).toEqual([]);
     expect(flattenSlashGroups(buildSlashMenu('/', src)).map((i) => i.label)).not.toContain('/rename');
   });
 
-  test('capabilities 与片段为空时只剩会话控制组', () => {
-    expect(buildSlashMenu('/', { slashCommands: [], promptSnippets: [] }).map((g) => g.title)).toEqual([
+  test('capabilities 为空时只剩会话控制组', () => {
+    expect(buildSlashMenu('/', { slashCommands: [] }).map((g) => g.title)).toEqual([
       '会话控制 · 协议级',
     ]);
   });
@@ -168,7 +154,7 @@ describe('buildSlashMenu', () => {
 
 describe('键盘导航', () => {
   test('扁平化跳过分组标题', () => {
-    expect(flattenSlashGroups(buildSlashMenu('/', sources))).toHaveLength(6 + 3 + 3);
+    expect(flattenSlashGroups(buildSlashMenu('/', sources))).toHaveLength(6 + 3);
   });
 
   test('上下键两端循环，空列表恒 0', () => {
