@@ -53,7 +53,7 @@ function assistantMessage(text: string, id = 'msg_1'): SDKMessage {
  *
  * @param scripts 每轮（每条用户消息）要吐的消息序列；用完后最后一个脚本复用
  */
-function fakeQueryFactory(scripts: SDKMessage[][]) {
+function fakeQueryFactory(scripts: SDKMessage[][], extras: Record<string, unknown> = {}) {
   const calls: { options: Options | undefined; userMessages: SDKUserMessage[]; rewinds: { id: string; dryRun: boolean }[]; closed: boolean }[] = [];
   let turnIndex = 0;
 
@@ -128,6 +128,8 @@ function fakeQueryFactory(scripts: SDKMessage[][]) {
         interrupted = true;
         record.closed = true;
       },
+      // 个别用例要的额外控制方法（getContextUsage 等）
+      ...extras,
     };
 
     // 假 Query 只实现会话层实际用到的成员（next/interrupt/close/setModel…），
@@ -141,9 +143,10 @@ function fakeQueryFactory(scripts: SDKMessage[][]) {
 function makeSession(
   scripts: SDKMessage[][],
   overrides: Partial<ClaudeSessionOptions> = {},
+  queryExtras: Record<string, unknown> = {},
 ) {
   const events: EventBody[] = [];
-  const { factory, calls } = fakeQueryFactory(scripts);
+  const { factory, calls } = fakeQueryFactory(scripts, queryExtras);
   /** 续跑退避实际请求过的时长，测试据此断言退避曲线 */
   const sleeps: number[] = [];
   const session = new ClaudeSession({
@@ -2177,6 +2180,93 @@ describe('ClaudeSession · 附件', () => {
     await waitFor(() => events.some((e) => e.type === 'run.done'));
     expect('attachments' in events.find((e) => e.type === 'user.message')!).toBe(false);
     expect('additionalDirectories' in calls[0]!.options!).toBe(false);
+    await session.close();
+  });
+});
+
+describe('ClaudeSession · 用量（usage-display）', () => {
+  const rateLimitEvent = {
+    type: 'rate_limit_event',
+    rate_limit_info: {
+      status: 'allowed',
+      rateLimitType: 'five_hour',
+      resetsAt: 1_792_478_400,
+      unifiedWindows: {
+        five_hour: { utilization: 0.62, resetsAt: 1_792_478_400 },
+        seven_day: { utilization: 0.15, resetsAt: 1_792_958_400 },
+      },
+    },
+    uuid: 'u',
+    session_id: 's1',
+  } as unknown as SDKMessage;
+
+  test('rate_limit_event → onRateLimits 拿到两个窗口；不开轮、不发事件', async () => {
+    const patches: unknown[] = [];
+    const { session, events } = makeSession([[rateLimitEvent, assistantMessage('hi'), resultMessage()]], {
+      onRateLimits: (patch) => patches.push(patch),
+    });
+    session.send('m1', '你好');
+    await waitFor(() => events.some((e) => e.type === 'run.done'));
+    expect(patches).toEqual([
+      {
+        fiveHour: { percent: 62, resetsAt: 1_792_478_400_000 },
+        sevenDay: { percent: 15, resetsAt: 1_792_958_400_000 },
+      },
+    ]);
+    await session.close();
+  });
+
+  test('每轮 result 后取 context 用量写进 meta', async () => {
+    const metas: SessionRuntimeMeta[] = [];
+    const used = [50_000, 80_000];
+    const { session, events } = makeSession(
+      [[assistantMessage('hi'), resultMessage()]],
+      { onMeta: (meta) => metas.push(meta) },
+      {
+        getContextUsage: () =>
+          Promise.resolve({ totalTokens: used.shift() ?? 80_000, maxTokens: 200_000, percentage: 25 }),
+      },
+    );
+    session.send('m1', '你好');
+    await waitFor(() => session.meta().context !== undefined);
+    expect(session.meta().context).toMatchObject({ usedTokens: 50_000, maxTokens: 200_000, percent: 25 });
+    expect(metas.at(-1)?.context?.usedTokens).toBe(50_000);
+
+    session.send('m2', '再来');
+    await waitFor(() => events.filter((e) => e.type === 'run.done').length === 2);
+    await waitFor(() => metas.at(-1)?.context?.usedTokens === 80_000);
+    await session.close();
+  });
+
+  test('getContextUsage 失败 / 没有这个方法：不影响会话，meta 不带 context', async () => {
+    const logs: string[] = [];
+    const failing = makeSession(
+      [[resultMessage()]],
+      { log: (line) => logs.push(line) },
+      { getContextUsage: () => Promise.reject(new Error('boom')) },
+    );
+    failing.session.send('m1', 'x');
+    await waitFor(() => logs.some((l) => l.includes('取 context 用量失败')));
+    expect(failing.session.meta().context).toBeUndefined();
+    expect(failing.session.state).toBe('idle');
+    await failing.session.close();
+
+    const missing = makeSession([[resultMessage()]]);
+    missing.session.send('m1', 'x');
+    await waitFor(() => missing.events.some((e) => e.type === 'run.done'));
+    expect(missing.session.meta().context).toBeUndefined();
+    await missing.session.close();
+  });
+
+  test('planUsage：没有子进程 → undefined；有就转给 query', async () => {
+    const usage = { rate_limits_available: true, rate_limits: {} };
+    const { session, events } = makeSession([[resultMessage()]], {}, {
+      usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET: () => Promise.resolve(usage),
+    });
+    expect(session.planUsage()).toBeUndefined();
+    session.send('m1', 'x');
+    await waitFor(() => events.some((e) => e.type === 'run.done'));
+    expect(await session.planUsage()).toBe(usage);
     await session.close();
   });
 });

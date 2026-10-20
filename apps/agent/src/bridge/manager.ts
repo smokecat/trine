@@ -34,6 +34,7 @@ import { EventEmitter, scopedEmitter } from './emitter.ts';
 import { ClaudeSession, type RewindPoint, type SessionRuntimeMeta } from './session.ts';
 import type { HeadlessProbe } from './session-origin.ts';
 import type { EventBody } from './types.ts';
+import type { RateLimitPatch } from './usage.ts';
 
 /**
  * 会话标记（归档 / 墓碑 / 未落盘标题）的只读视图 + 自动取消归档入口。
@@ -136,6 +137,8 @@ export interface SessionManagerOptions {
    * 不标 `headless`——测试默认不给，免得去读真 ~/.claude。
    */
   headlessProbe?: HeadlessProbe;
+  /** 会话报来的订阅限额用量（账号级），app 汇总进 machine.info */
+  onRateLimits?: (patch: RateLimitPatch) => void;
 }
 
 /** 建会话所需参数 */
@@ -156,6 +159,7 @@ export interface CreateSessionArgs {
   onRewindApplied?: () => void;
   /** 额外可读目录（附件上传目录） */
   additionalDirectories?: string[];
+  onRateLimits?: (patch: RateLimitPatch) => void;
 }
 
 const DEFAULT_MAX_CONCURRENT = 10;
@@ -202,6 +206,7 @@ export class SessionManager {
   readonly #onRewindApplied: ((sessionId: string) => void) | undefined;
   readonly #log: ((line: string) => void) | undefined;
   readonly #headlessProbe: HeadlessProbe | undefined;
+  readonly #onRateLimits: ((patch: RateLimitPatch) => void) | undefined;
   /** 已探明是非交互出身的 sessionId（出身不变，只增不减） */
   readonly #headless = new Set<string>();
 
@@ -230,6 +235,7 @@ export class SessionManager {
     this.#onRewindApplied = options.onRewindApplied;
     this.#log = options.log;
     this.#headlessProbe = options.headlessProbe;
+    this.#onRateLimits = options.onRateLimits;
     this.#createSession =
       options.createSession ?? ((args) => new ClaudeSession(args));
   }
@@ -307,6 +313,7 @@ export class SessionManager {
       ...(this.#log === undefined ? {} : { log: this.#log }),
       ...(args.rewindPoint === undefined ? {} : { rewindPoint: args.rewindPoint }),
       onRewindApplied: () => this.#onRewindApplied?.(args.sessionId),
+      ...(this.#onRateLimits === undefined ? {} : { onRateLimits: this.#onRateLimits }),
       ...(this.#uploadsDir === undefined ? {} : { additionalDirectories: [this.#uploadsDir(args.sessionId)] }),
     });
 
@@ -333,6 +340,8 @@ export class SessionManager {
       ...(firstPrompt === undefined ? {} : { firstPrompt }),
       ...(gitBranch === undefined ? {} : { gitBranch }),
       ...(createdAt === undefined ? {} : { createdAt }),
+      // 新实例还没取过 context：沿用上次的值（子进程回收后 resume）
+      ...(previous?.context === undefined ? {} : { context: previous.context }),
     };
     this.#meta.set(args.sessionId, meta);
 
@@ -351,6 +360,19 @@ export class SessionManager {
   /** 取一个已存在的活跃会话；不存在返回 undefined（不隐式新建） */
   get(sessionId: string): ClaudeSession | undefined {
     return this.#sessions.get(sessionId);
+  }
+
+  /**
+   * 借一个有子进程的会话查订阅限额用量（账号级，哪个会话都一样）。没有活跃子进程
+   * 返回 undefined，调用方决定要不要临时起进程。
+   */
+  planUsage(): Promise<unknown> | undefined {
+    for (const session of this.#sessions.values()) {
+      if (!session.hasProcess) continue;
+      const pending = session.planUsage();
+      if (pending !== undefined) return pending;
+    }
+    return undefined;
   }
 
   /** 会话是否已有活跃实例（互斥判断） */
@@ -655,6 +677,7 @@ export class SessionManager {
       // 缓存里的 waitingFor 由 #onMeta 随每次状态迁移 / 挂起项变化刷新，与 live 同步
       ...waitingForOf({ state, waitingFor: cached?.waitingFor }),
       ...bgRunningOf(live?.bgRunningCount ?? cached?.bgRunning),
+      ...(cached?.context === undefined ? {} : { context: cached.context }),
       ...(info.firstPrompt === undefined ? {} : { lastEvent: info.firstPrompt }),
       ...(info.firstPrompt === undefined ? {} : { firstPrompt: info.firstPrompt }),
       ...(info.gitBranch === undefined ? {} : { gitBranch: info.gitBranch }),
@@ -719,6 +742,8 @@ export class SessionManager {
       costUsd: runtime.costUsd,
       ...(runtime.waitingFor === undefined ? {} : { waitingFor: runtime.waitingFor }),
       ...bgRunningOf(runtime.bgRunning),
+      // context 只在取到时覆盖；没带就保留缓存里的上一次值
+      ...(runtime.context === undefined ? {} : { context: runtime.context }),
     };
     this.#meta.set(sid, merged);
     if (runtime.state === 'running' && this.#flags?.archivedAt(sid) !== undefined) {

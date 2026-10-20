@@ -369,6 +369,39 @@ describe('SessionManager · 空闲回收', () => {
     expect(manager.metaOf('s1')).not.toHaveProperty('bgRunning');
   });
 
+  test('context 经 onMeta 进入 meta；之后不带 context 的 meta 保留旧值，回收后重开也保留', async () => {
+    const { manager, created } = makeHarness();
+    manager.acquire({ sessionId: 's1', ...base });
+    const runtime = {
+      sessionId: 's1',
+      state: 'idle' as const,
+      costUsd: 0,
+      lastActivityAt: 0,
+      cwd: '/p',
+      model: 'm',
+      permissionMode: 'default' as const,
+    };
+    const context = { usedTokens: 1_000, maxTokens: 200_000, percent: 0.5, at: 1 };
+    created[0]!.args.onMeta?.({ ...runtime, context });
+    created[0]!.args.onMeta?.({ ...runtime, state: 'running' });
+    expect(manager.metaOf('s1')?.context).toEqual(context);
+
+    await manager.release('s1');
+    manager.acquire({ sessionId: 's1', ...base, resume: true });
+    expect(manager.metaOf('s1')?.context).toEqual(context);
+  });
+
+  test('planUsage 借第一个有子进程的会话；都没有返回 undefined', () => {
+    const { manager, created } = makeHarness();
+    expect(manager.planUsage()).toBeUndefined();
+    manager.acquire({ sessionId: 's1', ...base });
+    manager.acquire({ sessionId: 's2', ...base });
+    const usage = Promise.resolve('usage');
+    Object.assign(created[0]!, { hasProcess: false, planUsage: () => undefined });
+    Object.assign(created[1]!, { hasProcess: true, planUsage: () => usage });
+    expect(manager.planUsage()).toBe(usage);
+  });
+
   test('回收不销毁 seq 序列——同会话恢复后 seq 继续单调', async () => {
     let clock = 0;
     const events: OutboundEvent[] = [];

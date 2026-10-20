@@ -46,6 +46,20 @@ export type RunPhase = z.infer<typeof RunPhaseSchema>;
 export const ToolResultStatusSchema = z.enum(['ok', 'warn', 'error']);
 export type ToolResultStatus = z.infer<typeof ToolResultStatusSchema>;
 
+/**
+ * 会话 context 用量（usage-display 新增；源：SDK `Query.getContextUsage()`，主 agent
+ * 每轮结束后取一次）。子进程回收后保留最后一次的值，`at` 是取值时间。
+ */
+export const ContextUsageSchema = z.object({
+  usedTokens: z.number().int().nonnegative(),
+  /** 用量的分母：自动压缩窗口（可能小于模型的硬上限） */
+  maxTokens: z.number().int().positive(),
+  /** usedTokens / maxTokens 的百分比，超窗时可 > 100 */
+  percent: z.number().nonnegative(),
+  at: TimestampSchema,
+});
+export type ContextUsage = z.infer<typeof ContextUsageSchema>;
+
 /** 会话列表条目 / 会话元数据快照 */
 export const SessionMetaSchema = z.object({
   sessionId: z.string().min(1),
@@ -96,6 +110,8 @@ export const SessionMetaSchema = z.object({
    * agent ≥ 0.10.0）。空闲回收 / 满额腾位后变回省略。省略 = 没有 / 旧 agent。
    */
   live: z.boolean().optional(),
+  /** 最近一次已知的 context 用量（usage-display 新增，可选；agent ≥ 0.12.0）。省略 = 还没取到 / 旧 agent */
+  context: ContextUsageSchema.optional(),
 });
 export type SessionMeta = z.infer<typeof SessionMetaSchema>;
 
@@ -221,6 +237,28 @@ export const HistoryItemSchema = z.discriminatedUnion('kind', [
 ]);
 export type HistoryItem = z.infer<typeof HistoryItemSchema>;
 
+/** 一个订阅限额窗口的用量（5 小时 / 7 天） */
+export const RateLimitWindowSchema = z.object({
+  /** 已用百分比，0–100 */
+  percent: z.number().nonnegative(),
+  /** 窗口重置时间；未知时省略 */
+  resetsAt: TimestampSchema.optional(),
+});
+export type RateLimitWindow = z.infer<typeof RateLimitWindowSchema>;
+
+/**
+ * 机器上登录的 Claude 账号的订阅限额用量（usage-display 新增）。账号级数据：同一
+ * 台机器的所有会话共用。会话活动时随 SDK 的限额事件刷新，或由 client 手动请求
+ * （`machine.usage.request`）。API key / Bedrock / Vertex 等没有订阅限额的账号不带。
+ */
+export const RateLimitsSchema = z.object({
+  fiveHour: RateLimitWindowSchema.optional(),
+  sevenDay: RateLimitWindowSchema.optional(),
+  /** agent 最近一次拿到这份数据的时间 */
+  updatedAt: TimestampSchema,
+});
+export type RateLimits = z.infer<typeof RateLimitsSchema>;
+
 /** 机器信息（E2E 密文内） */
 export const MachineInfoSchema = z.object({
   name: z.string(),
@@ -231,6 +269,8 @@ export const MachineInfoSchema = z.object({
   activeSessionCount: z.number().int().nonnegative(),
   /** 活跃会话上限（live-sessions 新增，可选；旧 agent 不发） */
   maxSessions: z.number().int().positive().optional(),
+  /** 订阅限额用量（usage-display 新增，可选；agent ≥ 0.12.0）。省略 = 还没拿到 / 账号没有订阅限额 / 旧 agent */
+  rateLimits: RateLimitsSchema.optional(),
 });
 export type MachineInfo = z.infer<typeof MachineInfoSchema>;
 

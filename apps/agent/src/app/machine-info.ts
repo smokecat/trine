@@ -6,7 +6,7 @@
  * 跑完后再探测一次：它只用于展示，探测失败不该影响启动；每次广播都去 spawn 一遍也没必要。
  */
 import { release } from 'node:os';
-import type { MachineInfo } from '@trine/core';
+import type { MachineInfo, RateLimits } from '@trine/core';
 
 /**
  * 与 apps/agent/package.json 的 version 对齐（手工同步；没有构建步骤可注入）。
@@ -30,13 +30,16 @@ import type { MachineInfo } from '@trine/core';
 //   先回收最久未活动的空闲会话，全都在忙才拒绝；默认上限 5 → 10
 // - 0.11.0 起支持附件：input.send / user.message 带 attachments（relay blob 引用），
 //   history user 条目带附件元数据，attachment.fetch.request 按需重新上传
-export const AGENT_VERSION = '0.11.0';
+// - 0.12.0 起 SessionMeta 带 context（context 用量）、MachineInfo 带 rateLimits（5 小时 /
+//   7 天订阅限额用量），支持 machine.usage.request 手动刷新
+export const AGENT_VERSION = '0.12.0';
 
 export function buildMachineInfo(input: {
   name: string;
   claudeVersion: string;
   activeSessionCount: number;
   maxSessions: number;
+  rateLimits?: RateLimits | undefined;
 }): MachineInfo {
   return {
     name: input.name,
@@ -46,5 +49,6 @@ export function buildMachineInfo(input: {
     claudeVersion: input.claudeVersion,
     activeSessionCount: input.activeSessionCount,
     maxSessions: input.maxSessions,
+    ...(input.rateLimits === undefined ? {} : { rateLimits: input.rateLimits }),
   };
 }

@@ -116,7 +116,7 @@ import {
   type SDKMessage,
   type SDKUserMessage,
 } from '@anthropic-ai/claude-agent-sdk';
-import type { BgTask, PermissionMode, SessionState, WaitingFor } from '@trine/core';
+import type { BgTask, ContextUsage, PermissionMode, SessionState, WaitingFor } from '@trine/core';
 import { BgTaskTracker, spontaneousDetailOf } from './bgtasks.ts';
 import {
   classifyError,
@@ -138,6 +138,7 @@ import {
   type TranslateState,
 } from './translate.ts';
 import type { EventBody } from './types.ts';
+import { contextUsageFrom, rateLimitPatchFromEvent, type RateLimitPatch } from './usage.ts';
 
 /** 自动续跑最大次数，超过就报 fatal（防无限重试烧额度） */
 const MAX_TRANSIENT_RETRIES = 3;
@@ -162,6 +163,9 @@ const MAX_REMEMBERED_UUIDS = 500;
 
 /** 临时 query 读 / 还原文件快照的超时：冷启动一两秒，留足余量 */
 const REWIND_FILES_TIMEOUT_MS = 30_000;
+
+/** 每轮结束后取 context 用量的超时（控制请求，实测 ~2s） */
+const CONTEXT_USAGE_TIMEOUT_MS = 15_000;
 
 /** 子 agent task_id → 父 toolUseId 映射的容量（量小，超限淘汰最早的） */
 const MAX_SUBAGENT_PARENTS = 500;
@@ -197,6 +201,8 @@ export interface ClaudeSessionOptions {
   additionalDirectories?: string[];
   /** 截断点已生效（新分支上有了第一条回复），调用方据此清掉持久化的截断点 */
   onRewindApplied?: () => void;
+  /** CLI 报来新的订阅限额用量（rate_limit_event，账号级），供 app 汇总广播 */
+  onRateLimits?: (patch: RateLimitPatch) => void;
 }
 
 /**
@@ -222,6 +228,8 @@ export interface SessionRuntimeMeta {
   waitingFor?: WaitingFor;
   /** 正在运行的后台任务数（Bash run_in_background / 后台子 agent）；省略视同 0 */
   bgRunning?: number;
+  /** 最近一次取到的 context 用量；本实例还没取到时不带（manager 保留缓存里的旧值） */
+  context?: ContextUsage;
 }
 
 /** stopBgTask 的结果（router 转成 session.mutate.response） */
@@ -335,6 +343,12 @@ export class ClaudeSession {
   /** 带着截断点起的那个 query；它收到第一条回复即截断生效 */
   #rewindQuery: Query | undefined = undefined;
   readonly #onRewindApplied: (() => void) | undefined;
+  readonly #onRateLimits: ((patch: RateLimitPatch) => void) | undefined;
+  /** 最近一次取到的 context 用量（每轮 result 后在同一 query 上取） */
+  #context: ContextUsage | undefined = undefined;
+  /** 正在取 context 用量；期间又有 result 到达则记 #contextStale，取完再补一次 */
+  #contextFetching = false;
+  #contextStale = false;
   /**
    * 子 agent 的 task_id → 父 Agent/Task 工具的 toolUseId（task_started 时记）。
    * canUseTool 的 agentID 就是 task_id，权限卡的来源靠它查。会话生命周期内保留
@@ -364,6 +378,7 @@ export class ClaudeSession {
     this.#resumeRequested = options.resume ?? false;
     this.#pendingRewind = options.rewindPoint;
     this.#onRewindApplied = options.onRewindApplied;
+    this.#onRateLimits = options.onRateLimits;
     this.#lastActivityAt = this.#now();
     this.#translate = createTranslateState(this.#now());
 
@@ -542,7 +557,18 @@ export class ClaudeSession {
       permissionMode: this.#permissionMode,
       ...(waitingFor === undefined ? {} : { waitingFor }),
       bgRunning: this.#bgTasks.runningCount,
+      ...(this.#context === undefined ? {} : { context: this.#context }),
     };
+  }
+
+  /**
+   * 在活跃 query 上查订阅限额用量（SDK 的实验性 /usage 接口，返回原始应答，由调用方
+   * 解析）。没有活跃子进程 / SDK 没这个方法 → undefined，调用方另想办法。
+   */
+  planUsage(): Promise<unknown> | undefined {
+    const q = this.#query;
+    if (q === undefined || typeof q.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET !== 'function') return undefined;
+    return q.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET();
   }
 
   /**
@@ -1095,9 +1121,65 @@ export class ClaudeSession {
       this.#emit(body);
     }
     this.#syncCliPermissionMode(message);
+    this.#noteRateLimits(message);
     this.#touch();
 
-    if (message.type === 'result') this.#closeRound(message);
+    if (message.type === 'result') {
+      this.#closeRound(message);
+      this.#refreshContext();
+    }
+  }
+
+  /** rate_limit_event → 交给 app 汇总（账号级，不进会话 meta） */
+  #noteRateLimits(message: SDKMessage): void {
+    if (message.type !== 'rate_limit_event' || this.#onRateLimits === undefined) return;
+    const patch = rateLimitPatchFromEvent(message.rate_limit_info);
+    if (patch === undefined) return;
+    try {
+      this.#onRateLimits(patch);
+    } catch (err) {
+      this.#log(`[session ${this.sessionId}] 处理限额用量失败：${errorText(err)}`);
+    }
+  }
+
+  /**
+   * 一轮结束：在当前 query 上取 context 用量，变了就重发 meta。异步、不阻塞下一轮；
+   * 取不到（假 SDK 没这个方法 / 超时 / 形状不认识）就保留旧值，不影响会话。
+   */
+  #refreshContext(): void {
+    if (this.#contextFetching) {
+      this.#contextStale = true;
+      return;
+    }
+    const q = this.#query;
+    // 测试里的假 query 可能没有这个方法
+    if (q === undefined || typeof q.getContextUsage !== 'function') return;
+    this.#contextFetching = true;
+    this.#contextStale = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error('超时')), CONTEXT_USAGE_TIMEOUT_MS);
+      (timer as { unref?: () => void }).unref?.();
+    });
+    void Promise.race([q.getContextUsage(), timeout])
+      .then((response) => {
+        if (this.#closed) return;
+        const context = contextUsageFrom(response, this.#now());
+        if (context === undefined) return;
+        const previous = this.#context;
+        this.#context = context;
+        if (previous === undefined || previous.usedTokens !== context.usedTokens || previous.maxTokens !== context.maxTokens) {
+          this.#onMeta?.(this.meta());
+        }
+      })
+      .catch((err: unknown) => {
+        if (!this.#closed) this.#log(`[session ${this.sessionId}] 取 context 用量失败：${errorText(err)}`);
+      })
+      .finally(() => {
+        if (timer !== undefined) clearTimeout(timer);
+        this.#contextFetching = false;
+        if (this.#contextStale && !this.#closed) this.#refreshContext();
+      });
   }
 
   /**

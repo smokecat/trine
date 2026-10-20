@@ -965,6 +965,44 @@ export const MachineClaudeUpdateResponseSchema = z.object({
     .optional(),
 });
 
+// --- §3.2 手动刷新订阅限额用量（usage-display，agent 0.12.0 起） ---
+//
+// 语义：agent 向 Claude 查一次当前账号的 5 小时 / 7 天用量。有活跃会话进程时借用它，
+// 没有就临时起一个不发消息的 claude 进程，用完即关——所以只给手动刷新用，client
+// 不要定时发。拿到后先广播 `machine.info`（带新的 rateLimits），再回应答。
+//
+// 互操作：旧 agent 不认识本 type → client 只能等超时；client 按 agentVersion 探测。
+
+/** client → agent：刷新订阅限额用量（机器级帧） */
+export const MachineUsageRequestSchema = z.object({
+  type: z.literal('machine.usage.request'),
+  ...c2aBase,
+  reqId: ReqIdSchema,
+});
+
+/**
+ * 刷新失败原因：
+ * - `unavailable` 账号没有订阅限额（API key / Bedrock / Vertex 等）
+ * - `failed`      查询出错 / 超时 / 返回形状不认识
+ */
+export const UsageErrorCodeSchema = z.enum(['unavailable', 'failed']);
+export type UsageErrorCode = z.infer<typeof UsageErrorCodeSchema>;
+
+/** agent → client：`machine.usage.request` 的应答（机器级，reqId 关联） */
+export const MachineUsageResponseSchema = z.object({
+  type: z.literal('machine.usage.response'),
+  ...a2cBase,
+  reqId: ReqIdSchema,
+  ok: z.boolean(),
+  /** ok 为 false 时必带 */
+  error: z
+    .object({
+      code: UsageErrorCodeSchema,
+      message: z.string(),
+    })
+    .optional(),
+});
+
 // ---------------------------------------------------------------------------
 // §6.2 工作目录管理（决策 7：agent 端持久化，每机器一份）
 // ---------------------------------------------------------------------------
@@ -1069,6 +1107,7 @@ export const AgentToClientEventSchema = z.discriminatedUnion('type', [
   SessionCapabilitiesSchema,
   MachineInfoEventSchema,
   MachineClaudeUpdateResponseSchema,
+  MachineUsageResponseSchema,
   CwdListResponseSchema,
   CwdUpdatedSchema,
   ErrorTransientSchema,
@@ -1103,6 +1142,7 @@ export const ClientToAgentEventSchema = z.discriminatedUnion('type', [
   MachineRenameSchema,
   MachineUnpairSchema,
   MachineClaudeUpdateRequestSchema,
+  MachineUsageRequestSchema,
   CwdListRequestSchema,
   CwdAddSchema,
   CwdRemoveSchema,

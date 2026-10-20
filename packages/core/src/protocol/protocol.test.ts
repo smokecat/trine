@@ -12,6 +12,7 @@ import {
   TransportFrameSchema,
   type E2eEvent,
 } from './index.ts';
+import { SessionMetaSchema } from '../types/index.ts';
 
 const ts = Date.now();
 
@@ -776,6 +777,68 @@ describe('远程更新 claude（claude-update）', () => {
       expect(AgentToClientEventSchema.safeParse(rest).success).toBe(false);
     }
     expect(ClientToAgentEventSchema.safeParse({ ...ok, dir: 'c2a' }).success).toBe(false);
+  });
+});
+
+describe('用量展示（usage-display）', () => {
+  const machineA2c = { ts, seq: 1, dir: 'a2c' } as const;
+  const machineC2a = { ts, seq: 1, dir: 'c2a' } as const;
+  const info = {
+    name: 'mbp-m3',
+    platform: 'darwin',
+    osVersion: '25.5.0',
+    agentVersion: '0.12.0',
+    claudeVersion: '2.1.304 (Claude Code)',
+    activeSessionCount: 1,
+  };
+
+  test('MachineInfo.rateLimits 可选；窗口的 resetsAt 可省略', () => {
+    const rateLimits = {
+      fiveHour: { percent: 62, resetsAt: 1_792_478_400_000 },
+      sevenDay: { percent: 15 },
+      updatedAt: 1_792_470_000_000,
+    };
+    const frame = { type: 'machine.info', ...machineA2c, info: { ...info, rateLimits } };
+    expect(AgentToClientEventSchema.parse(frame)).toEqual(frame as never);
+    expect(AgentToClientEventSchema.parse({ type: 'machine.info', ...machineA2c, info }).type).toBe('machine.info');
+    const bad = { ...frame, info: { ...info, rateLimits: { ...rateLimits, fiveHour: { percent: -1 } } } };
+    expect(AgentToClientEventSchema.safeParse(bad).success).toBe(false);
+    const { updatedAt: _u, ...noUpdatedAt } = rateLimits;
+    expect(AgentToClientEventSchema.safeParse({ ...frame, info: { ...info, rateLimits: noUpdatedAt } }).success).toBe(false);
+  });
+
+  test('SessionMeta.context 可选；超窗时百分比可 > 100，maxTokens 不能为 0', () => {
+    const meta = {
+      sessionId: 's1',
+      title: 't',
+      state: 'idle',
+      lastActivityAt: 1,
+      cwd: '/work/demo',
+      model: 'sonnet',
+      permissionMode: 'default',
+      costUsd: 0,
+    };
+    const context = { usedTokens: 210_000, maxTokens: 200_000, percent: 105, at: 2 };
+    expect(SessionMetaSchema.parse({ ...meta, context })).toEqual({ ...meta, context } as never);
+    expect(SessionMetaSchema.parse(meta)).toEqual(meta as never);
+    expect(SessionMetaSchema.safeParse({ ...meta, context: { ...context, maxTokens: 0 } }).success).toBe(false);
+  });
+
+  test('machine.usage.request / response：方向、reqId、失败码', () => {
+    const req = { type: 'machine.usage.request', ...machineC2a, reqId: 'q1' };
+    expect(ClientToAgentEventSchema.parse(req)).toEqual(req as never);
+    expect(AgentToClientEventSchema.safeParse(req).success).toBe(false);
+    expect(() => assertEnvelopeBinding(E2eEventSchema.parse(req), { seq: 1 }, 'c2a')).not.toThrow();
+
+    const ok = { type: 'machine.usage.response', ...machineA2c, reqId: 'q1', ok: true };
+    expect(AgentToClientEventSchema.parse(ok)).toEqual(ok as never);
+    for (const code of ['unavailable', 'failed']) {
+      const fail = { ...ok, ok: false, error: { code, message: 'x' } };
+      expect(AgentToClientEventSchema.parse(fail)).toEqual(fail as never);
+    }
+    expect(AgentToClientEventSchema.safeParse({ ...ok, ok: false, error: { code: 'nope', message: 'x' } }).success).toBe(false);
+    const { reqId: _r, ...noReq } = ok;
+    expect(AgentToClientEventSchema.safeParse(noReq).success).toBe(false);
   });
 });
 

@@ -25,6 +25,7 @@ import type { OutboundEvent } from '../bridge/types.ts';
 import type { Recipient } from '../net/recipients.ts';
 import { FakeBlobs } from '../testing/fake-blobs.ts';
 import { FakeTranscripts } from '../testing/fake-transcripts.ts';
+import type { PlanUsageRefreshOutcome } from './plan-usage.ts';
 import type { ClaudeUpdateOutcome } from './claude-cli.ts';
 import { CwdStore } from './cwd-store.ts';
 import {
@@ -207,6 +208,8 @@ async function makeHarness(options: {
   subagentTranscripts?: Record<string, unknown[]>;
   /** 注入 claude update 执行（默认回 not_found） */
   updateClaude?: () => Promise<ClaudeUpdateOutcome>;
+  /** 注入限额用量刷新；省略 = router 回「不支持」 */
+  refreshUsage?: () => Promise<PlanUsageRefreshOutcome>;
   /** 注入斜杠命令探测；省略 = 不注入 probe（router 回空数组） */
   probeCommands?: (cwd: string) => Promise<SdkSlashCommand[]>;
   /** 附件存储；省略 = 不启用附件 */
@@ -283,6 +286,7 @@ async function makeHarness(options: {
         outputTruncated: false,
         error: { code: 'not_found' as const, message: 'no claude' },
       })),
+    ...(options.refreshUsage === undefined ? {} : { refreshUsage: options.refreshUsage }),
     now,
     log: (l) => logs.push(l),
     setTimeoutImpl: (fn, ms) => {
@@ -904,6 +908,44 @@ describe('Router · 路由表（机器级）', () => {
       error: { code: 'failed' },
     });
     expect(t.byType('error.fatal')).toHaveLength(0);
+  });
+
+  test('machine.usage.request：链外执行；成功 / 失败 / 抛错 / 不支持都回机器级应答', async () => {
+    let release!: (o: PlanUsageRefreshOutcome) => void;
+    const h = await makeHarness({ refreshUsage: () => new Promise((r) => (release = r)) });
+    await h.router.handle({ type: 'machine.usage.request', ...c2a(), reqId: 'r1' }, phone);
+    await h.router.handle({ type: 'session.list.request', ...c2a(), reqId: 'l1' }, phone);
+    expect(h.byType('session.list.response')).toHaveLength(1);
+    release({ ok: true });
+    await h.router.idle();
+    const [resp] = h.events.filter((e) => e.event.type === 'machine.usage.response');
+    expect(resp!.scope).toBeNull();
+    expect(resp!.event).toMatchObject({ reqId: 'r1', ok: true });
+    expect(resp!.event).not.toHaveProperty('error');
+
+    const failed = await makeHarness({
+      refreshUsage: async () => ({ ok: false, code: 'unavailable', message: 'no plan' }),
+    });
+    await failed.router.handle({ type: 'machine.usage.request', ...c2a(), reqId: 'r2' }, phone);
+    await failed.router.idle();
+    expect(failed.byType('machine.usage.response')[0]).toMatchObject({
+      ok: false,
+      error: { code: 'unavailable', message: 'no plan' },
+    });
+
+    const thrown = await makeHarness({
+      refreshUsage: async () => {
+        throw new Error('boom');
+      },
+    });
+    await thrown.router.handle({ type: 'machine.usage.request', ...c2a(), reqId: 'r3' }, phone);
+    await thrown.router.idle();
+    expect(thrown.byType('machine.usage.response')[0]).toMatchObject({ ok: false, error: { code: 'failed' } });
+
+    const none = await makeHarness();
+    await none.router.handle({ type: 'machine.usage.request', ...c2a(), reqId: 'r4' }, phone);
+    await none.router.idle();
+    expect(none.byType('machine.usage.response')[0]).toMatchObject({ ok: false, error: { code: 'failed' } });
   });
 
   test('机器级事件即便带了 sessionId 也按机器级处理', async () => {

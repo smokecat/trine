@@ -41,6 +41,7 @@ import type { Recipient } from '../net/recipients.ts';
 import type { BackoffOptions, SocketLike } from '../net/ws-client.ts';
 import { agentPaths, type AgentConfig } from './config.ts';
 import { CommandsProbe } from './commands-probe.ts';
+import { PlanUsageTracker } from './plan-usage.ts';
 import { CwdStore } from './cwd-store.ts';
 import {
   ClaudeUpdater,
@@ -79,6 +80,8 @@ export interface AgentAppDeps {
   getSessionMessagesFn?: typeof getSessionMessages;
   /** 注入斜杠命令探测用的 query（测试）；默认走 SDK query */
   commandsQueryFn?: typeof query;
+  /** 注入手动刷新限额用量时临时起的 query（测试用） */
+  usageQueryFn?: typeof query;
   createSocket?: (url: string) => SocketLike;
   getInvitation?: () => Promise<string>;
   fetchImpl?: typeof fetch;
@@ -110,6 +113,7 @@ export class AgentApp {
   #updater!: ClaudeUpdater;
   /** 斜杠命令探测（router 用；退出时收掉在跑的探测子进程） */
   #commandsProbe!: CommandsProbe;
+  #planUsage!: PlanUsageTracker;
 
   private constructor(
     readonly node: AgentNode,
@@ -188,6 +192,8 @@ export class AgentApp {
       onRewindApplied: (sessionId) => state.setPendingRewind(sessionId, undefined),
       log,
       ...headlessProbeOption(deps),
+      // app 晚于 manager 构造；回调只在会话收到 SDK 消息时触发，那时早已就位
+      onRateLimits: (patch) => app.#planUsage.apply(patch),
     });
 
     // app 引用要给 node 的回调用，先占个位（回调只在 connect 之后才会触发）
@@ -266,6 +272,7 @@ export class AgentApp {
       machineInfo: () => app.machineInfo(),
       renameMachine: (name) => app.#rename(name, paths.identity),
       updateClaude: () => app.#updateClaude(),
+      refreshUsage: () => app.#planUsage.refresh(),
       now,
       log,
       ...(deps.getSessionMessagesFn === undefined ? {} : { getSessionMessagesFn: deps.getSessionMessagesFn }),
@@ -287,6 +294,14 @@ export class AgentApp {
       claudeVersion,
     );
     app.#commandsProbe = commandsProbe;
+    app.#planUsage = new PlanUsageTracker({
+      liveUsage: () => manager.planUsage(),
+      onChange: () => app.#emitMachine({ type: 'machine.info', info: app.machineInfo() }),
+      ...(claude.path === undefined ? {} : { pathToClaudeCodeExecutable: claude.path }),
+      ...(deps.usageQueryFn === undefined ? {} : { queryFn: deps.usageQueryFn }),
+      now,
+      log,
+    });
     app.#updater = new ClaudeUpdater({
       executable: claude.path,
       currentVersion: () => app.claudeVersion,
@@ -351,6 +366,7 @@ export class AgentApp {
     this.router.dispose();
     this.#updater.dispose();
     this.#commandsProbe.dispose();
+    this.#planUsage.dispose();
     if (this.#flagsSweepTimer !== undefined) {
       clearInterval(this.#flagsSweepTimer);
       this.#flagsSweepTimer = undefined;
@@ -406,6 +422,7 @@ export class AgentApp {
       claudeVersion: this.claudeVersion,
       activeSessionCount: this.manager.activeCount,
       maxSessions: this.manager.maxConcurrent,
+      rateLimits: this.#planUsage.current,
     });
   }
 

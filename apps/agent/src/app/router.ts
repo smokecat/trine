@@ -13,7 +13,8 @@
  * 同样串行：它们都会碰文件（cwd.json / identity.json）或并发名额，串行最省心。
  * 例外是 `machine.claude.update.request`：`claude update` 可能跑几分钟，在链上
  * await 会把 session.create / list 全堵住——链上只负责把它**发起**，执行在链外
- * （单飞由 ClaudeUpdater 保证），跑完再发机器级应答。
+ * （单飞由 ClaudeUpdater 保证），跑完再发机器级应答。`machine.usage.request` 同理
+ * （可能要临时起一个 claude 进程，几秒到几十秒）。
  *
  * ## resolveSession：按需 resume + 去重 + 三级参数来源
  *
@@ -113,6 +114,7 @@ import type { EventBody } from '../bridge/types.ts';
 import type { Recipient } from '../net/recipients.ts';
 import type { CwdStore } from './cwd-store.ts';
 import type { ClaudeUpdateOutcome } from './claude-cli.ts';
+import type { PlanUsageRefreshOutcome } from './plan-usage.ts';
 import type { SessionFlagsStore } from './session-flags.ts';
 import { executeRewind, previewRewind, type RewindDeps } from './rewind.ts';
 import { SessionMutations, type MutationOutcome } from './session-mutations.ts';
@@ -142,6 +144,7 @@ const MACHINE_LEVEL_TYPES = new Set<ClientToAgentEvent['type']>([
   'machine.rename',
   'machine.unpair',
   'machine.claude.update.request',
+  'machine.usage.request',
   'cwd.list.request',
   'cwd.add',
   'cwd.remove',
@@ -205,6 +208,11 @@ export interface RouterDeps {
    * 广播 machine.info）。不抛——失败以 outcome 表达；万一抛了 router 兜成 failed。
    */
   updateClaude: () => Promise<ClaudeUpdateOutcome>;
+  /**
+   * 手动刷新订阅限额用量（app 的 PlanUsageTracker：单飞、超时；拿到后先广播
+   * machine.info）。不抛——失败以 outcome 表达。不给 = 不支持（测试）。
+   */
+  refreshUsage?: () => Promise<PlanUsageRefreshOutcome>;
   /** listSessions 查不到模型时的兜底 */
   defaultModel: string;
   now?: () => number;
@@ -1165,6 +1173,13 @@ export class Router {
         void task.finally(() => this.#background.delete(task));
         return;
       }
+      case 'machine.usage.request': {
+        // 不 await：同 machine.claude.update.request
+        const task = this.#runUsageRefresh(event.reqId);
+        this.#background.add(task);
+        void task.finally(() => this.#background.delete(task));
+        return;
+      }
       case 'machine.unpair':
         // 撤销流程未设计（DECISIONS backlog）：不动名册，只留痕
         this.#log(`[router] 收到 machine.unpair from=${sender.deviceId}，本版本不实现，忽略`);
@@ -1199,6 +1214,24 @@ export class Router {
       output: outcome.output,
       ...(outcome.outputTruncated ? { outputTruncated: true } : {}),
       ...(outcome.error === undefined ? {} : { error: outcome.error }),
+    });
+  }
+
+  /** 刷新订阅限额用量并回机器级应答（新数据已随 machine.info 广播） */
+  async #runUsageRefresh(reqId: string): Promise<void> {
+    let outcome: PlanUsageRefreshOutcome;
+    try {
+      outcome = this.#deps.refreshUsage === undefined
+        ? { ok: false, code: 'failed', message: 'agent 不支持刷新用量' }
+        : await this.#deps.refreshUsage();
+    } catch (err) {
+      outcome = { ok: false, code: 'failed', message: `agent 刷新用量出错：${(err as Error).message}`.slice(0, 300) };
+    }
+    this.#emitMachine({
+      type: 'machine.usage.response',
+      reqId,
+      ok: outcome.ok,
+      ...(outcome.ok ? {} : { error: { code: outcome.code, message: outcome.message } }),
     });
   }
 
