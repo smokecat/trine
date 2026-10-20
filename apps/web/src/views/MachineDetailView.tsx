@@ -171,7 +171,7 @@ export function MachineDetailView(): React.JSX.Element {
             machines={machines}
             query={listQuery}
             actions={sessionActions}
-            onShowTemp={() => setShowTemp(true)}
+            onShowTemp={setShowTemp}
             variant="compact"
             now={now}
           />

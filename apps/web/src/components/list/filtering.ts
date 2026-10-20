@@ -109,6 +109,8 @@ export interface FilterResult {
   archivedCount: number;
   /** 当前视图里因「不显示临时会话」被藏起来的数量（showTemp 时为 0），不受状态/搜索影响 */
   tempHidden: number;
+  /** 当前视图里因「显示临时会话」而放出来的数量（不 showTemp 时为 0），不受状态/搜索影响 */
+  tempShown: number;
   /** 非空时为 null */
   empty: EmptyReason | null;
 }
@@ -266,14 +268,14 @@ export function filterSessions(
   }
 
   // 3. 临时会话
-  let tempHidden = 0;
-  const kept = query.showTemp
-    ? viewRows
-    : viewRows.filter((r) => {
-        const temp = isTempSession(r.meta);
-        if (temp) tempHidden += 1;
-        return !temp;
-      });
+  let tempCount = 0;
+  const kept = viewRows.filter((r) => {
+    const temp = isTempSession(r.meta);
+    if (temp) tempCount += 1;
+    return query.showTemp || !temp;
+  });
+  const tempHidden = query.showTemp ? 0 : tempCount;
+  const tempShown = query.showTemp ? tempCount : 0;
 
   // 4. 状态
   const statusRows = kept.filter((r) => matchesStatus(r.meta.state, query.status));
@@ -297,7 +299,7 @@ export function filterSessions(
     else empty = 'search';
   }
 
-  return { rows, groups, archivedCount, tempHidden, empty };
+  return { rows, groups, archivedCount, tempHidden, tempShown, empty };
 }
 
 /**

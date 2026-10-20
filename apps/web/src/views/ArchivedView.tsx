@@ -75,7 +75,7 @@ export function ArchivedView(): React.JSX.Element {
           query={query}
           now={now}
           actions={actions}
-          onShowTemp={() => setShowTemp(true)}
+          onShowTemp={setShowTemp}
         />
       </div>
     </div>

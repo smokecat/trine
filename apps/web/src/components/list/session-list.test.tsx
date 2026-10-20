@@ -477,7 +477,7 @@ describe('多选批量归档', () => {
 
 describe('临时会话提示', () => {
   test('底部注明隐藏了几个，「显示」回调调用方', () => {
-    const onShowTemp = mock(() => {});
+    const onShowTemp = mock((_value: boolean) => {});
     const sessions = {
       m: { a: meta({ sessionId: 'a' }), t: meta({ sessionId: 't', cwd: '/tmp/x' }), h: meta({ sessionId: 'h', headless: true }) },
     };
@@ -493,6 +493,27 @@ describe('临时会话提示', () => {
     expect($$('session-row').map((r) => r.dataset['sessionId'])).toEqual(['a']);
     expect($('temp-hidden-note')!.textContent).toContain('已隐藏 2 个临时会话');
     click($('temp-show')!);
-    expect(onShowTemp).toHaveBeenCalledTimes(1);
+    expect(onShowTemp.mock.calls).toEqual([[true]]);
+  });
+
+  test('显示时注明放出了几个，「隐藏」能收回去', () => {
+    const onShowTemp = mock((_value: boolean) => {});
+    const sessions = {
+      m: { a: meta({ sessionId: 'a' }), t: meta({ sessionId: 't', cwd: '/tmp/x' }), h: meta({ sessionId: 'h', headless: true }) },
+    };
+    const query: Query = { ...DEFAULT_LIST_QUERY, groupBy: 'none', showTemp: true };
+    router = createMemoryRouter(
+      [{ path: '/', element: <SessionList sessions={sessions} machines={machines} query={query} now={2} onShowTemp={onShowTemp} /> }],
+      { initialEntries: ['/'] },
+    );
+    host = document.createElement('div');
+    document.body.appendChild(host);
+    root = createRoot(host);
+    act(() => root!.render(<RouterProvider router={router!} />));
+    expect($$('session-row')).toHaveLength(3);
+    expect($('temp-hidden-note')!.textContent).toContain('正在显示 2 个临时会话');
+    expect($('temp-show')!.textContent).toBe('隐藏');
+    click($('temp-show')!);
+    expect(onShowTemp.mock.calls).toEqual([[false]]);
   });
 });

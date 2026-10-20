@@ -135,7 +135,7 @@ function SessionListSlot(): React.JSX.Element {
         machines={machines}
         query={query}
         actions={actions}
-        onShowTemp={() => setShowTemp(true)}
+        onShowTemp={setShowTemp}
         variant="compact"
         now={now}
         className="px-2.5 pb-3"

@@ -264,6 +264,7 @@ describe('临时会话', () => {
     const shown = filterSessions(sessions, q({ showTemp: true }));
     expect(ids(shown.rows)).toEqual(['a', 't', 'h']);
     expect(shown.tempHidden).toBe(0);
+    expect(shown.tempShown).toBe(2);
   });
 
   test('计数只看当前视图（归档视图数归档里的），不受状态 / 搜索影响', () => {

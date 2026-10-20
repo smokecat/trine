@@ -8,8 +8,9 @@
  * 全部已归档 / 归档视图为空 / 被状态筛空 / 被搜索筛空——用户下一步该做的
  * 事不同，别让人以为列表坏了。「没配对机器」由调用方处理。
  *
- * 临时会话（filtering.ts isTempSession）默认隐藏，列表底部注明藏了几个，给了
- * `onShowTemp` 就带一个「显示」按钮。
+ * 临时会话（filtering.ts isTempSession）默认隐藏，列表底部注明藏了几个；显示时
+ * 注明放出了几个。给了 `onShowTemp` 就带「显示 / 隐藏」按钮——机器详情等没有
+ * 筛选开关的地方，这是唯一能收回去的入口。
  *
  * ## 右键菜单与多选
  *
@@ -73,8 +74,8 @@ export function SessionList({
   className?: string;
   /** 行「⋯」菜单的动作；缺省的回调对应的菜单项隐藏（见 SessionRowMenu） */
   actions?: SessionRowActions;
-  /** 「已隐藏 N 个临时会话」旁的「显示」按钮；不给就只有文字 */
-  onShowTemp?: () => void;
+  /** 临时会话提示旁的「显示 / 隐藏」按钮；不给就只有文字 */
+  onShowTemp?: (value: boolean) => void;
 }): React.JSX.Element {
   const location = useLocation();
   const compact = variant === 'compact';
@@ -146,20 +147,22 @@ export function SessionList({
   }, [selectedCount, clearSelection]);
 
   const tempNote =
-    result.tempHidden > 0 ? (
+    result.tempHidden > 0 || result.tempShown > 0 ? (
       <p
         data-testid="temp-hidden-note"
         className={cn('text-text-3 flex items-center justify-center gap-1.5 px-2 text-center', compact ? 'text-[11.5px]' : 'text-xs')}
       >
-        已隐藏 {result.tempHidden} 个临时会话
+        {result.tempHidden > 0
+          ? `已隐藏 ${result.tempHidden} 个临时会话`
+          : `正在显示 ${result.tempShown} 个临时会话`}
         {onShowTemp !== undefined && (
           <button
             type="button"
             data-testid="temp-show"
             className="text-brand-ink hover:underline"
-            onClick={onShowTemp}
+            onClick={() => onShowTemp(result.tempHidden > 0)}
           >
-            显示
+            {result.tempHidden > 0 ? '显示' : '隐藏'}
           </button>
         )}
       </p>
