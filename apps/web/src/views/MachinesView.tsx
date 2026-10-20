@@ -13,6 +13,7 @@ import { MachineCard } from '@/components/machines/MachineCard.tsx';
 import { countActiveSessions, countLiveSessions } from '@/components/list/sorting.ts';
 import { useNow } from '@/components/list/use-session-refresh.ts';
 import { useTrine } from '@/app/runtime.ts';
+import { useListStatsInterval, useMachineStatsWatch } from '@/components/machines/use-machine-stats.ts';
 
 export function MachinesView(): React.JSX.Element {
   const machines = useTrine((s) => s.machines);
@@ -27,6 +28,11 @@ export function MachinesView(): React.JSX.Element {
           (a.name < b.name ? -1 : a.name > b.name ? 1 : 0),
       ),
     [machines],
+  );
+  const statsInterval = useListStatsInterval();
+  useMachineStatsWatch(
+    list.map((m) => m.machineId),
+    statsInterval,
   );
 
   return (
@@ -59,6 +65,7 @@ export function MachinesView(): React.JSX.Element {
             activeCount={countActiveSessions(sessions[m.machineId])}
             liveCount={countLiveSessions(sessions[m.machineId])}
             now={now}
+            statsIntervalMs={statsInterval}
           />
         ))}
       </div>

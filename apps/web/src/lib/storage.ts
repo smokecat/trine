@@ -162,6 +162,13 @@ export const PrefsSchema = z.object({
   attachMaxCount: z.number().int().min(1).max(ATTACHMENTS_MAX_COUNT).catch(ATTACHMENTS_DEFAULT_MAX_COUNT),
   /** 图片超过这么多 MB 就先在浏览器压缩再上传；0 = 不压缩（默认）。`.catch` 同 listGroupBy */
   imageCompressMb: z.number().nonnegative().catch(0),
+  /**
+   * 机器资源数据（CPU / 内存 / 磁盘 / 网络）在列表顶部、机器卡上的自动刷新间隔；0 = 关闭，
+   * 只手动刷新。机器详情页打开时固定 5 秒（关闭时也只手动）。`.catch` 同 listGroupBy
+   */
+  machineStatsIntervalMs: z
+    .union([z.literal(0), z.literal(5_000), z.literal(10_000), z.literal(30_000), z.literal(60_000)])
+    .catch(60_000),
 });
 export type Prefs = z.infer<typeof PrefsSchema>;
 
@@ -198,6 +205,7 @@ export function defaultPrefs(): Prefs {
     defaultPermissionMode: DEFAULT_SESSION_PERMISSION_MODE,
     sendKey: 'enter',
     attachMaxTotalMb: ATTACHMENTS_DEFAULT_MAX_TOTAL_BYTES / (1024 * 1024),
+    machineStatsIntervalMs: 60_000,
     attachMaxCount: ATTACHMENTS_DEFAULT_MAX_COUNT,
     imageCompressMb: 0,
   };

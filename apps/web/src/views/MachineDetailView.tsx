@@ -9,7 +9,7 @@
  * - **从本设备移除**只删本地（agent 未实现 `machine.unpair`，方案 §0 行 k），
  *   必须明说 agent 侧仍保留配对记录，否则用户以为已经解绑了。
  */
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button.tsx';
@@ -36,6 +36,9 @@ import { supportsUsageRefresh } from '@/components/usage/usage-model.ts';
 import { useSessionActions } from '@/components/list/use-session-actions.ts';
 import { useListShowTemp } from '@/components/list/use-list-query.ts';
 import { useClient, useTrine } from '@/app/runtime.ts';
+import { MachineStatsSection } from '@/components/machines/MachineStats.tsx';
+import { DETAIL_STATS_INTERVAL_MS, supportsMachineStats } from '@/components/machines/stats-model.ts';
+import { useListStatsInterval, useMachineStatsWatch } from '@/components/machines/use-machine-stats.ts';
 
 export function MachineDetailView(): React.JSX.Element {
   const { machineId = '' } = useParams();
@@ -57,6 +60,14 @@ export function MachineDetailView(): React.JSX.Element {
     () => ({ ...DEFAULT_LIST_QUERY, machine: machineId, groupBy: 'none', showTemp }),
     [machineId, showTemp],
   );
+  // 资源数据：详情页打开时 5 秒一次；设置里关了自动刷新就只在打开时取一次
+  const statsOff = useListStatsInterval() === null;
+  const statsInterval = statsOff ? null : DETAIL_STATS_INTERVAL_MS;
+  useMachineStatsWatch([machineId], statsInterval);
+  const statsReady = machine?.online === true && supportsMachineStats(machine.info);
+  useEffect(() => {
+    if (statsOff && statsReady && client !== null) void client.requestMachineStats(machineId).catch(() => undefined);
+  }, [statsOff, statsReady, client, machineId]);
 
   if (!machine) {
     return (
@@ -139,6 +150,8 @@ export function MachineDetailView(): React.JSX.Element {
             </>
           )}
         </dl>
+
+        <MachineStatsSection machine={machine} now={now} intervalMs={statsInterval} />
 
         {machine.lastError && (
           <div className="border-red bg-red-soft text-red rounded-[12px] border px-3 py-2 text-xs">

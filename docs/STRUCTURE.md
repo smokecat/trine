@@ -31,7 +31,7 @@ docs/          功能范围、架构决策与协议说明
 - `core/protocol`：Zod 消息 schema 与版本；修改需要考虑三端兼容性。
 - `core/crypto`：crypto_box、附件 secretstream、Ed25519、配对材料与 SAS；不依赖 UI。
 - `core/net`：认证客户端、relay blob 客户端与地址推导。
-- `agent/app`：配置、生命周期、命令路由、状态、回退编排、CLI 更新与订阅限额用量（`plan-usage.ts`）。
+- `agent/app`：配置、生命周期、命令路由、状态、回退编排、CLI 更新与订阅限额用量（`plan-usage.ts`）、机器资源采样与订阅（`machine-stats.ts`）。
 - `agent/bridge`：SDK 会话、工具权限、事件翻译、历史与子代理历史、附件落盘（`attachments.ts`）、用量解析（`usage.ts`）。
 - `agent/net`：设备身份、收件人列表、加密信封、配对与 WS 客户端。
 - `agent/control`：本机控制通道（`<home>/control.sock`）与 `pair`/`devices`/`status` 子命令。

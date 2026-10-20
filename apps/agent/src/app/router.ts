@@ -118,6 +118,7 @@ import {
 import type { ClaudeSession } from '../bridge/session.ts';
 import type { EventBody } from '../bridge/types.ts';
 import type { Recipient } from '../net/recipients.ts';
+import type { MachineStatsWatcher } from './machine-stats.ts';
 import type { CwdStore } from './cwd-store.ts';
 import type { ClaudeUpdateOutcome } from './claude-cli.ts';
 import type { PlanUsageRefreshOutcome } from './plan-usage.ts';
@@ -151,6 +152,7 @@ const MACHINE_LEVEL_TYPES = new Set<ClientToAgentEvent['type']>([
   'machine.unpair',
   'machine.claude.update.request',
   'machine.usage.request',
+  'machine.stats.request',
   'cwd.list.request',
   'cwd.add',
   'cwd.remove',
@@ -221,6 +223,8 @@ export interface RouterDeps {
    * machine.info）。不抛——失败以 outcome 表达。不给 = 不支持（测试）。
    */
   refreshUsage?: () => Promise<PlanUsageRefreshOutcome>;
+  /** 资源数据（machine.stats.request，见 machine-stats.ts）。不给 = 不支持（测试） */
+  machineStats?: Pick<MachineStatsWatcher, 'request'>;
   /** listSessions 查不到模型时的兜底 */
   defaultModel: string;
   now?: () => number;
@@ -1225,6 +1229,20 @@ export class Router {
       case 'machine.usage.request': {
         // 不 await：同 machine.claude.update.request
         const task = this.#runUsageRefresh(event.reqId);
+        this.#background.add(task);
+        void task.finally(() => this.#background.delete(task));
+        return;
+      }
+      case 'machine.stats.request': {
+        const watcher = this.#deps.machineStats;
+        if (watcher === undefined) {
+          this.#log('[router] 不支持 machine.stats.request，忽略');
+          return;
+        }
+        // 不 await：首次采样要等约 1 秒，别堵机器级链
+        const task = watcher.request(sender.deviceId, event.reqId, event.watch).catch((err: unknown) => {
+          this.#log(`[router] machine.stats.request 失败：${err instanceof Error ? err.message : String(err)}`);
+        });
         this.#background.add(task);
         void task.finally(() => this.#background.delete(task));
         return;

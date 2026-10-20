@@ -15,6 +15,7 @@ import {
   applyMachineEvent,
   applySessionsEvent,
   emptyMachine,
+  STATS_HISTORY_MAX,
   emptyTimeline,
   expireParked,
   expireParkedBySeq,
@@ -327,6 +328,18 @@ describe('reducer · sessions / machine / prefs', () => {
     expect(m.name).toBe('MBP');
     m = applyMachineEvent(m, ev({ type: 'cwd.updated', favorites: ['/a'], defaultCwd: '/a' }));
     expect(m.cwd).toEqual({ favorites: ['/a'], defaultCwd: '/a' });
+    m = applyMachineEvent(m, ev({ type: 'cwd.updated', favorites: ['/a'], defaultCwd: '/a', pinned: { '/a': 5 } }));
+    expect(m.cwd).toEqual({ favorites: ['/a'], defaultCwd: '/a', pinned: { '/a': 5 } });
+  });
+
+  test('machine.stats：存最新与历史（限条数），晚到的旧快照忽略', () => {
+    let m = emptyMachine('mbp');
+    for (let at = 1; at <= STATS_HISTORY_MAX + 5; at++) m = applyMachineEvent(m, ev({ type: 'machine.stats', stats: { at } }));
+    expect(m.stats).toEqual({ at: STATS_HISTORY_MAX + 5 });
+    expect(m.statsHistory).toHaveLength(STATS_HISTORY_MAX);
+    expect(m.statsHistory[0]).toEqual({ at: 6 });
+    const same = applyMachineEvent(m, ev({ type: 'machine.stats', reqId: 'q', stats: { at: 3 } }));
+    expect(same).toBe(m);
   });
 });
 

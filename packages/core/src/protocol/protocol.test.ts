@@ -861,6 +861,32 @@ describe('用量展示（usage-display）', () => {
     const { reqId: _r, ...noReq } = ok;
     expect(AgentToClientEventSchema.safeParse(noReq).success).toBe(false);
   });
+
+  test('machine.stats.request / machine.stats：watch 范围、各块可选', () => {
+    const req = { type: 'machine.stats.request', ...machineC2a, reqId: 'q1', watch: { intervalMs: 5000, ttlMs: 120_000 } };
+    expect(ClientToAgentEventSchema.parse(req)).toEqual(req as never);
+    expect(ClientToAgentEventSchema.parse({ ...req, watch: { intervalMs: 5000, ttlMs: 0 } })).toBeDefined();
+    expect(ClientToAgentEventSchema.safeParse({ ...req, watch: { intervalMs: 500, ttlMs: 1000 } }).success).toBe(false);
+    const { watch: _w, ...once } = req;
+    expect(ClientToAgentEventSchema.parse(once)).toEqual(once as never);
+
+    const stats = {
+      at: 1,
+      cpu: { percent: 12.5, cores: 8, load: [1, 2, 3] },
+      memory: { totalBytes: 100, usedBytes: 40 },
+      disks: [{ label: '/', totalBytes: 10, usedBytes: 5, availBytes: 4 }],
+      network: { rxBytesPerSec: 1, txBytesPerSec: 2 },
+      uptimeSec: 9,
+      claude: { processes: 2, rssBytes: 3 },
+    };
+    const ev = { type: 'machine.stats', ...machineA2c, reqId: 'q1', stats };
+    expect(AgentToClientEventSchema.parse(ev)).toEqual(ev as never);
+    const push = { type: 'machine.stats', ...machineA2c, stats: { at: 2 } };
+    expect(AgentToClientEventSchema.parse(push)).toEqual(push as never);
+    expect(
+      AgentToClientEventSchema.safeParse({ ...ev, stats: { ...stats, cpu: { percent: 120, cores: 8 } } }).success,
+    ).toBe(false);
+  });
 });
 
 describe('Transport 帧', () => {

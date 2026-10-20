@@ -264,6 +264,54 @@ export const RateLimitsSchema = z.object({
 });
 export type RateLimits = z.infer<typeof RateLimitsSchema>;
 
+/** 字节数 / 速率等非负整数（资源数据用） */
+const BytesSchema = z.number().int().nonnegative();
+
+/** 资源快照里的一个文件系统（home、`/` 所在的，去重后最多几个） */
+export const MachineDiskSchema = z.object({
+  /** 展示用标签：`/`、`~`，不是完整挂载路径 */
+  label: z.string().min(1).max(64),
+  totalBytes: BytesSchema,
+  usedBytes: BytesSchema,
+  /** 普通用户可用（statfs bavail），可能小于 total - used */
+  availBytes: BytesSchema,
+});
+export type MachineDisk = z.infer<typeof MachineDiskSchema>;
+
+/**
+ * agent 机器的资源快照（machine-stats 新增，agent ≥ 0.14.0；`machine.stats` 事件）。
+ * 各块都可选：某项采不到（平台不支持、命令失败）就省略那一块，不影响其余。
+ */
+export const MachineStatsSchema = z.object({
+  /** 采样时间 */
+  at: TimestampSchema,
+  cpu: z
+    .object({
+      /** 自上次采样以来的总体占用，0–100 */
+      percent: z.number().min(0).max(100),
+      cores: z.number().int().positive(),
+      /** 1 / 5 / 15 分钟平均负载 */
+      load: z.tuple([z.number().nonnegative(), z.number().nonnegative(), z.number().nonnegative()]).optional(),
+    })
+    .optional(),
+  memory: z
+    .object({
+      totalBytes: BytesSchema,
+      /** total - 可用（Linux MemAvailable；macOS free + inactive + speculative） */
+      usedBytes: BytesSchema,
+      swapTotalBytes: BytesSchema.optional(),
+      swapUsedBytes: BytesSchema.optional(),
+    })
+    .optional(),
+  disks: z.array(MachineDiskSchema).max(8).optional(),
+  /** 物理网卡合计速率（排除回环与容器 / VPN 等虚拟网卡），自上次采样以来 */
+  network: z.object({ rxBytesPerSec: BytesSchema, txBytesPerSec: BytesSchema }).optional(),
+  uptimeSec: z.number().int().nonnegative().optional(),
+  /** agent 的全部子孙进程（claude CLI 及其拉起的 MCP server 等）：个数与 RSS 合计 */
+  claude: z.object({ processes: z.number().int().nonnegative(), rssBytes: BytesSchema }).optional(),
+});
+export type MachineStats = z.infer<typeof MachineStatsSchema>;
+
 /** 机器信息（E2E 密文内） */
 export const MachineInfoSchema = z.object({
   name: z.string(),

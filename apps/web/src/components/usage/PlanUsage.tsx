@@ -1,7 +1,7 @@
 /**
  * 用量展示组件（usage-display）：
  * - `PlanUsageLine`：一台机器的 5h / 1w 用量 + 重置时间（机器卡、列表顶部共用）；
- * - `PlanUsageStrip`：会话列表顶部，每台机器一行，带手动刷新；
+ * - `PlanUsageStrip`：会话列表顶部，每台机器一行，带手动刷新；行尾带资源数据摘要（machine-stats）；
  * - `SessionUsage`：会话头部的 ctx / 5h / 1w 百分比。
  *
  * 文案与色调见 usage-model.ts。限额是账号级数据，挂在 machine.info 上；会话头部的
@@ -16,6 +16,9 @@ import { useClient, useTrine } from '@/app/runtime.ts';
 import type { MachineState } from '@/store/types.ts';
 import { formatRelativeTime } from '@/lib/format.ts';
 import { cn } from '@/lib/utils.ts';
+import { MachineStatsBrief } from '@/components/machines/MachineStats.tsx';
+import { supportsMachineStats } from '@/components/machines/stats-model.ts';
+import { useListStatsInterval, useMachineStatsWatch } from '@/components/machines/use-machine-stats.ts';
 import { contextView, remainingShort, supportsUsageRefresh, windowTitle, windowView, type UsageTone } from './usage-model.ts';
 
 const TONE_CLASS: Record<UsageTone, string> = {
@@ -157,19 +160,29 @@ export function PlanUsageStrip({
   const machines = useTrine((s) => s.machines);
   const rows = Object.values(machines)
     .filter((m) => filter === null || m.machineId === filter)
-    .filter((m) => m.info?.rateLimits !== undefined || supportsUsageRefresh(m.info))
+    .filter((m) => m.info?.rateLimits !== undefined || supportsUsageRefresh(m.info) || supportsMachineStats(m.info))
     .sort((a, b) => a.name.localeCompare(b.name));
+  const statsInterval = useListStatsInterval();
+  useMachineStatsWatch(
+    rows.filter((m) => supportsMachineStats(m.info)).map((m) => m.machineId),
+    statsInterval,
+  );
   if (rows.length === 0) return null;
   return (
     <div data-testid="plan-usage-strip" className={cn('flex flex-col gap-0.5', className)}>
       {rows.map((m) => (
         <div key={m.machineId} data-machine-id={m.machineId} className="text-text-2 flex min-h-6 items-center gap-2 text-xs">
           {rows.length > 1 && <span className="text-text-3 max-w-[30%] shrink-0 truncate font-mono">{m.name}</span>}
-          {m.info?.rateLimits === undefined ? (
-            <span className="text-text-3 min-w-0 flex-1 truncate">用量：暂无数据，会话活动后更新</span>
-          ) : (
-            <PlanUsageLine rateLimits={m.info.rateLimits} now={now} className="min-w-0 flex-1" />
-          )}
+          {/* 用量与资源摘要同一列：放不下时摘要换到下一行靠右（PC 侧栏只有 300px）。
+              flex-auto 而不是 flex-1：按内容宽度参与换行判断 */}
+          <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2">
+            {m.info?.rateLimits !== undefined ? (
+              <PlanUsageLine rateLimits={m.info.rateLimits} now={now} className="min-w-0 flex-auto" />
+            ) : supportsUsageRefresh(m.info) ? (
+              <span className="text-text-3 min-w-0 flex-1 truncate">用量：暂无数据，会话活动后更新</span>
+            ) : null}
+            <MachineStatsBrief machine={m} now={now} intervalMs={statsInterval} className="ml-auto" />
+          </div>
           <PlanUsageRefreshButton machine={m} />
         </div>
       ))}

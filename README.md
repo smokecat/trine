@@ -28,6 +28,9 @@ the agent runs on your own computer.
   snippets live behind a `+` button so the input keeps its width.
 - Lists, resumes, renames and archives sessions across paired machines; right-click or
   multi-select (Ctrl/Cmd/Shift-click) to archive in bulk, and copy a session's working directory.
+- Shows CPU, memory, disk, network and claude process usage for each agent machine (list header,
+  machine cards, machine details). It refreshes only while the page is visible, at an interval set
+  in Settings (1 minute by default, 5 seconds on the machine page), and can be refreshed by hand.
 - Pins sessions and workspaces (most recently pinned first). When grouped by workspace, groups
   keep a fixed order (newest workspace first) instead of jumping around as sessions change state.
 - Hides temporary sessions by default (working directory under a system temp directory, or

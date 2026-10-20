@@ -36,6 +36,7 @@ import {
   RESUME_AT_PROMPT,
   Router,
   toSlashCommands,
+  type RouterDeps,
 } from './router.ts';
 import { SessionFlagsStore, TOMBSTONE_TTL_MS } from './session-flags.ts';
 import {
@@ -222,6 +223,8 @@ async function makeHarness(options: {
   updateClaude?: () => Promise<ClaudeUpdateOutcome>;
   /** 注入限额用量刷新；省略 = router 回「不支持」 */
   refreshUsage?: () => Promise<PlanUsageRefreshOutcome>;
+  /** 注入资源订阅；省略 = router 忽略 machine.stats.request */
+  machineStats?: RouterDeps['machineStats'];
   /** 注入斜杠命令探测；省略 = 不注入 probe（router 回空数组） */
   probeCommands?: (cwd: string) => Promise<SdkSlashCommand[]>;
   /** 附件存储；省略 = 不启用附件 */
@@ -299,6 +302,7 @@ async function makeHarness(options: {
         error: { code: 'not_found' as const, message: 'no claude' },
       })),
     ...(options.refreshUsage === undefined ? {} : { refreshUsage: options.refreshUsage }),
+    ...(options.machineStats === undefined ? {} : { machineStats: options.machineStats }),
     now,
     log: (l) => logs.push(l),
     setTimeoutImpl: (fn, ms) => {
@@ -994,6 +998,31 @@ describe('Router · 路由表（机器级）', () => {
     await none.router.handle({ type: 'machine.usage.request', ...c2a(), reqId: 'r4' }, phone);
     await none.router.idle();
     expect(none.byType('machine.usage.response')[0]).toMatchObject({ ok: false, error: { code: 'failed' } });
+  });
+
+  test('machine.stats.request：带发起设备与 watch 交给 watcher，链外执行；不支持时忽略', async () => {
+    const calls: unknown[] = [];
+    let release!: () => void;
+    const h = await makeHarness({
+      machineStats: {
+        request: (deviceId, reqId, watch) => {
+          calls.push({ deviceId, reqId, watch });
+          return new Promise<void>((r) => (release = r));
+        },
+      },
+    });
+    const watch = { intervalMs: 5000, ttlMs: 60_000 };
+    await h.router.handle({ type: 'machine.stats.request', ...c2a(), reqId: 's1', watch }, phone);
+    await h.router.handle({ type: 'session.list.request', ...c2a(), reqId: 'l1' }, phone);
+    expect(h.byType('session.list.response')).toHaveLength(1);
+    expect(calls).toEqual([{ deviceId: 'phone', reqId: 's1', watch }]);
+    release();
+    await h.router.idle();
+
+    const none = await makeHarness();
+    await none.router.handle({ type: 'machine.stats.request', ...c2a(), reqId: 's2' }, phone);
+    await none.router.idle();
+    expect(none.events).toHaveLength(0);
   });
 
   test('机器级事件即便带了 sessionId 也按机器级处理', async () => {

@@ -36,7 +36,8 @@ import type { MachineInfo, RateLimits } from '@trine/core';
 // - 0.13.0 起支持 session.context.request（手动刷新会话 context 用量）；
 //   session.status.response 的 context 字段填最近一次已知值（此前恒为 0/0）
 // - 0.14.0 起支持置顶：session.pin（SessionMeta 带 pinnedAt）、cwd.pin（cwd.updated /
-//   cwd.list.response 带 pinned）；归档会清掉会话置顶
+//   cwd.list.response 带 pinned）；归档会清掉会话置顶；支持 machine.stats.request（机器资源数据，
+//   按设备订阅定时推送）
 export const AGENT_VERSION = '0.14.0';
 
 export function buildMachineInfo(input: {

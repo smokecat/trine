@@ -640,8 +640,8 @@ export class TrineClient {
 
   /** Inbound 校验通过、游标已推进后的落点 */
   #apply(machineId: string, event: AgentToClientEvent): void {
-    // request() 关联：按 reqId，不按 scope
-    if ('reqId' in event) {
+    // request() 关联：按 reqId，不按 scope（machine.stats 的定时推送不带 reqId）
+    if ('reqId' in event && event.reqId !== undefined) {
       const pending = this.#pending.get(event.reqId);
       if (pending !== undefined) {
         this.#pending.delete(event.reqId);
@@ -698,6 +698,7 @@ export class TrineClient {
           this.#updateSessions(machineId, (s) => applySessionsEvent(s, event));
           break;
         case 'machine.info':
+        case 'machine.stats':
         case 'cwd.list.response':
         case 'cwd.updated':
           this.#updateMachine(machineId, (m) => applyMachineEvent(m, event));
@@ -1643,6 +1644,18 @@ export class TrineClient {
     }
     if (res.type !== 'machine.claude.update.response') throw new Error(`意外的应答 ${res.type}`);
     return res;
+  }
+
+  /**
+   * 取一次资源快照（agent >= 0.14.0，调用方先做能力探测），可选订阅定时推送（见 core
+   * `machine.stats.request`）。快照经 #apply 落进 machines[id].stats；这里只等应答，超时才抛。
+   */
+  async requestMachineStats(machineId: string, watch?: { intervalMs: number; ttlMs: number }): Promise<void> {
+    const res = await this.request(machineId, {
+      type: 'machine.stats.request',
+      ...(watch === undefined ? {} : { watch }),
+    });
+    if (res.type !== 'machine.stats') throw new Error(`意外的应答 ${res.type}`);
   }
 
   /**

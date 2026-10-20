@@ -42,6 +42,7 @@ import {
   ContextUsageSchema,
   HistoryItemSchema,
   MachineInfoSchema,
+  MachineStatsSchema,
   McpServerStatusSchema,
   PermissionModeSchema,
   RunPhaseSchema,
@@ -1050,6 +1051,44 @@ export const MachineUsageResponseSchema = z.object({
     .optional(),
 });
 
+// --- §3.3 机器资源数据（machine-stats，agent 0.14.0 起） ---
+//
+// 按需订阅，不常驻广播：机器级流还承载 session.updated 等，relay 每条子流只留存有限帧，
+// 定时广播会挤掉断线补发的窗口，还会给离线设备堆一堆没用的帧。
+//
+// client 在资源数据可见时发 `machine.stats.request`：agent 立刻采样一次，以带 reqId 的
+// `machine.stats` 只回给请求设备；带 `watch` 时再按 intervalMs 给该设备定时推（不带 reqId），
+// 直到 ttlMs 到期——client 在到期前重发续租，同一设备的新 watch 覆盖旧的；`ttlMs: 0` 立即退订。
+// 首次采样要两次读数算 CPU / 网速，会多等约 1 秒。
+//
+// 互操作：旧 agent 不认识本 type → client 只能等超时；client 按 agentVersion 探测。
+
+/** 订阅的推送间隔下限 / 上限，与租约上限 */
+export const MACHINE_STATS_MIN_INTERVAL_MS = 2_000;
+export const MACHINE_STATS_MAX_INTERVAL_MS = 10 * 60_000;
+export const MACHINE_STATS_MAX_TTL_MS = 30 * 60_000;
+
+/** client → agent：取一次资源快照，可选订阅定时推送（机器级帧） */
+export const MachineStatsRequestSchema = z.object({
+  type: z.literal('machine.stats.request'),
+  ...c2aBase,
+  reqId: ReqIdSchema,
+  watch: z
+    .object({
+      intervalMs: z.number().int().min(MACHINE_STATS_MIN_INTERVAL_MS).max(MACHINE_STATS_MAX_INTERVAL_MS),
+      ttlMs: z.number().int().min(0).max(MACHINE_STATS_MAX_TTL_MS),
+    })
+    .optional(),
+});
+
+/** agent → 请求设备：资源快照（应答带 reqId；订阅期间的定时推送不带） */
+export const MachineStatsEventSchema = z.object({
+  type: z.literal('machine.stats'),
+  ...a2cBase,
+  reqId: ReqIdSchema.optional(),
+  stats: MachineStatsSchema,
+});
+
 // ---------------------------------------------------------------------------
 // §6.2 工作目录管理（决策 7：agent 端持久化，每机器一份）
 // ---------------------------------------------------------------------------
@@ -1175,6 +1214,7 @@ export const AgentToClientEventSchema = z.discriminatedUnion('type', [
   MachineInfoEventSchema,
   MachineClaudeUpdateResponseSchema,
   MachineUsageResponseSchema,
+  MachineStatsEventSchema,
   CwdListResponseSchema,
   CwdUpdatedSchema,
   ErrorTransientSchema,
@@ -1212,6 +1252,7 @@ export const ClientToAgentEventSchema = z.discriminatedUnion('type', [
   MachineUnpairSchema,
   MachineClaudeUpdateRequestSchema,
   MachineUsageRequestSchema,
+  MachineStatsRequestSchema,
   CwdListRequestSchema,
   CwdAddSchema,
   CwdRemoveSchema,

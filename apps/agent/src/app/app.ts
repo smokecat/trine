@@ -41,6 +41,7 @@ import type { Recipient } from '../net/recipients.ts';
 import type { BackoffOptions, SocketLike } from '../net/ws-client.ts';
 import { agentPaths, type AgentConfig } from './config.ts';
 import { CommandsProbe } from './commands-probe.ts';
+import { MachineStatsSampler, MachineStatsWatcher } from './machine-stats.ts';
 import { PlanUsageTracker } from './plan-usage.ts';
 import { CwdStore } from './cwd-store.ts';
 import {
@@ -82,6 +83,8 @@ export interface AgentAppDeps {
   commandsQueryFn?: typeof query;
   /** 注入手动刷新限额用量时临时起的 query（测试用） */
   usageQueryFn?: typeof query;
+  /** 资源采样器（测试注入假实现），默认读本机 */
+  statsSampler?: Pick<MachineStatsSampler, 'sample'>;
   createSocket?: (url: string) => SocketLike;
   getInvitation?: () => Promise<string>;
   fetchImpl?: typeof fetch;
@@ -114,6 +117,7 @@ export class AgentApp {
   /** 斜杠命令探测（router 用；退出时收掉在跑的探测子进程） */
   #commandsProbe!: CommandsProbe;
   #planUsage!: PlanUsageTracker;
+  #machineStats!: MachineStatsWatcher;
 
   private constructor(
     readonly node: AgentNode,
@@ -261,6 +265,15 @@ export class AgentApp {
       log,
     });
 
+    const machineStats = new MachineStatsWatcher({
+      sampler: deps.statsSampler ?? new MachineStatsSampler(),
+      // 只发给订阅的设备（见 machine-stats.ts 文件头）
+      emit: (to, stats, reqId) =>
+        emitter.emit({ type: 'machine.stats', ...(reqId === undefined ? {} : { reqId }), stats }, null, { to }),
+      now,
+      log,
+    });
+
     router = new Router({
       manager,
       emitter,
@@ -273,6 +286,7 @@ export class AgentApp {
       renameMachine: (name) => app.#rename(name, paths.identity),
       updateClaude: () => app.#updateClaude(),
       refreshUsage: () => app.#planUsage.refresh(),
+      machineStats,
       now,
       log,
       ...(deps.getSessionMessagesFn === undefined ? {} : { getSessionMessagesFn: deps.getSessionMessagesFn }),
@@ -294,6 +308,7 @@ export class AgentApp {
       claudeVersion,
     );
     app.#commandsProbe = commandsProbe;
+    app.#machineStats = machineStats;
     app.#planUsage = new PlanUsageTracker({
       liveUsage: () => manager.planUsage(),
       onChange: () => app.#emitMachine({ type: 'machine.info', info: app.machineInfo() }),
@@ -367,6 +382,7 @@ export class AgentApp {
     this.#updater.dispose();
     this.#commandsProbe.dispose();
     this.#planUsage.dispose();
+    this.#machineStats.dispose();
     if (this.#flagsSweepTimer !== undefined) {
       clearInterval(this.#flagsSweepTimer);
       this.#flagsSweepTimer = undefined;

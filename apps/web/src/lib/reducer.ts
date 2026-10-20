@@ -36,6 +36,7 @@ import type {
   BgTask,
   HistoryItem,
   MachineInfo,
+  MachineStats,
   McpServerStatus,
   SessionMeta,
   SessionState,
@@ -350,7 +351,14 @@ export interface MachineState {
   cwd: MachineCwd | null;
   /** 机器级 error.fatal（无 sessionId；outbox 放弃自愈时 agent 发） */
   lastError: { kind: 'quota' | 'auth' | 'config' | 'other'; message: string; at: number } | null;
+  /** 最近一次资源快照（`machine.stats`，agent ≥ 0.14.0）；只在内存，不落盘 */
+  stats: MachineStats | null;
+  /** 本次打开页面以来的资源快照（按时间升序，最多 STATS_HISTORY_MAX 条），画趋势用 */
+  statsHistory: MachineStats[];
 }
+
+/** 资源快照保留条数（详情页 5 秒一次 ≈ 5 分钟） */
+export const STATS_HISTORY_MAX = 60;
 
 export function emptyMachine(machineId: string, name?: string): MachineState {
   return {
@@ -362,6 +370,8 @@ export function emptyMachine(machineId: string, name?: string): MachineState {
     parkedCount: 0,
     cwd: null,
     lastError: null,
+    stats: null,
+    statsHistory: [],
   };
 }
 
@@ -701,6 +711,7 @@ export function applyEvent(tl: Timeline, event: AgentToClientEvent): Timeline {
     case 'machine.info':
     case 'machine.claude.update.response':
     case 'machine.usage.response':
+    case 'machine.stats':
     case 'cwd.list.response':
     case 'cwd.updated':
       return tl;
@@ -1310,6 +1321,15 @@ export function applyMachineEvent(machine: MachineState, event: AgentToClientEve
           ...(event.pinned === undefined ? {} : { pinned: event.pinned }),
         },
       };
+    case 'machine.stats': {
+      // 断线补发可能把旧快照晚送到：只收比已有更新的
+      if (machine.stats !== null && event.stats.at <= machine.stats.at) return machine;
+      return {
+        ...machine,
+        stats: event.stats,
+        statsHistory: [...machine.statsHistory, event.stats].slice(-STATS_HISTORY_MAX),
+      };
+    }
     case 'error.fatal':
       if (event.sessionId !== undefined) return machine;
       return { ...machine, lastError: { kind: event.kind, message: event.message, at: event.ts } };

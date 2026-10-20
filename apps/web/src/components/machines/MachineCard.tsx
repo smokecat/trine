@@ -18,18 +18,22 @@ import {
   parkedWarnLine,
 } from './machine-text.ts';
 import { PlanUsageLine } from '@/components/usage/PlanUsage.tsx';
+import { MachineStatsLine } from './MachineStats.tsx';
 
 export function MachineCard({
   machine,
   activeCount,
   liveCount,
   now,
+  statsIntervalMs = null,
 }: {
   machine: MachineState;
   activeCount: number;
   /** 有子进程的会话数（`meta.live`） */
   liveCount: number;
   now?: number;
+  /** 资源数据的自动刷新间隔（判断是否过时用）；null = 只手动刷新 */
+  statsIntervalMs?: number | null;
 }): React.JSX.Element {
   const platform = machinePlatformLine(machine.info);
   const live = liveSessionsLine(liveCount, machine.info?.maxSessions);
@@ -69,6 +73,7 @@ export function MachineCard({
       </div>
 
       <PlanUsageLine rateLimits={machine.info?.rateLimits} now={now ?? Date.now()} interactive={false} className="text-text-2 mt-1.5" />
+      <MachineStatsLine machine={machine} now={now ?? Date.now()} intervalMs={statsIntervalMs} className="text-text-2 mt-1.5 flex" />
 
       {warn !== '' && (
         <div className="text-amber mt-2 flex items-baseline gap-1.5 text-xs" data-testid="machine-parked">

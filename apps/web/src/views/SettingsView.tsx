@@ -37,7 +37,7 @@ import { machineTone } from '@/components/machines/machine-text.ts';
 import { useClient, useTrine } from '@/app/runtime.ts';
 import { setTheme, syncFromPrefs, useTheme, type ThemeMode } from '@/app/theme.ts';
 import { browserKv } from '@/lib/adapters.browser.ts';
-import { KV_IDENTITY, KV_PREFS } from '@/lib/storage.ts';
+import { KV_IDENTITY, KV_PREFS, type Prefs } from '@/lib/storage.ts';
 import { copyText } from '@/lib/clipboard.ts';
 import { formatBytes } from '@/lib/format.ts';
 import { ATTACHMENTS_MAX_COUNT } from '@trine/core/types';
@@ -349,6 +349,41 @@ function SendKeySetting(): React.JSX.Element {
   );
 }
 
+const STATS_INTERVAL_OPTIONS: { value: Prefs['machineStatsIntervalMs']; label: string }[] = [
+  { value: 5_000, label: '5 秒' },
+  { value: 10_000, label: '10 秒' },
+  { value: 30_000, label: '30 秒' },
+  { value: 60_000, label: '1 分钟' },
+  { value: 0, label: '关闭' },
+];
+
+/** 机器资源数据的自动刷新间隔（列表顶部、机器卡） */
+function MachineStatsSetting(): React.JSX.Element {
+  const client = useClient();
+  const value = useTrine((s) => s.prefs.machineStatsIntervalMs);
+  return (
+    <section className="flex flex-col gap-2" data-testid="stats-interval-setting">
+      <h2 className="font-medium">机器资源刷新</h2>
+      <p className="text-text-3 text-xs">
+        列表顶部与机器卡上 CPU、内存、磁盘、网络数据的刷新间隔。只在页面可见时刷新；机器详情页打开时每 5
+        秒刷新一次。关闭后只能手动刷新。
+      </p>
+      <div className="flex flex-wrap gap-1.5">
+        {STATS_INTERVAL_OPTIONS.map((opt) => (
+          <Chip
+            key={opt.value}
+            data-testid={`stats-interval-${opt.value}`}
+            selected={value === opt.value}
+            onClick={() => client?.updatePrefs({ machineStatsIntervalMs: opt.value })}
+          >
+            {opt.label}
+          </Chip>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 const COMPRESS_OPTIONS: { value: number; label: string }[] = [
   { value: 0, label: '不压缩' },
   { value: 1, label: '超过 1 MB' },
@@ -579,6 +614,9 @@ export function SettingsView(): React.JSX.Element {
 
         <Separator />
         <SendKeySetting />
+
+        <Separator />
+        <MachineStatsSetting />
 
         <Separator />
         <PromptSnippets />
