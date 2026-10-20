@@ -12,6 +12,7 @@ import type { Options, Query, SDKMessage, SDKUserMessage } from '@anthropic-ai/c
 import {
   ClaudeSession,
   createPushStream,
+  slashCommandOf,
   type ClaudeSessionOptions,
   type SessionRuntimeMeta,
 } from './session.ts';
@@ -2268,5 +2269,16 @@ describe('ClaudeSession · 用量（usage-display）', () => {
     await waitFor(() => events.some((e) => e.type === 'run.done'));
     expect(await session.planUsage()).toBe(usage);
     await session.close();
+  });
+});
+
+describe('slashCommandOf', () => {
+  test('取斜杠命令名；不是命令返回 undefined', () => {
+    expect(slashCommandOf('/usage')).toBe('usage');
+    expect(slashCommandOf('  /cost 7d')).toBe('cost');
+    expect(slashCommandOf([{ type: 'text', text: '/plugin:cmd arg' }])).toBe('plugin:cmd');
+    expect(slashCommandOf('看下 /usage')).toBeUndefined();
+    expect(slashCommandOf('/')).toBeUndefined();
+    expect(slashCommandOf('/home/u/a.txt 是什么')).toBeUndefined();
   });
 });

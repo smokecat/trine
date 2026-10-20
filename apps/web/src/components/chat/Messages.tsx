@@ -11,6 +11,7 @@ import type { AssistantEntry, UserEntry } from '@/lib/reducer.ts';
 import { formatClock, formatDateTime } from '@/lib/format.ts';
 import { cn } from '@/lib/utils.ts';
 import { MessageAttachments } from './Attachments.tsx';
+import { CommandOutputCard } from './CommandOutputCard.tsx';
 import { Markdown } from './Markdown.tsx';
 import { userEntryBadge, type UserEntryAction } from './entry-status.ts';
 
@@ -145,7 +146,11 @@ export function AssistantMessage({ entry }: { entry: AssistantEntry }): React.JS
         setRevealed((v) => !v);
       }}
     >
-      <Markdown text={entry.text} streaming={streaming} />
+      {entry.command === undefined ? (
+        <Markdown text={entry.text} streaming={streaming} />
+      ) : (
+        <CommandOutputCard command={entry.command} text={entry.text} />
+      )}
       {streaming && (
         <span aria-hidden className="text-brand ml-0.5 motion-safe:animate-pulse">
           ▍

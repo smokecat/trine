@@ -31,7 +31,8 @@ import type { MachineInfo, RateLimits } from '@trine/core';
 // - 0.11.0 起支持附件：input.send / user.message 带 attachments（relay blob 引用），
 //   history user 条目带附件元数据，attachment.fetch.request 按需重新上传
 // - 0.12.0 起 SessionMeta 带 context（context 用量）、MachineInfo 带 rateLimits（5 小时 /
-//   7 天订阅限额用量），支持 machine.usage.request 手动刷新
+//   7 天订阅限额用量），支持 machine.usage.request 手动刷新；本地斜杠命令的输出在
+//   assistant.done 上带 command（web 按命令卡渲染）
 export const AGENT_VERSION = '0.12.0';
 
 export function buildMachineInfo(input: {

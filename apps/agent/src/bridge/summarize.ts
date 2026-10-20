@@ -10,6 +10,14 @@
  */
 import type { ToolResultStatus } from '@trine/core';
 
+/** CSI（颜色、光标）与 OSC（标题、超链接）转义序列 */
+const ANSI_RE = /\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]/g;
+
+/** 去掉终端转义序列（`claude update` 的输出、本地斜杠命令的输出里都有） */
+export function stripAnsi(text: string): string {
+  return text.replace(ANSI_RE, '');
+}
+
 /** 单行摘要最大长度，超出尾部截断加省略号 */
 const SUMMARY_MAX = 120;
 /** outputPreview 尾部保留字节数（协议注释给的 ~2KB） */

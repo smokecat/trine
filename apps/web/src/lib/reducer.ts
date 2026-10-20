@@ -134,6 +134,8 @@ export const AssistantEntrySchema = z.object({
   done: z.boolean(),
   /** thinking.start 之后、首个 delta 之前为 true */
   thinking: z.boolean(),
+  /** 本地斜杠命令的输出（assistant.done.command）：命令名，不知道时为空串；按命令卡渲染 */
+  command: z.string().optional(),
   ...entryBase,
 });
 
@@ -436,6 +438,7 @@ export function applyEvent(tl: Timeline, event: AgentToClientEvent): Timeline {
         thinking: false,
         seq: idx >= 0 ? (tl.entries[idx] as AssistantEntry).seq : seq,
         ts: idx >= 0 ? (tl.entries[idx] as AssistantEntry).ts : event.ts,
+        ...(event.command === undefined ? {} : { command: event.command }),
       };
       return withEntries(tl, idx >= 0 ? replaceEntry(tl.entries, idx, entry) : [...tl.entries, entry], seq);
     }
@@ -600,6 +603,8 @@ export function applyEvent(tl: Timeline, event: AgentToClientEvent): Timeline {
       return { ...next, state: event.state, heartbeat: event.state === 'running' || event.state === 'waiting_permission' ? next.heartbeat : null };
     }
     case 'run.done':
+      // 本地斜杠命令（/usage 等）不调模型：0 轮、0 工具的完成卡只是噪音，命令卡本身就是结果
+      if (event.turns === 0 && event.toolCount === 0 && lastIsCommandOutput(tl.entries)) return withEntries(tl, tl.entries, seq);
       return appendOnce(tl, {
         kind: 'run_done',
         id: `run.done:${seq}`,
@@ -691,6 +696,16 @@ export function applyEvent(tl: Timeline, event: AgentToClientEvent): Timeline {
     case 'cwd.updated':
       return tl;
   }
+}
+
+/** 最近一条（跳过运行状态提示）是不是本地命令的输出 */
+function lastIsCommandOutput(entries: readonly TimelineEntry[]): boolean {
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const entry = entries[i]!;
+    if (entry.kind === 'run_state') continue;
+    return entry.kind === 'assistant' && entry.command !== undefined;
+  }
+  return false;
 }
 
 /**

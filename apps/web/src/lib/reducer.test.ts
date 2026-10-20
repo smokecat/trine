@@ -448,3 +448,33 @@ describe('reducer · 附件', () => {
     expect(((await loadTimeline(docs, 'm/s'))?.entries[0] as UserEntry).attachments).toEqual([ref]);
   });
 });
+
+describe('reducer · 本地斜杠命令', () => {
+  const done = { type: 'run.done', ...S, durationMs: 9, costUsd: 0, toolCount: 0, permissionCount: 0, turns: 0 } as const;
+
+  test('assistant.done 的 command 记进条目；紧跟的 0 轮完成卡省略（seq 照推进）', () => {
+    let tl = apply(
+      emptyTimeline(),
+      ev({ type: 'run.state', ...S, state: 'running' }),
+      ev({ type: 'assistant.done', ...S, messageId: 'c1', text: 'Current session: 1% used', command: 'usage' }),
+      ev({ type: 'run.state', ...S, state: 'idle' }),
+    );
+    tl = apply(tl, ev(done, 100_000));
+    expect(tl.entries.find((e) => e.kind === 'assistant')).toMatchObject({ command: 'usage', done: true });
+    expect(tl.entries.some((e) => e.kind === 'run_done')).toBe(false);
+    expect(tl.lastAppliedSeq).toBe(100_000);
+  });
+
+  test('普通回复后的完成卡照常；命令后有工具 / 轮数的完成卡也照常', () => {
+    const normal = apply(emptyTimeline(), ev({ type: 'assistant.done', ...S, messageId: 'a1', text: 'hi' }), ev(done));
+    expect(normal.entries.at(-1)?.kind).toBe('run_done');
+    expect(normal.entries[0]).not.toHaveProperty('command');
+
+    const withTurns = apply(
+      emptyTimeline(),
+      ev({ type: 'assistant.done', ...S, messageId: 'c1', text: 'x', command: 'cost' }),
+      ev({ ...done, turns: 1 }),
+    );
+    expect(withTurns.entries.at(-1)?.kind).toBe('run_done');
+  });
+});

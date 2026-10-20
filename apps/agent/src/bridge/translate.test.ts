@@ -680,3 +680,36 @@ describe('translateMessage · 子 agent', () => {
     expect((out[0] as { outputPreview?: string }).outputPreview).toBe('三个步骤都成功了，没有报错。\n\n1. `echo SUB1` 的输出是 `SUB1`。');
   });
 });
+
+describe('本地斜杠命令的输出', () => {
+  function localOutput(text: string): SDKMessage {
+    return {
+      type: 'assistant',
+      message: { id: 'synthetic-1', role: 'assistant', model: '<synthetic>', content: [{ type: 'text', text }] },
+      parent_tool_use_id: null,
+      local_command_source: `<local-command-stdout>${text}</local-command-stdout>`,
+      uuid: 'uuid-l',
+      session_id: 's1',
+    } as unknown as SDKMessage;
+  }
+
+  test('带 local_command_source 的合成消息 → assistant.done 带命令名，去 ANSI、去尾部空白', () => {
+    const state = createTranslateState(0);
+    state.slashCommand = 'usage';
+    const out = translateMessage(localOutput('Current session: \x1b[1m69%\x1b[22m used\n  indented\n\n'), ctx(state));
+    expect(out).toEqual([
+      { type: 'assistant.done', messageId: 'synthetic-1', text: 'Current session: 69% used\n  indented', command: 'usage' },
+    ]);
+    expect(AgentToClientEventSchema.safeParse({ ...out[0], ts: 1, seq: 1, dir: 'a2c', sessionId: 's1' }).success).toBe(true);
+  });
+
+  test('不知道命令名时 command 为空串；空输出不发帧；普通回复不带 command', () => {
+    const state = createTranslateState(0);
+    expect(translateMessage(localOutput('ok'), ctx(state))).toEqual([
+      { type: 'assistant.done', messageId: 'synthetic-1', text: 'ok', command: '' },
+    ]);
+    expect(translateMessage(localOutput('  \n'), ctx(state))).toEqual([]);
+    const normal = translateMessage(assistantMessage([{ type: 'text', text: 'hi' }]), ctx(createTranslateState(0)));
+    expect(normal[0]).not.toHaveProperty('command');
+  });
+});

@@ -22,7 +22,8 @@
 ### 1.1 流式回复
 
 - `assistant.delta` — 文本增量：`{ text }`（token 级，SDK includePartialMessages）
-- `assistant.done` — 一条 assistant 消息完成：`{ messageId, text }`（终态覆盖，防乱序）
+- `assistant.done` — 一条 assistant 消息完成：`{ messageId, text, command? }`（终态覆盖，防乱序）
+  - `command?: string`（agent ≥ 0.12.0）— 本条是本地斜杠命令（`/usage`、`/cost` 等，CLI 直接输出、不调模型）的输出：值是命令名（不带 `/`，不知道时为空串），text 是去掉 ANSI 的纯文本。来源：SDK 合成的 assistant 消息带 `local_command_source`（类型定义里没有的字段）；命令名取本轮推送的用户消息。client 按命令卡渲染（等宽原样，`/usage` 解析成用量进度条），不当 Markdown；紧跟的 0 轮、0 工具的 `run.done` 不出完成卡。历史回看里没有这类输出：SDK 的 `getSessionMessages` 不返回转录里的 `system/local_command` 行
 - `thinking.start` / `thinking.delta`? — 原型只显示「思考中…」占位，MVP 可只要 start 信号，不传 thinking 正文
 - `user.message` 回显 — 多客户端设备时，别的设备发的消息本设备也要看到；带附件时附 `attachments`（引用，见 §1.9）
 

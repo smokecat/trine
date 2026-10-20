@@ -23,6 +23,7 @@ import { dirname, join } from 'node:path';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { CLAUDE_UPDATE_OUTPUT_MAX, type ClaudeUpdateErrorCode } from '@trine/core';
+import { stripAnsi } from '../bridge/summarize.ts';
 
 /** `claude update` 的超时上限（到点 SIGTERM，再等 KILL_GRACE_MS 不退就 SIGKILL） */
 export const CLAUDE_UPDATE_TIMEOUT_MS = 5 * 60_000;
@@ -146,16 +147,12 @@ export function sdkBundledVersion(): string | undefined {
 // 输出整理
 // ---------------------------------------------------------------------------
 
-/** CSI（颜色、光标）与 OSC（标题、超链接）转义序列 */
-const ANSI_RE = /\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]/g;
-
 /**
  * 原始输出 → 给人看的尾部：去 ANSI；每行只留最后一个 `\r` 之后的部分（进度条 /
  * spinner 用 `\r` 原地重绘，全留下来是一屏重复）；再截尾部至多 `max` 字符。
  */
 export function tailOutput(raw: string, max = CLAUDE_UPDATE_OUTPUT_MAX): { text: string; truncated: boolean } {
-  const cleaned = raw
-    .replace(ANSI_RE, '')
+  const cleaned = stripAnsi(raw)
     .split('\n')
     .map((line) => {
       const body = line.endsWith('\r') ? line.slice(0, -1) : line;

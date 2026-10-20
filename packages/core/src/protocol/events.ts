@@ -100,6 +100,13 @@ export const AssistantDoneSchema = z.object({
   ...a2cBase,
   messageId: z.string().min(1),
   text: z.string(),
+  /**
+   * 本条不是模型回复，而是本地斜杠命令（`/usage`、`/cost` 等，CLI 直接给出输出、
+   * 不调模型）的输出（agent ≥ 0.12.0，可选）。值是命令名（不带 `/`）；agent 不知道
+   * 命令名时为空串。text 是纯文本（已去 ANSI），换行与缩进有意义，client 不要按
+   * Markdown 渲染。旧 client 会 strip 掉它、照普通回复显示。
+   */
+  command: z.string().max(64).optional(),
 });
 
 /** 思考开始信号（MVP 只显示「思考中…」占位，不传 thinking 正文） */

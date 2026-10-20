@@ -18,6 +18,8 @@ the agent runs on your own computer.
 - Rewinds a session to before one of your messages, restoring code, the conversation or both.
 - Shows usage: each session's context window use, and per machine the 5-hour and weekly plan limits
   with their reset times (subscription accounts only). Limits refresh while sessions run, or on demand.
+- Shows the output of local slash commands such as `/usage` and `/cost` as a card that keeps the
+  terminal layout; `/usage` gets progress bars for each limit.
 - Attaches images and files to messages: pick them, paste them or drop them onto the page.
   Attachments are encrypted in the browser and relayed as ciphertext; small images go to
   Claude inline, other files are saved on the agent's machine and handed over by path.

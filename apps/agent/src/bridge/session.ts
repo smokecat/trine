@@ -848,6 +848,7 @@ export class ClaudeSession {
     this.#translate.toolCount = 0;
     this.#translate.permissionCount = 0;
     this.#translate.runStartedAt = this.#now();
+    this.#translate.slashCommand = slashCommandOf(content);
     this.#transientRetries = 0;
 
     let prompt: UserContent = content;
@@ -1542,6 +1543,16 @@ export class ClaudeSession {
       this.#log(`[session ${this.sessionId}] 清理截断点失败：${errorText(err)}`);
     }
   }
+}
+
+/** 用户消息是斜杠命令（`/usage`、`/cost 7d`）时取命令名（不带 `/`）；否则 undefined */
+export function slashCommandOf(content: UserContent): string | undefined {
+  const text =
+    typeof content === 'string'
+      ? content
+      : content.find((block): block is { type: 'text'; text: string } => block.type === 'text')?.text ?? '';
+  const match = /^\/([\w:.-]{1,64})(?:\s|$)/.exec(text.trimStart());
+  return match?.[1];
 }
 
 /** query 被拆时解开在途等待用的错误：#runOne 按 AbortError 识别为主动中止 */

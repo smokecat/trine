@@ -37,6 +37,7 @@ import { PermissionModeSchema, type PermissionMode, type SessionState } from '@t
 import {
   outputPreview,
   subagentReportText,
+  stripAnsi,
   summarizeToolArgs,
   summarizeToolResult,
   toSingleLine,
@@ -121,6 +122,12 @@ export interface TranslateState {
   currentMessageId: string | undefined;
   /** 已分配的占位 messageId 个数（占位 id 的递增编号） */
   pendingSeq: number;
+  /**
+   * 本 run 推送的用户消息若是斜杠命令，记命令名（不带 `/`），由会话层在推送时设置。
+   * 本地命令的输出消息只带输出、不带命令名（命令名要等 result 的 `local_command`），
+   * 靠它给 assistant.done 标上是哪个命令。
+   */
+  slashCommand: string | undefined;
 }
 
 export function createTranslateState(now: number): TranslateState {
@@ -135,6 +142,7 @@ export function createTranslateState(now: number): TranslateState {
     pendingSeq: 0,
     doneTextFor: undefined,
     doneText: '',
+    slashCommand: undefined,
   };
 }
 
@@ -297,6 +305,14 @@ function translateAssistant(
   if (isPendingId(pending)) ctx.state.currentMessageId = undefined;
 
   const content = raw['content'];
+  // 本地斜杠命令（/usage、/cost…）的输出：CLI 合成的一条 assistant 消息，wrapper 上带
+  // `local_command_source`（类型定义里没有，实测）。整条一次给出、不流式，单独标出来
+  // 让 client 按命令输出卡渲染，不当 Markdown
+  if (typeof (message as { local_command_source?: unknown }).local_command_source === 'string') {
+    const text = stripAnsi(contentText(content)).trimEnd();
+    if (text === '') return [];
+    return [{ type: 'assistant.done', messageId, text, command: ctx.state.slashCommand ?? '' }];
+  }
   const blockText = contentText(content);
   if (blockText.length > 0) {
     // 多块累积：SDK 在流式期间**每个完成的内容块发一条 assistant 消息**，
