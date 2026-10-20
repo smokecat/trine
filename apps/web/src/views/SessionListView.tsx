@@ -23,6 +23,7 @@ import { useListGroupBy, useListQuery, useListShowTemp } from '@/components/list
 import { useSessionActions } from '@/components/list/use-session-actions.ts';
 import { useNow, useSessionRefresh } from '@/components/list/use-session-refresh.ts';
 import { NewSessionSheet } from '@/components/sheets/NewSessionSheet.tsx';
+import { PlanUsageStrip } from '@/components/usage/PlanUsage.tsx';
 import { useNewSessionSheet } from '@/components/sheets/new-session-route.tsx';
 import { useTrine } from '@/app/runtime.ts';
 import { useListFilters, useMachineFilter } from '@/app/Layout.tsx';
@@ -114,6 +115,8 @@ export function SessionListView(): React.JSX.Element {
         onSelect={setFilter}
         className="px-3.5 pt-2.5 pb-1"
       />
+
+      <PlanUsageStrip filter={filter} now={now} className="px-3.5 pt-1" />
 
       <ListControls
         search={search}

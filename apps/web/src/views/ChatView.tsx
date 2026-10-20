@@ -63,10 +63,11 @@ import {
   type SettingsSection,
 } from '@/components/sheets/SessionSettingsSheet.tsx';
 import { isPermissionMode } from '@/components/sheets/permission-mode.ts';
-import { useListSessionsOnce } from '@/components/list/use-session-refresh.ts';
+import { useListSessionsOnce, useNow } from '@/components/list/use-session-refresh.ts';
 import { useSessionActions } from '@/components/list/use-session-actions.ts';
 import { RenameDialog } from '@/components/list/RenameDialog.tsx';
 import { SessionHeadMenu } from '@/components/chat/SessionHeadMenu.tsx';
+import { SessionUsage } from '@/components/usage/PlanUsage.tsx';
 import { composerOfflineHint } from '@/components/banners/conditions.ts';
 import { useClient, useTrine } from '@/app/runtime.ts';
 import {
@@ -106,6 +107,8 @@ export function ChatView(): React.JSX.Element {
 
   const timeline = useTrine((s) => s.timelines[key]) ?? emptyTimeline();
   const machine = useTrine((s) => s.machines[machineId]);
+  /** 重置时间过了要改显示「已重置」，按分钟级节拍重渲染即可 */
+  const usageNow = useNow(60_000);
   const meta = useTrine((s) => s.sessions[machineId]?.[sessionId]);
   const caps = useTrine((s) => s.capabilities[key]);
   const draft = useTrine((s) => s.drafts[key] ?? '');
@@ -560,17 +563,20 @@ export function ChatView(): React.JSX.Element {
         back={backTo}
         title={meta?.title !== undefined && meta.title !== '' ? meta.title : sessionId.slice(0, 8)}
         meta={
-          <button
-            type="button"
-            data-testid="session-meta"
-            className="hover:text-text-2 max-w-full truncate text-left transition-colors"
-            onClick={() => openSettings(null)}
-            title="会话设置：模型 / 权限模式 / 工作目录"
-          >
-            {meta === undefined
-              ? '会话设置 ▾'
-              : `${cwdTail(meta.cwd)} · ${shortModel(meta.model)} · ${meta.permissionMode} ▾`}
-          </button>
+          <span className="flex min-w-0 items-baseline gap-2.5">
+            <button
+              type="button"
+              data-testid="session-meta"
+              className="hover:text-text-2 min-w-0 truncate text-left transition-colors"
+              onClick={() => openSettings(null)}
+              title="会话设置：模型 / 权限模式 / 工作目录"
+            >
+              {meta === undefined
+                ? '会话设置 ▾'
+                : `${cwdTail(meta.cwd)} · ${shortModel(meta.model)} · ${meta.permissionMode} ▾`}
+            </button>
+            <SessionUsage context={meta?.context} rateLimits={machine?.info?.rateLimits} now={usageNow} />
+          </span>
         }
         right={
           <div className="flex shrink-0 items-center gap-1.5">

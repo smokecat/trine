@@ -31,6 +31,8 @@ import { SessionList } from '@/components/list/SessionList.tsx';
 import { countActiveSessions, countLiveSessions, liveSessionsLine } from '@/components/list/sorting.ts';
 import { countArchived, DEFAULT_LIST_QUERY, type ListQuery } from '@/components/list/filtering.ts';
 import { useNow } from '@/components/list/use-session-refresh.ts';
+import { PlanUsageLine, PlanUsageRefreshButton } from '@/components/usage/PlanUsage.tsx';
+import { supportsUsageRefresh } from '@/components/usage/usage-model.ts';
 import { useSessionActions } from '@/components/list/use-session-actions.ts';
 import { useListShowTemp } from '@/components/list/use-list-query.ts';
 import { useClient, useTrine } from '@/app/runtime.ts';
@@ -108,6 +110,19 @@ export function MachineDetailView(): React.JSX.Element {
               <dt className="text-text-3">子进程</dt>
               <dd className="tabular" data-testid="detail-live">
                 {live.replace('子进程 ', '')}
+              </dd>
+            </>
+          )}
+          {(machine.info?.rateLimits !== undefined || supportsUsageRefresh(machine.info)) && (
+            <>
+              <dt className="text-text-3">用量</dt>
+              <dd className="flex items-center gap-2" data-testid="detail-usage">
+                {machine.info?.rateLimits === undefined ? (
+                  <span className="text-text-3 text-xs">暂无数据，会话活动后更新</span>
+                ) : (
+                  <PlanUsageLine rateLimits={machine.info.rateLimits} now={now} />
+                )}
+                <PlanUsageRefreshButton machine={machine} />
               </dd>
             </>
           )}

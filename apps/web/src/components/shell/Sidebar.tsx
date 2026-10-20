@@ -31,6 +31,7 @@ import { useSessionActions } from '@/components/list/use-session-actions.ts';
 import { useListFilters } from '@/app/Layout.tsx';
 import { useNow, useSessionRefresh } from '@/components/list/use-session-refresh.ts';
 import { NewSessionSheetRoute } from '@/components/sheets/new-session-route.tsx';
+import { PlanUsageStrip } from '@/components/usage/PlanUsage.tsx';
 import { useTrine } from '@/app/runtime.ts';
 import { cn } from '@/lib/utils.ts';
 import { ChipLabel, StatusDot } from './StatusDot.tsx';
@@ -89,6 +90,12 @@ function MachineFilterSlot({
   return (
     <MachineFilterChips items={items} selected={selected} onSelect={onSelect} className="px-3 pb-2" />
   );
+}
+
+/** 订阅限额用量（每台机器一行，跟随机器过滤）；PC 上列表页不挂载，只能放侧栏 */
+function PlanUsageSlot({ filter }: { filter: string | null }): React.JSX.Element | null {
+  const now = useNow();
+  return <PlanUsageStrip filter={filter} now={now} className="px-3.5 pb-2" />;
 }
 
 /**
@@ -167,6 +174,7 @@ export function Sidebar({
     >
       <Brand />
       <MachineFilterSlot selected={filter} onSelect={onFilterChange} />
+      <PlanUsageSlot filter={filter} />
       <ListControlsSlot filter={filter} />
       <ScrollArea className="min-h-0 flex-1">
         <SessionListSlot />

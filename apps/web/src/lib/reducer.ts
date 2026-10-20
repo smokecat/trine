@@ -686,6 +686,7 @@ export function applyEvent(tl: Timeline, event: AgentToClientEvent): Timeline {
     case 'session.removed':
     case 'machine.info':
     case 'machine.claude.update.response':
+    case 'machine.usage.response':
     case 'cwd.list.response':
     case 'cwd.updated':
       return tl;

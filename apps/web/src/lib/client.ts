@@ -199,6 +199,12 @@ export const MUTATE_TIMEOUT_HINT = '未收到 agent 应答：agent 版本过旧�
  */
 export const CLAUDE_UPDATE_TIMEOUT_MS = 6 * 60_000;
 
+/** 手动刷新限额用量的等待上限：agent 可能要临时起一个 claude 进程（agent 侧 30s 超时） */
+export const USAGE_REFRESH_TIMEOUT_MS = 45_000;
+
+/** `machine.usage.response`（ok 为 false 也照常返回，由调用方展示原因） */
+export type UsageRefreshResult = Extract<AgentToClientEvent, { type: 'machine.usage.response' }>;
+
 /** `machine.claude.update.response`（ok 为 false 也照常返回，由调用方展示原因） */
 export type ClaudeUpdateResult = Extract<AgentToClientEvent, { type: 'machine.claude.update.response' }>;
 
@@ -1617,6 +1623,16 @@ export class TrineClient {
       throw err;
     }
     if (res.type !== 'machine.claude.update.response') throw new Error(`意外的应答 ${res.type}`);
+    return res;
+  }
+
+  /**
+   * 手动刷新这台机器的订阅限额用量（agent >= 0.12.0，调用方先做能力探测）。新数据随
+   * agent 先广播的 machine.info 到达；这里只返回成败。业务失败不抛，发不出去 / 超时才抛。
+   */
+  async refreshUsage(machineId: string): Promise<UsageRefreshResult> {
+    const res = await this.request(machineId, { type: 'machine.usage.request' }, { timeoutMs: USAGE_REFRESH_TIMEOUT_MS });
+    if (res.type !== 'machine.usage.response') throw new Error(`意外的应答 ${res.type}`);
     return res;
   }
 

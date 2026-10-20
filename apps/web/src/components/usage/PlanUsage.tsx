@@ -1,0 +1,166 @@
+/**
+ * 用量展示组件（usage-display）：
+ * - `PlanUsageLine`：一台机器的 5h / 1w 用量 + 重置时间（机器卡、列表顶部共用）；
+ * - `PlanUsageStrip`：会话列表顶部，每台机器一行，带手动刷新；
+ * - `SessionUsage`：会话头部的 ctx / 5h / 1w 百分比。
+ *
+ * 文案与色调见 usage-model.ts。限额是账号级数据，挂在 machine.info 上；会话头部的
+ * 5h / 1w 就是会话所在机器的值。
+ */
+import { useState } from 'react';
+import { toast } from 'sonner';
+import { RefreshCwIcon } from 'lucide-react';
+import type { ContextUsage, RateLimits, RateLimitWindow } from '@trine/core';
+import { Button } from '@/components/ui/button.tsx';
+import { useClient, useTrine } from '@/app/runtime.ts';
+import type { MachineState } from '@/store/types.ts';
+import { formatDateTime, formatRelativeTime } from '@/lib/format.ts';
+import { cn } from '@/lib/utils.ts';
+import { contextView, supportsUsageRefresh, windowView, type UsageTone } from './usage-model.ts';
+
+const TONE_CLASS: Record<UsageTone, string> = {
+  normal: '',
+  warn: 'text-amber',
+  danger: 'text-red font-semibold',
+};
+
+function WindowValue({
+  label,
+  window,
+  now,
+  showReset,
+}: {
+  label: string;
+  window: RateLimitWindow;
+  now: number;
+  showReset: boolean;
+}): React.JSX.Element {
+  const view = windowView(window, now);
+  const title = window.resetsAt === undefined ? undefined : `${label} 窗口 ${formatDateTime(window.resetsAt)} 重置`;
+  return (
+    <span className="tabular inline-flex items-baseline gap-1 whitespace-nowrap" {...(title === undefined ? {} : { title })}>
+      <span className="text-text-3">{label}</span>
+      <span className={cn(TONE_CLASS[view.tone])}>{view.percent}</span>
+      {showReset && view.reset !== '' && <span className="text-text-3 text-[11px]">{view.reset}</span>}
+    </span>
+  );
+}
+
+/** 一台机器的 5h / 1w；没有任何窗口时渲染 null */
+export function PlanUsageLine({
+  rateLimits,
+  now,
+  className,
+}: {
+  rateLimits: RateLimits | undefined;
+  now: number;
+  className?: string;
+}): React.JSX.Element | null {
+  if (rateLimits === undefined || (rateLimits.fiveHour === undefined && rateLimits.sevenDay === undefined)) return null;
+  return (
+    <span
+      data-testid="plan-usage"
+      className={cn('inline-flex flex-wrap items-baseline gap-x-3 gap-y-0.5 text-xs', className)}
+      title={`更新于 ${formatRelativeTime(rateLimits.updatedAt, now)}`}
+    >
+      {rateLimits.fiveHour !== undefined && <WindowValue label="5h" window={rateLimits.fiveHour} now={now} showReset />}
+      {rateLimits.sevenDay !== undefined && <WindowValue label="1w" window={rateLimits.sevenDay} now={now} showReset />}
+    </span>
+  );
+}
+
+/** 手动刷新按钮（单台机器）；成败 toast */
+export function PlanUsageRefreshButton({ machine }: { machine: MachineState }): React.JSX.Element | null {
+  const client = useClient();
+  const [refreshing, setRefreshing] = useState(false);
+  if (client === null || !supportsUsageRefresh(machine.info)) return null;
+  const refresh = (): void => {
+    setRefreshing(true);
+    void client
+      .refreshUsage(machine.machineId)
+      .then(
+        (res) => {
+          if (!res.ok) toast.error(`${machine.name}：${res.error?.message ?? '刷新用量失败'}`);
+        },
+        (err: unknown) => toast.error(`${machine.name}：刷新用量失败（${err instanceof Error ? err.message : String(err)}）`),
+      )
+      .finally(() => setRefreshing(false));
+  };
+  return (
+    <Button
+      size="icon-xs"
+      variant="ghost"
+      data-testid="plan-usage-refresh"
+      title="刷新用量（没有活跃会话时会临时启动一次 claude）"
+      aria-label="刷新用量"
+      disabled={refreshing || machine.online === false}
+      onClick={refresh}
+    >
+      <RefreshCwIcon className={cn(refreshing && 'motion-safe:animate-spin')} />
+    </Button>
+  );
+}
+
+/**
+ * 会话列表顶部：每台机器一行 5h / 1w。只列有数据或支持刷新的机器；选了机器过滤就只列
+ * 那一台；只有一行时不写机器名。一行都没有时渲染 null。
+ */
+export function PlanUsageStrip({
+  filter,
+  now,
+  className,
+}: {
+  filter: string | null;
+  now: number;
+  className?: string;
+}): React.JSX.Element | null {
+  const machines = useTrine((s) => s.machines);
+  const rows = Object.values(machines)
+    .filter((m) => filter === null || m.machineId === filter)
+    .filter((m) => m.info?.rateLimits !== undefined || supportsUsageRefresh(m.info))
+    .sort((a, b) => a.name.localeCompare(b.name));
+  if (rows.length === 0) return null;
+  return (
+    <div data-testid="plan-usage-strip" className={cn('flex flex-col gap-0.5', className)}>
+      {rows.map((m) => (
+        <div key={m.machineId} data-machine-id={m.machineId} className="text-text-2 flex min-h-6 items-center gap-2 text-xs">
+          {rows.length > 1 && <span className="text-text-3 max-w-[30%] shrink-0 truncate font-mono">{m.name}</span>}
+          {m.info?.rateLimits === undefined ? (
+            <span className="text-text-3 min-w-0 flex-1 truncate">用量：暂无数据，会话活动后更新</span>
+          ) : (
+            <PlanUsageLine rateLimits={m.info.rateLimits} now={now} className="min-w-0 flex-1" />
+          )}
+          <PlanUsageRefreshButton machine={m} />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** 会话头部：ctx / 5h / 1w 百分比（不带重置时间，省地方；悬停看详情）。都没有时 null */
+export function SessionUsage({
+  context,
+  rateLimits,
+  now,
+}: {
+  context: ContextUsage | undefined;
+  rateLimits: RateLimits | undefined;
+  now: number;
+}): React.JSX.Element | null {
+  const ctx = context === undefined ? undefined : contextView(context);
+  const five = rateLimits?.fiveHour;
+  const seven = rateLimits?.sevenDay;
+  if (ctx === undefined && five === undefined && seven === undefined) return null;
+  return (
+    <span data-testid="session-usage" className="inline-flex shrink-0 items-baseline gap-2">
+      {ctx !== undefined && (
+        <span className="tabular whitespace-nowrap" title={ctx.title} data-testid="session-context">
+          <span className="text-text-3">ctx </span>
+          <span className={cn(TONE_CLASS[ctx.tone])}>{ctx.percent}</span>
+        </span>
+      )}
+      {five !== undefined && <WindowValue label="5h" window={five} now={now} showReset={false} />}
+      {seven !== undefined && <WindowValue label="1w" window={seven} now={now} showReset={false} />}
+    </span>
+  );
+}

@@ -17,6 +17,7 @@ import {
   machineVersionLine,
   parkedWarnLine,
 } from './machine-text.ts';
+import { PlanUsageLine } from '@/components/usage/PlanUsage.tsx';
 
 export function MachineCard({
   machine,
@@ -66,6 +67,8 @@ export function MachineCard({
           </span>
         )}
       </div>
+
+      <PlanUsageLine rateLimits={machine.info?.rateLimits} now={now ?? Date.now()} className="text-text-2 mt-1.5" />
 
       {warn !== '' && (
         <div className="text-amber mt-2 flex items-baseline gap-1.5 text-xs" data-testid="machine-parked">
