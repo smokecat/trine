@@ -36,6 +36,8 @@
 import { z } from 'zod';
 import { SeqSchema } from './transport.ts';
 import {
+  ATTACHMENTS_MAX_COUNT,
+  AttachmentRefSchema,
   BgTaskSchema,
   HistoryItemSchema,
   MachineInfoSchema,
@@ -115,6 +117,8 @@ export const UserMessageSchema = z.object({
   /** 发起端的 clientMsgId，发起设备据此把本地暂存条目升级为已确认 */
   clientMsgId: z.string().optional(),
   text: z.string(),
+  /** 附件引用（agent ≥ 0.11.0）：其他设备据此从 relay 下载并解密 */
+  attachments: z.array(AttachmentRefSchema).max(ATTACHMENTS_MAX_COUNT).optional(),
   /**
    * 这条消息在本机转录里的 uuid（= 历史回看里 user 条目的 id）。回退
    * （`session.rewind`）以它定位目标消息；agent ≥ 0.9.0 才带，省略时 client 用
@@ -314,14 +318,25 @@ export const PermissionInvalidatedSchema = z.object({
 // §1.5 输入与排队
 // ---------------------------------------------------------------------------
 
-/** client → agent：clientMsgId 幂等去重 */
-export const InputSendSchema = z.object({
-  type: z.literal('input.send'),
-  ...c2aBase,
-  clientMsgId: z.string().min(1),
-  /** 以 `/` 开头即项目 slash command，原样进 SDK query，agent 不解析 */
-  text: z.string().min(1),
-});
+/**
+ * client → agent：clientMsgId 幂等去重。
+ *
+ * 带附件时 text 可以为空（只发图片），但两者不能都空。附件先由发送端加密上传
+ * 到 relay，这里只带引用；agent 下载、解密、落盘后再交给模型（agent ≥ 0.11.0，
+ * 旧 agent 会因为不认识 attachments 之外的空 text 拒收，client 按版本探测）。
+ */
+export const InputSendSchema = z
+  .object({
+    type: z.literal('input.send'),
+    ...c2aBase,
+    clientMsgId: z.string().min(1),
+    /** 以 `/` 开头即项目 slash command，原样进 SDK query，agent 不解析 */
+    text: z.string(),
+    attachments: z.array(AttachmentRefSchema).min(1).max(ATTACHMENTS_MAX_COUNT).optional(),
+  })
+  .refine((e) => e.text.length > 0 || (e.attachments?.length ?? 0) > 0, {
+    message: 'text and attachments cannot both be empty',
+  });
 
 /** agent → client：会话运行中，agent 端已排队的回执 */
 export const InputQueuedSchema = z.object({
@@ -429,6 +444,40 @@ export const SubagentHistoryResponseSchema = z.object({
   items: z.array(HistoryItemSchema),
   /** 体积封顶截掉了更早的条目 */
   truncated: z.boolean().optional(),
+});
+
+// ---------------------------------------------------------------------------
+// §1.9 附件按需拉取（agent ≥ 0.11.0）
+// ---------------------------------------------------------------------------
+
+/**
+ * client → agent：取某条用户消息第 `index` 个附件的（新）blob 引用。
+ *
+ * 用于 blob 已过期（relay 按 TTL 清理）或从没上传过（本机 CLI 里直接粘贴的
+ * 图片，只存在于转录里）的附件：agent 从本机副本或转录取出字节，重新加密上传，
+ * 回一个新引用。与 session.history.request 一样**不拉起会话进程**。
+ *
+ * `messageId` 是历史 user 条目的 id（转录 uuid），`index` 是它 attachments 的下标。
+ */
+export const AttachmentFetchRequestSchema = z.object({
+  type: z.literal('attachment.fetch.request'),
+  ...c2aBase,
+  reqId: ReqIdSchema,
+  messageId: z.string().min(1),
+  index: z.number().int().nonnegative().max(ATTACHMENTS_MAX_COUNT - 1),
+});
+
+export const AttachmentFetchErrorCodeSchema = z.enum(['not_found', 'io', 'unavailable']);
+export type AttachmentFetchErrorCode = z.infer<typeof AttachmentFetchErrorCodeSchema>;
+
+/** agent → client：只发给请求方设备 */
+export const AttachmentFetchResponseSchema = z.object({
+  type: z.literal('attachment.fetch.response'),
+  ...a2cBase,
+  reqId: ReqIdSchema,
+  ok: z.boolean(),
+  attachment: AttachmentRefSchema.optional(),
+  error: z.object({ code: AttachmentFetchErrorCodeSchema, message: z.string() }).optional(),
 });
 
 // ---------------------------------------------------------------------------
@@ -1003,6 +1052,7 @@ export const AgentToClientEventSchema = z.discriminatedUnion('type', [
   SessionRewindPreviewResponseSchema,
   SessionRewindResponseSchema,
   SessionRewoundSchema,
+  AttachmentFetchResponseSchema,
   SessionCapabilitiesSchema,
   MachineInfoEventSchema,
   MachineClaudeUpdateResponseSchema,
@@ -1036,6 +1086,7 @@ export const ClientToAgentEventSchema = z.discriminatedUnion('type', [
   SessionCommandsRequestSchema,
   SessionRewindPreviewSchema,
   SessionRewindSchema,
+  AttachmentFetchRequestSchema,
   MachineRenameSchema,
   MachineUnpairSchema,
   MachineClaudeUpdateRequestSchema,

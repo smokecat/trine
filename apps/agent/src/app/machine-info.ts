@@ -28,7 +28,9 @@ import type { MachineInfo } from '@trine/core';
 //   user.message 带转录 uuid；会话开启文件快照（enableFileCheckpointing）
 // - 0.10.0 起 SessionMeta 带 live（有子进程）、MachineInfo 带 maxSessions；名额满时
 //   先回收最久未活动的空闲会话，全都在忙才拒绝；默认上限 5 → 10
-export const AGENT_VERSION = '0.10.0';
+// - 0.11.0 起支持附件：input.send / user.message 带 attachments（relay blob 引用），
+//   history user 条目带附件元数据，attachment.fetch.request 按需重新上传
+export const AGENT_VERSION = '0.11.0';
 
 export function buildMachineInfo(input: {
   name: string;

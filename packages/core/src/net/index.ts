@@ -18,3 +18,10 @@ export {
   type AuthToken,
 } from './auth-client.ts';
 export { httpBase, wsEndpoint } from './url.ts';
+export {
+  BlobClient,
+  BlobClientError,
+  type BlobClientOptions,
+  type BlobConfig,
+  type BlobRequestOptions,
+} from './blob-client.ts';

@@ -2,6 +2,7 @@
  * 服务端运行配置：全部可经环境变量覆盖，默认值面向单用户小 VPS。
  * 部署示例见 apps/server/deploy/。
  */
+import { dirname, join } from 'node:path';
 
 function envInt(name: string, fallback: number): number {
   const raw = process.env[name];
@@ -54,6 +55,14 @@ export interface ServerConfig {
 
   /** 过期清理扫描周期 */
   sweepIntervalMs: number;
+
+  // ---- 附件 blob（密文平铺文件，见 blobs.ts）----
+  /** blob 目录；空 = 禁用附件上传（':memory:' 库的默认，测试按需覆盖） */
+  blobDir: string;
+  /** 单个 blob（密文）字节上限；web 设置里的附件上限不能超过它 */
+  blobMaxBytes: number;
+  /** blob 保留时长，过期由 agent 按需重新上传 */
+  blobTtlMs: number;
 
   /** 认证失败限流：同一来源在窗口内允许的失败次数 */
   authFailWindowMs: number;
@@ -200,6 +209,13 @@ export function assertConfigInvariants(config: ServerConfig): void {
   assertCorsOrigins(config.corsOrigins);
 }
 
+/** 默认放在数据库旁边的 `blobs/`；内存库没有「旁边」，默认禁用 */
+function defaultBlobDir(explicit: string | undefined, dbPath: string): string {
+  if (explicit !== undefined) return explicit.trim();
+  if (dbPath === ':memory:') return '';
+  return join(dirname(dbPath), 'blobs');
+}
+
 export function loadConfig(overrides: Partial<ServerConfig> = {}): ServerConfig {
   const config = buildConfig(overrides);
   assertConfigInvariants(config);
@@ -227,6 +243,10 @@ function buildConfig(overrides: Partial<ServerConfig>): ServerConfig {
     parkedMaxPerMachine: envInt('TRINE_PARKED_MAX_PER_MACHINE', 500),
 
     sweepIntervalMs: envInt('TRINE_SWEEP_MS', 5 * 60 * 1000),
+
+    blobDir: defaultBlobDir(process.env.TRINE_BLOB_DIR, process.env.TRINE_DB ?? './trine.sqlite'),
+    blobMaxBytes: envInt('TRINE_BLOB_MAX_BYTES', 256 * 1024 * 1024),
+    blobTtlMs: envInt('TRINE_BLOB_TTL_MS', 7 * 24 * HOUR),
 
     authFailWindowMs: envInt('TRINE_AUTH_FAIL_WINDOW_MS', 10 * 60 * 1000),
     authFailMaxAttempts: envInt('TRINE_AUTH_FAIL_MAX', 20),

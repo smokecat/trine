@@ -131,6 +131,55 @@ export const BgTaskSchema = z.object({
 export type BgTask = z.infer<typeof BgTaskSchema>;
 
 /**
+ * 用户消息附件（图片 / 文件）。
+ *
+ * 字节不走 E2E 帧：发送端用一次性 key 加密成 blob 传到 relay，帧里只带引用
+ * （`blobId` + `key`，都在 E2E 密文里）。blob 有 TTL，过期或根本没有 blob 的
+ * 附件（本机 CLI 里直接粘贴的图片）由 agent 按需重新上传，见 `attachment.fetch`。
+ *
+ * - `image`：agent 尽量作为 image 内容块直接交给模型，超出 API 限制时退化为文件路径
+ * - `file`：agent 落盘后在消息末尾附上路径，由 Claude 用 Read 读取
+ */
+export const AttachmentKindSchema = z.enum(['image', 'file']);
+export type AttachmentKind = z.infer<typeof AttachmentKindSchema>;
+
+/** 单条消息附件个数的协议硬上限（用户可调的默认值见 ATTACHMENTS_DEFAULT_*） */
+export const ATTACHMENTS_MAX_COUNT = 32;
+/** 默认每条消息最多附件个数（web 设置可调，不超过 ATTACHMENTS_MAX_COUNT） */
+export const ATTACHMENTS_DEFAULT_MAX_COUNT = 10;
+/** 默认每条消息附件合计字节上限（web 设置可调，不超过 relay 的 blob 上限） */
+export const ATTACHMENTS_DEFAULT_MAX_TOTAL_BYTES = 64 * 1024 * 1024;
+/** 文件名长度上限（字符） */
+export const ATTACHMENT_NAME_MAX = 255;
+
+/** blobId：relay 生成的不透明 id（只含 URL 安全字符，可直接拼进路径） */
+export const BlobIdSchema = z.string().regex(/^[A-Za-z0-9_-]{16,64}$/);
+
+export const AttachmentMetaSchema = z.object({
+  name: z.string().min(1).max(ATTACHMENT_NAME_MAX),
+  mime: z.string().max(255),
+  /** 原始字节数（明文） */
+  size: z.number().int().nonnegative(),
+  kind: AttachmentKindSchema,
+});
+export type AttachmentMeta = z.infer<typeof AttachmentMetaSchema>;
+
+/** 带 blob 引用的附件：拿着它就能从 relay 下载并解密 */
+export const AttachmentRefSchema = AttachmentMetaSchema.extend({
+  blobId: BlobIdSchema,
+  /** secretstream key（base64url，32 字节） */
+  key: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
+});
+export type AttachmentRef = z.infer<typeof AttachmentRefSchema>;
+
+/** 历史条目里的附件：引用可能缺（从没上传过 / agent 不知道），点击时再按需拉 */
+export const HistoryAttachmentSchema = AttachmentMetaSchema.extend({
+  blobId: BlobIdSchema.optional(),
+  key: AttachmentRefSchema.shape.key.optional(),
+});
+export type HistoryAttachment = z.infer<typeof HistoryAttachmentSchema>;
+
+/**
  * 历史回看条目（`session.history.response`，决策 D8：agent 读本机会话存储按需拉取）。
  *
  * 形状刻意贴着 web 时间线的三种内容条目，id 与实时流同源，client 才能去重：
@@ -147,6 +196,8 @@ export const HistoryItemSchema = z.discriminatedUnion('kind', [
     kind: z.literal('user'),
     id: z.string().min(1),
     text: z.string(),
+    /** 附件（agent ≥ 0.11.0）；下标即 `attachment.fetch.request` 的 index */
+    attachments: z.array(HistoryAttachmentSchema).max(ATTACHMENTS_MAX_COUNT).optional(),
     ts: TimestampSchema,
   }),
   z.object({

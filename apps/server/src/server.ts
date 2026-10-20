@@ -25,6 +25,7 @@ import {
 import { sodiumReady } from '@trine/core/crypto';
 import type { Server, ServerWebSocket } from 'bun';
 import { ANONYMOUS_SOURCE, AuthService } from './auth/index.ts';
+import { BlobStore } from './blobs.ts';
 import { loadConfig, type ServerConfig } from './config.ts';
 import { clientSource, createHttpApp } from './http.ts';
 import { createPushDispatcher } from './push/index.ts';
@@ -203,6 +204,11 @@ export async function startServer(
   // 由 hub 直接把 client 设备登记进来
   const hub = new RelayHub<WS>({ store, registry, config, push, auth });
 
+  const blobs =
+    config.blobDir === ''
+      ? undefined
+      : new BlobStore({ dir: config.blobDir, maxBytes: config.blobMaxBytes, ttlMs: config.blobTtlMs });
+
   const http = createHttpApp({
     auth,
     store,
@@ -211,6 +217,7 @@ export async function startServer(
     trustProxyHeader: config.trustProxyHeader,
     corsOrigins: config.corsOrigins,
     webDist: config.webDist,
+    ...(blobs === undefined ? {} : { blobs }),
   });
   if (config.webDist !== '') {
     console.info(`[http] 托管 Web 构建产物：${config.webDist}`);
@@ -224,6 +231,9 @@ export async function startServer(
     hostname: config.hostname,
     // idleTimeout 由应用层心跳接管，这里给足余量（Bun 上限 255s）
     idleTimeout: 255,
+    // Bun 默认 128MB；附件上传按 blob 上限放宽（留 1MB 余量给头部）。
+    // 只有 /blobs 会收大请求体，其余端点各有自己的 bodyLimit
+    maxRequestBodySize: Math.max(config.blobMaxBytes, 128 * 1024 * 1024) + 1024 * 1024,
 
     fetch(req, srv) {
       const url = new URL(req.url);
@@ -379,6 +389,12 @@ export async function startServer(
     } catch (err) {
       console.error('[sweep] 失败:', err);
     }
+    blobs?.sweep().then(
+      (n) => {
+        if (n > 0) console.info(`[sweep] blob清理=${n}`);
+      },
+      (err: unknown) => console.error('[sweep] blob 清理失败:', err),
+    );
   }, config.sweepIntervalMs);
 
   // port 0（测试里随机端口）时以实际绑定值为准

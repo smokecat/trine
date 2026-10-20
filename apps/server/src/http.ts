@@ -10,6 +10,7 @@ import { bodyLimit } from 'hono/body-limit';
 import { cors } from 'hono/cors';
 import { z } from 'zod';
 import { ANONYMOUS_SOURCE, type AuthService } from './auth/index.ts';
+import { BlobStore } from './blobs.ts';
 import type { Store } from './store/index.ts';
 
 const RegisterBody = z.object({
@@ -65,10 +66,12 @@ export interface HttpDeps {
    * Web 构建产物目录（`TRINE_WEB_DIST`）。空/省略 = 不托管静态文件。
    */
   webDist?: string;
+  /** 附件 blob 存储；省略 = 禁用（/blobs 一律 503） */
+  blobs?: BlobStore;
 }
 
 /** 走 API 语义、**不该**被 SPA fallback 吞掉的路径前缀 */
-const API_PREFIXES = ['/auth', '/ws', '/healthz', '/devices'] as const;
+const API_PREFIXES = ['/auth', '/ws', '/healthz', '/devices', '/blobs'] as const;
 
 /**
  * 静态响应的安全头。
@@ -131,6 +134,7 @@ export function createHttpApp(deps: HttpDeps): Hono {
     app.use('/auth/*', middleware);
     app.use('/healthz', middleware);
     app.use('/devices', middleware);
+    app.use('/blobs/*', middleware);
   }
 
   app.get('/healthz', (c) =>
@@ -199,9 +203,59 @@ export function createHttpApp(deps: HttpDeps): Hono {
     });
   });
 
+  mountBlobs(app, deps);
+
   mountWebDist(app, deps.webDist ?? '');
 
   return app;
+}
+
+/**
+ * 附件 blob 端点：上传 / 下载密文（服务端读不了内容，见 blobs.ts）。
+ *
+ * 任一已认证设备都能读写任一 blob——relay 是单一所有者服务，没有租户隔离可言；
+ * blobId 是 128 位随机数，不可枚举，内容又只有持 key 的一方能解。
+ */
+function mountBlobs(app: Hono, deps: HttpDeps): void {
+  const blobs = deps.blobs;
+
+  // `/blobs/*` 也匹配 `/blobs` 本身
+  app.use('/blobs/*', async (c, next) => {
+    c.header('cache-control', 'no-store');
+    if (blobs === undefined) return c.json({ error: 'blobs_disabled' }, 503);
+    const token = bearer(c.req.header('authorization'));
+    if (!token || !deps.auth.authenticateToken(token).ok) return c.json({ error: 'unauthorized' }, 401);
+    await next();
+  });
+  if (blobs === undefined) return;
+
+  app.get('/blobs/config', (c) => c.json({ maxBytes: blobs.maxBytes, ttlMs: blobs.ttlMs }));
+
+  app.post('/blobs', async (c) => {
+    // 有 Content-Length 就先拦，免得白传几百 MB 才发现超限
+    const declared = Number(c.req.header('content-length') ?? NaN);
+    if (Number.isFinite(declared) && declared > blobs.maxBytes) {
+      return c.json({ error: 'too_large', maxBytes: blobs.maxBytes }, 413);
+    }
+    const result = await blobs.put(c.req.raw.body);
+    if (!result.ok) {
+      const status = result.error === 'too_large' ? 413 : result.error === 'empty' ? 400 : 500;
+      return c.json({ error: result.error, ...(status === 413 ? { maxBytes: blobs.maxBytes } : {}) }, status);
+    }
+    return c.json({ blobId: result.blobId, size: result.size });
+  });
+
+  app.get('/blobs/:id', async (c) => {
+    const file = await blobs.get(c.req.param('id'));
+    if (file === null) return c.json({ error: 'not_found' }, 404);
+    return new Response(file.stream(), {
+      headers: {
+        'content-type': 'application/octet-stream',
+        'content-length': String(file.size),
+        'cache-control': 'no-store',
+      },
+    });
+  });
 }
 
 /**

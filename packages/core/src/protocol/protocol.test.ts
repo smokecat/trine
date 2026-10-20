@@ -205,6 +205,46 @@ describe('E2E 事件帧', () => {
     expect(E2eEventSchema.parse(frame).type).toBe('input.send');
   });
 
+  test('input.send：可以只带附件，但文本和附件不能都空', () => {
+    const ref = {
+      name: 'shot.png',
+      mime: 'image/png',
+      size: 1234,
+      kind: 'image',
+      blobId: 'b'.repeat(22),
+      key: 'k'.repeat(43),
+    };
+    const base = { type: 'input.send', ...c2a, clientMsgId: 'c1' };
+    expect(ClientToAgentEventSchema.parse({ ...base, text: '', attachments: [ref] }).type).toBe('input.send');
+    expect(ClientToAgentEventSchema.parse({ ...base, text: 'hi', attachments: [ref] }).type).toBe('input.send');
+    expect(() => ClientToAgentEventSchema.parse({ ...base, text: '' })).toThrow();
+    expect(() => ClientToAgentEventSchema.parse({ ...base, text: '', attachments: [] })).toThrow();
+    // 引用格式：blobId 只许 URL 安全字符（relay 拼路径用），key 必须是 32 字节 base64url
+    expect(() =>
+      ClientToAgentEventSchema.parse({ ...base, text: 'x', attachments: [{ ...ref, blobId: '../../etc/passwd' }] }),
+    ).toThrow();
+    expect(() =>
+      ClientToAgentEventSchema.parse({ ...base, text: 'x', attachments: [{ ...ref, key: 'short' }] }),
+    ).toThrow();
+    expect(() =>
+      ClientToAgentEventSchema.parse({ ...base, text: 'x', attachments: Array(33).fill(ref) }),
+    ).toThrow();
+  });
+
+  test('attachment.fetch 请求与应答', () => {
+    const req = { type: 'attachment.fetch.request', ...c2a, reqId: 'r1', messageId: 'u1', index: 0 };
+    expect(ClientToAgentEventSchema.parse(req).type).toBe('attachment.fetch.request');
+    expect(() => ClientToAgentEventSchema.parse({ ...req, index: -1 })).toThrow();
+    const res = {
+      type: 'attachment.fetch.response',
+      ...a2c,
+      reqId: 'r1',
+      ok: false,
+      error: { code: 'not_found', message: 'gone' },
+    };
+    expect(AgentToClientEventSchema.parse(res).type).toBe('attachment.fetch.response');
+  });
+
   test('未知事件类型被拒绝', () => {
     expect(() => E2eEventSchema.parse({ type: 'nope.unknown', ...a2c })).toThrow();
   });
