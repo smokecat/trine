@@ -1,7 +1,11 @@
 import { describe, expect, test } from 'bun:test';
 import {
   formatBytes,
+  formatClock,
+  formatClockSeconds,
   formatCost,
+  formatDateTime,
+  formatDayLabel,
   formatDuration,
   formatLineDelta,
   formatLines,
@@ -129,5 +133,28 @@ describe('format · truncate', () => {
 
   test('恰好等于 max 时不截断', () => {
     expect(truncate('12345', 5)).toBe('12345');
+  });
+});
+
+describe('format · 时间线时刻', () => {
+  const now = new Date(2026, 9, 20, 15, 0, 0).getTime();
+
+  test('24 小时制，补零', () => {
+    expect(formatClock(new Date(2026, 9, 20, 9, 5, 7).getTime())).toBe('09:05');
+    expect(formatClock(new Date(2026, 9, 20, 21, 30, 0).getTime())).toBe('21:30');
+    expect(formatClockSeconds(new Date(2026, 9, 20, 9, 5, 7).getTime())).toBe('09:05:07');
+    expect(formatDateTime(new Date(2026, 0, 2, 9, 5, 7).getTime())).toBe('2026-01-02 09:05:07');
+  });
+
+  test('日期标签：今天 / 昨天 / 月日周几，跨年带年份', () => {
+    expect(formatDayLabel(new Date(2026, 9, 20, 0, 1).getTime(), now)).toBe('今天');
+    expect(formatDayLabel(new Date(2026, 9, 19, 23, 59).getTime(), now)).toBe('昨天');
+    expect(formatDayLabel(new Date(2026, 9, 17, 12, 0).getTime(), now)).toBe('10月17日 周六');
+    expect(formatDayLabel(new Date(2025, 11, 31, 12, 0).getTime(), now)).toBe('2025年12月31日 周三');
+  });
+
+  test('「昨天」跨月 / 跨年也成立', () => {
+    const jan1 = new Date(2026, 0, 1, 8, 0).getTime();
+    expect(formatDayLabel(new Date(2025, 11, 31, 22, 0).getTime(), jan1)).toBe('昨天');
   });
 });

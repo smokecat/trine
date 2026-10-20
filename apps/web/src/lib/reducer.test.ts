@@ -68,6 +68,12 @@ describe('reducer · user.message 判别', () => {
     expect(tl.entries[0]).toMatchObject({ kind: 'user', id: 'c1', local: true, status: 'confirmed', messageId: 'u1', seq: 7 });
   });
 
+  test('确认时 ts 换成 agent 帧的时间（统一时钟，时间线时刻不错位）', () => {
+    let tl = addLocalUserEntry(emptyTimeline(), { clientMsgId: 'c1', text: 'hi', ts: 1 });
+    tl = apply(tl, { ...ev({ type: 'user.message', ...S, messageId: 'u1', clientMsgId: 'c1', text: 'hi' }, 7), ts: 5000 });
+    expect(tl.entries[0]?.ts).toBe(5000);
+  });
+
   test('带 clientMsgId 但不命中（别的设备发的）→ 追加为非本地条目', () => {
     const tl = apply(emptyTimeline(), ev({ type: 'user.message', ...S, messageId: 'u2', clientMsgId: 'other-device-msg', text: 'yo' }));
     expect(tl.entries).toEqual([expect.objectContaining({ kind: 'user', id: 'u2', local: false, text: 'yo' })]);

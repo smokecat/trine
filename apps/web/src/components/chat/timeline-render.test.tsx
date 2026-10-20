@@ -150,3 +150,52 @@ describe('Timeline · 自发轮标记', () => {
     expect(host!.querySelectorAll('[data-testid="entry-run-state"]')).toHaveLength(0);
   });
 });
+
+describe('Timeline · 消息时间', () => {
+  // 本地时区构造，避免测试机时区影响断言
+  const t = (h: number, m: number, s = 0, day = 20): number => new Date(2026, 9, day, h, m, s).getTime();
+
+  test('密集工具调用不插时间标记；跨天给日期分隔，长间隔给时刻', () => {
+    const entries: TimelineEntry[] = [
+      { kind: 'user', id: 'u-1', text: '昨晚的消息', local: false, seq: 1, ts: t(23, 50, 0, 19) },
+      { kind: 'user', id: 'u-2', text: '开始', local: false, seq: 2, ts: t(9, 0) },
+      ...Array.from({ length: 20 }, (_, i): TimelineEntry => ({
+        kind: 'tool', id: `tool-${i}`, toolName: 'Read', argSummary: `f${i}`, status: 'ok', seq: 3 + i, ts: t(9, 0, 2 + i),
+      })),
+      { kind: 'assistant', id: 'a-1', text: '好了', done: true, thinking: false, seq: 30, ts: t(9, 25) },
+    ];
+    const render = mount(entries, { runningToolId: null });
+    render({ now: t(12, 0), runningElapsedMs: 0 });
+    const dividers = Array.from(host!.querySelectorAll('[data-testid="time-divider"]')).map((el) => [
+      el.getAttribute('data-kind'),
+      el.textContent,
+    ]);
+    expect(dividers).toEqual([
+      ['day', '昨天 23:50'],
+      ['day', '今天 09:00'],
+      ['gap', '09:25'],
+    ]);
+  });
+
+  test('用户消息常驻时刻；助手回复与工具卡不常驻（工具卡放进悬停提示）', () => {
+    const entries: TimelineEntry[] = [
+      { kind: 'user', id: 'u-1', text: 'hi', local: false, seq: 1, ts: t(14, 5) },
+      { kind: 'tool', id: 'tool-1', toolName: 'Bash', argSummary: 'ls', status: 'ok', durationMs: 3_000, seq: 2, ts: t(14, 5, 32) },
+      { kind: 'assistant', id: 'a-1', text: '好', done: true, thinking: false, seq: 3, ts: t(14, 6) },
+    ];
+    const render = mount(entries, { runningToolId: null });
+    render({ now: t(15, 0), runningElapsedMs: 0 });
+    expect(host!.querySelector('[data-testid="user-time"]')?.textContent).toBe('14:05');
+    // 助手时间是悬停淡显：节点在，但默认透明
+    expect(host!.querySelector('[data-testid="assistant-time"]')?.className).toContain('opacity-0');
+    expect(host!.querySelector('[data-testid="tool-result"]')?.getAttribute('title')).toBe('开始 14:05:32 · 耗时 3s');
+  });
+
+  test('ts 为 0（历史缺 timestamp）不显示时间', () => {
+    const entries: TimelineEntry[] = [{ kind: 'user', id: 'u-1', text: 'hi', local: false, seq: 1, ts: 0 }];
+    const render = mount(entries, { runningToolId: null });
+    render({ now: t(15, 0), runningElapsedMs: 0 });
+    expect(host!.querySelector('[data-testid="user-time"]')).toBeNull();
+    expect(host!.querySelector('[data-testid="time-divider"]')).toBeNull();
+  });
+});

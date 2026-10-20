@@ -19,7 +19,7 @@
  */
 import { useState } from 'react';
 import type { ToolEntry } from '@/lib/reducer.ts';
-import { formatDuration, formatSeconds } from '@/lib/format.ts';
+import { formatClockSeconds, formatDuration, formatSeconds } from '@/lib/format.ts';
 import { childTotal, currentChild, isSubagentTool } from '@/lib/tool-tree.ts';
 import { cn } from '@/lib/utils.ts';
 
@@ -70,6 +70,13 @@ export function resultText(entry: ToolEntry, status: NonNullable<ToolEntry['stat
   if (entry.resultSummary !== undefined && entry.resultSummary !== '') return entry.resultSummary;
   const mark = STATUS_MARK[status];
   return entry.durationMs === undefined ? mark : `${mark} ${formatDuration(entry.durationMs)}`;
+}
+
+/** 状态 / 耗时区域的悬停提示：「开始 14:05:32 · 耗时 3s」；没有可信时间时不给 */
+export function toolTimeTitle(entry: ToolEntry): string | undefined {
+  if (!(entry.ts > 0)) return undefined;
+  const start = `开始 ${formatClockSeconds(entry.ts)}`;
+  return entry.durationMs === undefined ? start : `${start} · 耗时 ${formatDuration(entry.durationMs)}`;
 }
 
 /**
@@ -164,7 +171,7 @@ export function ToolCard({
           {entry.argSummary}
         </span>
         {status === undefined ? (
-          <span className="text-brand tabular shrink-0 font-mono text-[12px]">
+          <span title={toolTimeTitle(entry)} className="text-brand tabular shrink-0 font-mono text-[12px]">
             <span aria-hidden className="mr-1 inline-block motion-safe:animate-spin">
               ◠
             </span>
@@ -175,6 +182,7 @@ export function ToolCard({
         ) : (
           <span
             data-testid="tool-result"
+            title={toolTimeTitle(entry)}
             className={cn('tabular shrink-0 font-mono text-[12px]', STATUS_CLASS[status])}
           >
             {resultText(entry, status)}
@@ -203,14 +211,20 @@ export function ToolCard({
             />
           )}
           {hasPreview && (
-            <>
-              <pre className="bg-code-bg text-text-2 max-h-64 overflow-auto px-3 py-2 font-mono text-[11.5px] whitespace-pre">
-                {entry.outputPreview}
-              </pre>
-              <div className="text-text-3 border-border bg-code-bg border-t px-3 py-1 text-[11px]">
-                输出由 agent 截断，仅供预览
-              </div>
-            </>
+            <pre className="bg-code-bg text-text-2 max-h-64 overflow-auto px-3 py-2 font-mono text-[11.5px] whitespace-pre">
+              {entry.outputPreview}
+            </pre>
+          )}
+          {/* 开始时刻放在展开后的脚注里：折叠态一行不加东西，触屏点开也能看到 */}
+          {(hasPreview || entry.ts > 0) && (
+            <div
+              data-testid="tool-footer"
+              className="text-text-3 border-border bg-code-bg tabular border-t px-3 py-1 text-[11px]"
+            >
+              {[entry.ts > 0 ? `开始 ${formatClockSeconds(entry.ts)}` : '', hasPreview ? '输出由 agent 截断，仅供预览' : '']
+                .filter((x) => x !== '')
+                .join(' · ')}
+            </div>
           )}
         </div>
       )}

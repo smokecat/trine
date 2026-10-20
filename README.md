@@ -13,6 +13,8 @@ the agent runs on your own computer.
 ## What it does
 
 - Streams assistant messages, tool activity and subagent history.
+- Shows message times like a chat app: day separators, a time marker after gaps of 10+ minutes,
+  the time under each of your messages, and start times for replies and tools on hover or expand.
 - Rewinds a session to before one of your messages, restoring code, the conversation or both.
 - Lists, resumes, renames and archives sessions across paired machines; right-click or
   multi-select (Ctrl/Cmd/Shift-click) to archive in bulk, and copy a session's working directory.

@@ -14,11 +14,13 @@
  *
  * 虚拟滚动不做（方案：时间线上限 500 条/会话，够用且不值那份复杂度）。
  */
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { ArrowDownIcon } from 'lucide-react';
 import { rewindTargetId, type TimelineEntry, type ToolEntry, type UserEntry } from '@/lib/reducer.ts';
+import { formatDayLabel } from '@/lib/format.ts';
+import { timeMarkers } from '@/lib/time-markers.ts';
 import { cn } from '@/lib/utils.ts';
-import { AssistantMessage, SyncingRow, SystemNote, UserMessage } from './Messages.tsx';
+import { AssistantMessage, SyncingRow, SystemNote, TimeDivider, UserMessage } from './Messages.tsx';
 import { PermissionCard, type PermissionDecision } from './PermissionCard.tsx';
 import { ToolCard } from './ToolCard.tsx';
 import { AskQuestionCard } from './AskQuestionCard.tsx';
@@ -137,6 +139,8 @@ export function Timeline({
   const scrollRef = useRef<HTMLOListElement>(null);
   const [following, setFollowing] = useState(true);
   // 只有有子 agent 权限卡时才需要（多数时间线一张都没有，省掉整树遍历）
+  // 日期分隔 / 长间隔的时间标记（只依赖 entries，tick 不会重算）
+  const markers = useMemo(() => timeMarkers(entries), [entries]);
   const labels = useMemo(
     () => (entries.some((e) => e.kind === 'permission' && e.parentToolUseId !== undefined) ? toolLabels(entries) : new Map<string, string>()),
     [entries],
@@ -211,32 +215,43 @@ export function Timeline({
       >
         {head}
         {syncing !== undefined && <SyncingRow mode={syncing} />}
-        {entries.map((entry) => (
-          <Entry
-            key={`${entry.kind}:${entry.id}`}
-            entry={entry}
-            deviceId={deviceId}
-            planOptions={planOptions}
-            // 每秒的 tick 只喂给**真的按秒走字**的两种条目（评审 m4）：
-            // pending 的权限卡（「已等待 N 秒」）与撤回中的用户消息。
-            // 其余条目拿到的是常量 0，`memo` 得以把它们挡在重渲染之外
-            // ——否则 500 条时间线每秒整表重画。
-            now={needsTick(entry) ? now : 0}
-            // 只有正在跑的那个工具条目才拿会变的耗时（评审 N4）；
-            // 其余条目恒拿 -1，`memo` 得以把它们挡在重渲染之外
-            runningElapsedMs={
-              entry.kind === 'tool' && entry.status === undefined && entry.id === runningToolId
-                ? runningElapsedMs
-                : -1
-            }
-            handlers={handlers}
-            onEntryRender={onEntryRender}
-            subagentSource={subagentSourceOf(entry, labels)}
-            onLoadChildren={loadChildren}
-            historyUnknown={historyUnknown}
-            onRewind={entry.kind === 'user' && rewindTargetId(entry) !== undefined ? onRewind : undefined}
-          />
-        ))}
+        {entries.map((entry, i) => {
+          const marker = markers[i];
+          return (
+            <Fragment key={`${entry.kind}:${entry.id}`}>
+              {marker !== undefined && (
+                <TimeDivider
+                  at={marker.at}
+                  // 日期标签依赖「今天」，用父级 now 算；divider 本身 memo，文字不变就不重画
+                  day={marker.kind === 'day' ? formatDayLabel(marker.at, now) : undefined}
+                />
+              )}
+              <Entry
+                entry={entry}
+                deviceId={deviceId}
+                planOptions={planOptions}
+                // 每秒的 tick 只喂给**真的按秒走字**的两种条目（评审 m4）：
+                // pending 的权限卡（「已等待 N 秒」）与撤回中的用户消息。
+                // 其余条目拿到的是常量 0，`memo` 得以把它们挡在重渲染之外
+                // ——否则 500 条时间线每秒整表重画。
+                now={needsTick(entry) ? now : 0}
+                // 只有正在跑的那个工具条目才拿会变的耗时（评审 N4）；
+                // 其余条目恒拿 -1，`memo` 得以把它们挡在重渲染之外
+                runningElapsedMs={
+                  entry.kind === 'tool' && entry.status === undefined && entry.id === runningToolId
+                    ? runningElapsedMs
+                    : -1
+                }
+                handlers={handlers}
+                onEntryRender={onEntryRender}
+                subagentSource={subagentSourceOf(entry, labels)}
+                onLoadChildren={loadChildren}
+                historyUnknown={historyUnknown}
+                onRewind={entry.kind === 'user' && rewindTargetId(entry) !== undefined ? onRewind : undefined}
+              />
+            </Fragment>
+          );
+        })}
         {extra}
       </ol>
       {!following && (

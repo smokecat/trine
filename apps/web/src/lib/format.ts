@@ -4,8 +4,10 @@
  * 阶段 2a 定稿的共享件——2b 两组都会用，**只加不改**（改签名会同时打断两路）。
  *
  * 口径约定（照原型 prototype.html 的文案）：
- * - 时间一律相对（「2 分钟前」），因为远程操控的场景里「多久之前」比
- *   绝对时刻有用；超过 7 天才退回绝对日期。
+ * - 列表里的时间一律相对（「2 分钟前」），因为远程操控的场景里「多久之前」比
+ *   绝对时刻有用；超过 7 天才退回绝对日期。会话时间线里的消息时间例外，用
+ *   24 小时制的绝对时刻（`formatClock` / `formatDayLabel`）：像聊天工具一样
+ *   回看「几点发的」，且不随时钟走字，不会打穿时间线的 memo。
  * - 耗时用 `m:ss`（原型心跳 footer 的 `⏱ 2:34`），不足 1 分钟给 `12s`。
  * - 金额固定两位小数加 `$` 前缀（原型会话卡的 `$0.21`）。
  * - 字节/行数走三位有效数字的紧凑写法，避免卡片被长数字撑开。
@@ -34,6 +36,50 @@ export function formatRelativeTime(at: number, now: number = Date.now()): string
   return d.getFullYear() === new Date(now).getFullYear()
     ? `${mm}-${dd}`
     : `${d.getFullYear()}-${mm}-${dd}`;
+}
+
+function pad2(n: number): string {
+  return String(n).padStart(2, '0');
+}
+
+/** 时刻：`14:05`（24 小时制，本地时区）。时间线的用户消息、间隔标记用。 */
+export function formatClock(at: number): string {
+  const d = new Date(at);
+  return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+}
+
+/** 精确到秒的时刻：`14:05:32`。工具卡的开始时间用（同一分钟里常有一串调用）。 */
+export function formatClockSeconds(at: number): string {
+  return `${formatClock(at)}:${pad2(new Date(at).getSeconds())}`;
+}
+
+/** 两个时间戳是否落在本地时区的同一天 */
+export function isSameDay(a: number, b: number): boolean {
+  const x = new Date(a);
+  const y = new Date(b);
+  return x.getFullYear() === y.getFullYear() && x.getMonth() === y.getMonth() && x.getDate() === y.getDate();
+}
+
+const WEEKDAYS = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
+
+/**
+ * 日期标签：「今天 / 昨天 / 10月18日 周六」，跨年带年份（「2025年12月31日 周三」）。
+ * 时间线的日期分隔条用；`now` 可注入。
+ */
+export function formatDayLabel(at: number, now: number = Date.now()): string {
+  if (isSameDay(at, now)) return '今天';
+  const d = new Date(at);
+  const yesterday = new Date(now);
+  yesterday.setDate(yesterday.getDate() - 1);
+  if (isSameDay(at, yesterday.getTime())) return '昨天';
+  const date = `${d.getMonth() + 1}月${d.getDate()}日 ${WEEKDAYS[d.getDay()]}`;
+  return d.getFullYear() === new Date(now).getFullYear() ? date : `${d.getFullYear()}年${date}`;
+}
+
+/** 完整时刻：`2026-10-20 14:05:32`，悬停提示用 */
+export function formatDateTime(at: number): string {
+  const d = new Date(at);
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${formatClockSeconds(at)}`;
 }
 
 /**

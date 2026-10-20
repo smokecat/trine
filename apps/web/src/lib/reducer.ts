@@ -456,6 +456,9 @@ export function applyEvent(tl: Timeline, event: AgentToClientEvent): Timeline {
               text: event.text,
               ...(event.uuid === undefined ? {} : { uuid: event.uuid }),
               seq,
+              // 换成 agent 时钟：发送时记的是浏览器时间，与后续 assistant / 工具条目
+              // （agent 时钟）混排会因两端时钟差而错位
+              ts: event.ts,
             }),
             seq,
           );

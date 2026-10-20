@@ -5,9 +5,10 @@
  * markdown 管道**。用户消息是纯文本（用户打的就是字面值，把 `*` 渲染成
  * 斜体是错的），只有 assistant 文本过 streamdown。
  */
-import { useState } from 'react';
+import { memo, useState } from 'react';
 import { Undo2Icon } from 'lucide-react';
 import type { AssistantEntry, UserEntry } from '@/lib/reducer.ts';
+import { formatClock, formatDateTime } from '@/lib/format.ts';
 import { cn } from '@/lib/utils.ts';
 import { Markdown } from './Markdown.tsx';
 import { userEntryBadge, type UserEntryAction } from './entry-status.ts';
@@ -56,38 +57,44 @@ export function UserMessage({
       >
         {entry.text}
       </div>
-      {onRewind !== undefined && (
-        <button
-          type="button"
-          data-testid="user-rewind"
-          title="回退到这条消息之前（可选还原代码 / 对话）"
-          className={cn(
-            'text-text-3 hover:text-text-2 flex items-center gap-1 text-[11.5px] transition-opacity focus-visible:opacity-100',
-            revealed ? 'opacity-100' : 'opacity-0 group-hover:opacity-100',
-          )}
-          onClick={() => {
-            setRevealed(false);
-            onRewind(entry);
-          }}
-        >
-          <Undo2Icon className="size-3" />
-          回退到这里
-        </button>
-      )}
-      {badge.label !== undefined && (
-        <div className={cn('flex items-center gap-2 text-[11.5px]', TONE_CLASS[badge.tone])}>
-          <span>{badge.label}</span>
-          {action !== undefined && (
+      {/* 时间、回退入口、状态同一行：回退平时透明但本来就占着这行，时间放进来不加高度 */}
+      {(entry.ts > 0 || onRewind !== undefined || badge.label !== undefined) && (
+        <div className="flex items-center gap-2 text-[11.5px]">
+          {onRewind !== undefined && (
             <button
               type="button"
-              data-testid={`user-action-${action.kind}`}
-              className="text-brand-ink underline disabled:no-underline disabled:opacity-60"
-              disabled={action.disabled === true}
-              onClick={() => onAction(action.kind, entry)}
+              data-testid="user-rewind"
+              title="回退到这条消息之前（可选还原代码 / 对话）"
+              className={cn(
+                'text-text-3 hover:text-text-2 flex items-center gap-1 transition-opacity focus-visible:opacity-100',
+                revealed ? 'opacity-100' : 'opacity-0 group-hover:opacity-100',
+              )}
+              onClick={() => {
+                setRevealed(false);
+                onRewind(entry);
+              }}
             >
-              {action.label}
+              <Undo2Icon className="size-3" />
+              回退到这里
             </button>
           )}
+          {badge.label !== undefined && (
+            <span className={cn('flex items-center gap-2', TONE_CLASS[badge.tone])}>
+              <span>{badge.label}</span>
+              {action !== undefined && (
+                <button
+                  type="button"
+                  data-testid={`user-action-${action.kind}`}
+                  className="text-brand-ink underline disabled:no-underline disabled:opacity-60"
+                  disabled={action.disabled === true}
+                  onClick={() => onAction(action.kind, entry)}
+                >
+                  {action.label}
+                </button>
+              )}
+            </span>
+          )}
+          {entry.ts > 0 && <EntryTime at={entry.ts} testId="user-time" className="text-text-3" />}
         </div>
       )}
     </li>
@@ -100,6 +107,7 @@ export function UserMessage({
  */
 export function AssistantMessage({ entry }: { entry: AssistantEntry }): React.JSX.Element {
   const streaming = !entry.done;
+  const [revealed, setRevealed] = useState(false);
   if (entry.thinking && entry.text === '') {
     return (
       <li data-testid="entry-thinking" className="text-text-3 text-[13px] italic">
@@ -108,16 +116,79 @@ export function AssistantMessage({ entry }: { entry: AssistantEntry }): React.JS
     );
   }
   return (
-    <li data-testid="entry-assistant" data-done={String(entry.done)} className="max-w-full">
+    <li
+      data-testid="entry-assistant"
+      data-done={String(entry.done)}
+      className="group relative max-w-full"
+      // 触屏没有 hover：点一下正文亮出时间（点链接 / 按钮、选文字时不算）
+      onClick={(e) => {
+        if ((e.target as Element).closest('a,button') !== null) return;
+        if ((window.getSelection()?.toString() ?? '') !== '') return;
+        setRevealed((v) => !v);
+      }}
+    >
       <Markdown text={entry.text} streaming={streaming} />
       {streaming && (
         <span aria-hidden className="text-brand ml-0.5 motion-safe:animate-pulse">
           ▍
         </span>
       )}
+      {/* 悬停才显示，绝对定位落在与下一条之间的 gap 里，不占高度 */}
+      {entry.ts > 0 && (
+        <EntryTime
+          at={entry.ts}
+          testId="assistant-time"
+          className={cn(
+            'text-text-3 pointer-events-none absolute top-full right-0 mt-px text-[10.5px] leading-none transition-opacity',
+            revealed ? 'opacity-100' : 'opacity-0 group-hover:opacity-100',
+          )}
+        />
+      )}
     </li>
   );
 }
+
+/** 时间线里的消息时刻：`14:05`，悬停给完整日期时间 */
+function EntryTime({ at, testId, className }: { at: number; testId: string; className?: string }): React.JSX.Element {
+  return (
+    <time
+      data-testid={testId}
+      dateTime={new Date(at).toISOString()}
+      title={formatDateTime(at)}
+      className={cn('tabular', className)}
+    >
+      {formatClock(at)}
+    </time>
+  );
+}
+
+/**
+ * 时间标记（像聊天工具）：跨天给「今天 14:05」这类带日期的分隔线，同一天里
+ * 长间隔只给一个淡淡的时刻。密集的工具调用不会触发（规则见 lib/time-markers）。
+ */
+export const TimeDivider = memo(function TimeDivider({
+  at,
+  day,
+}: {
+  at: number;
+  /** 日期标签（「今天」「10月18日 周六」）；不给 = 同一天里的间隔标记 */
+  day: string | undefined;
+}): React.JSX.Element {
+  return (
+    <li
+      role="separator"
+      data-testid="time-divider"
+      data-kind={day === undefined ? 'gap' : 'day'}
+      className="text-text-3 flex items-center gap-3 text-[11px] leading-none"
+    >
+      {day !== undefined && <span aria-hidden className="bg-border h-px flex-1" />}
+      <time dateTime={new Date(at).toISOString()} title={formatDateTime(at)} className="tabular mx-auto">
+        {day === undefined ? formatClock(at) : `${day} ${formatClock(at)}`}
+      </time>
+      {day !== undefined && <span aria-hidden className="bg-border h-px flex-1" />}
+    </li>
+  );
+});
 
 /**
  * 系统提示（原型 `.sysnote`）：run.state 迁移、会话恢复、瞬时错误的一行痕迹。
