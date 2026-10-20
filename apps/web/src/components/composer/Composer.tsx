@@ -19,12 +19,20 @@
  * ## 回车：换行还是发送
  *
  * 见 composer-keys.ts：触屏设备回车只换行、靠按钮发送；PC 按 prefs.sendKey。
+ *
+ * ## 附件
+ *
+ * 回形针选文件、在输入框里粘贴（剪贴板里的图片 / 文件）都交给 `attachments.onAdd`；
+ * 拖拽到页面由 ChatView 处理（整页都是落点）。附件一加进来就开始上传，全部传完
+ * 才能发送；只有附件没有文字也能发。
  */
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { ArrowUpIcon, SquareIcon } from 'lucide-react';
+import { ArrowUpIcon, PaperclipIcon, SquareIcon } from 'lucide-react';
 import { Button } from '@/components/ui/button.tsx';
 import { useMediaQuery } from '@/components/shell/use-media-query.ts';
 import { cn } from '@/lib/utils.ts';
+import type { DraftAttachment } from '@/lib/attachment-model.ts';
+import { AttachmentStrip } from './AttachmentStrip.tsx';
 import { IS_MAC, isSendKey, sendKeyLabel, TOUCH_QUERY, type SendKey } from './composer-keys.ts';
 import { SlashMenu } from './SlashMenu.tsx';
 import {
@@ -40,6 +48,17 @@ const MAX_ROWS = 6;
 const LINE_HEIGHT_PX = 21;
 const VERTICAL_PADDING_PX = 17;
 
+export interface ComposerAttachments {
+  drafts: readonly DraftAttachment[];
+  /** 全部传完且没有失败 */
+  ready: boolean;
+  onAdd: (files: File[]) => void;
+  onRemove: (id: string) => void;
+  onRetry: (id: string) => void;
+  /** 不能加附件的原因（agent 版本过旧等）；undefined = 可以 */
+  disabledReason?: string | undefined;
+}
+
 export function Composer({
   value,
   onChange,
@@ -50,6 +69,7 @@ export function Composer({
   offlineHint,
   sources,
   sendKey,
+  attachments,
 }: {
   value: string;
   onChange: (text: string) => void;
@@ -64,8 +84,14 @@ export function Composer({
   sources: SlashSources;
   /** PC 上的发送键（prefs.sendKey）；触屏设备忽略 */
   sendKey: SendKey;
+  /** 附件；不给 = 不显示附件入口 */
+  attachments?: ComposerAttachments | undefined;
 }): React.JSX.Element {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const drafts = attachments?.drafts ?? [];
+  const canAttach = attachments !== undefined && attachments.disabledReason === undefined;
+  const canSend = (value.trim() !== '' || drafts.length > 0) && (attachments?.ready ?? true);
   const touch = useMediaQuery(TOUCH_QUERY);
   const keyHint = sendKeyLabel(sendKey, touch, IS_MAC);
   const [activeIndex, setActiveIndex] = useState(0);
@@ -96,9 +122,17 @@ export function Composer({
   }, [value]);
 
   const submit = (): void => {
-    const text = value.trim();
-    if (text === '') return;
-    onSend(text);
+    if (!canSend) return;
+    onSend(value.trim());
+  };
+
+  const onPaste = (e: React.ClipboardEvent<HTMLTextAreaElement>): void => {
+    const files = Array.from(e.clipboardData.files);
+    if (files.length === 0 || attachments === undefined) return;
+    // 剪贴板里有文件（截图、复制的图片 / 文件）：当附件收，不往输入框里贴文件名
+    e.preventDefault();
+    if (attachments.disabledReason !== undefined) return;
+    attachments.onAdd(files);
   };
 
   // 填入类选中（项目命令 / 片段）后，等新文本渲染出来再把光标挪到末尾——
@@ -170,7 +204,44 @@ export function Composer({
           📮 {offlineHint}
         </div>
       )}
-      <div className="border-border bg-background safe-bottom flex items-end gap-2 border-t px-3 py-2.5">
+      {attachments !== undefined && (
+        <AttachmentStrip drafts={drafts} onRemove={attachments.onRemove} onRetry={attachments.onRetry} />
+      )}
+      <div
+        className={cn(
+          'border-border bg-background safe-bottom flex items-end gap-2 px-3 py-2.5',
+          drafts.length === 0 && 'border-t',
+        )}
+      >
+        {attachments !== undefined && (
+          <>
+            <Button
+              size="icon"
+              variant="ghost"
+              data-testid="attach"
+              title={attachments.disabledReason ?? '添加图片或文件（也可以粘贴或拖到页面上）'}
+              aria-label="添加附件"
+              className="text-text-2 size-[38px]"
+              disabled={!canAttach}
+              onClick={() => fileInputRef.current?.click()}
+            >
+              <PaperclipIcon />
+            </Button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              hidden
+              data-testid="attach-input"
+              onChange={(e) => {
+                const files = Array.from(e.target.files ?? []);
+                // 清空：同一个文件删掉后还能再选
+                e.target.value = '';
+                if (files.length > 0) attachments.onAdd(files);
+              }}
+            />
+          </>
+        )}
         <textarea
           ref={textareaRef}
           data-testid="composer"
@@ -188,6 +259,7 @@ export function Composer({
           }
           onChange={(e) => onChange(e.target.value)}
           onKeyDown={onKeyDown}
+          onPaste={onPaste}
         />
         {running && (
           <Button
@@ -208,7 +280,7 @@ export function Composer({
           title={(running ? '排队发送' : '发送') + (keyHint === null ? '' : `（${keyHint}）`)}
           aria-label={running ? '排队发送' : '发送'}
           className="size-[38px]"
-          disabled={value.trim() === ''}
+          disabled={!canSend}
           onClick={submit}
         >
           <ArrowUpIcon />

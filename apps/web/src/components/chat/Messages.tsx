@@ -10,6 +10,7 @@ import { Undo2Icon } from 'lucide-react';
 import type { AssistantEntry, UserEntry } from '@/lib/reducer.ts';
 import { formatClock, formatDateTime } from '@/lib/format.ts';
 import { cn } from '@/lib/utils.ts';
+import { MessageAttachments } from './Attachments.tsx';
 import { Markdown } from './Markdown.tsx';
 import { userEntryBadge, type UserEntryAction } from './entry-status.ts';
 
@@ -33,6 +34,8 @@ export function UserMessage({
   now,
   onAction,
   onRewind,
+  onOpenAttachment,
+  attachmentUrl,
 }: {
   entry: UserEntry;
   /** 撤回乐观态的超时判据（Timeline 的统一 tick） */
@@ -40,6 +43,9 @@ export function UserMessage({
   onAction: (action: UserEntryAction, entry: UserEntry) => void;
   /** 回退到这条消息之前；不给 = 这条不能回退（未确认 / agent 不支持 / 会话忙） */
   onRewind?: ((entry: UserEntry) => void) | undefined;
+  /** 加载附件（见 Attachments.tsx）；不给 = 附件只显示、点不开 */
+  onOpenAttachment?: ((entry: UserEntry, index: number) => Promise<string>) | undefined;
+  attachmentUrl?: ((blobId: string | undefined) => string | undefined) | undefined;
 }): React.JSX.Element {
   const badge = userEntryBadge(entry, formatExpiry, now);
   const action = badge.action;
@@ -51,12 +57,24 @@ export function UserMessage({
       data-status={entry.status ?? 'remote'}
       className="group flex max-w-[85%] flex-col items-end gap-1 self-end"
     >
-      <div
-        className="bg-user-bubble rounded-[14px] rounded-br-[4px] px-3 py-2 text-[14px] whitespace-pre-wrap"
-        onClick={onRewind === undefined ? undefined : () => setRevealed((v) => !v)}
-      >
-        {entry.text}
-      </div>
+      {entry.attachments !== undefined && entry.attachments.length > 0 && (
+        <MessageAttachments
+          attachments={entry.attachments}
+          actions={
+            onOpenAttachment === undefined
+              ? undefined
+              : { open: (i) => onOpenAttachment(entry, i), cached: (id) => attachmentUrl?.(id) }
+          }
+        />
+      )}
+      {entry.text !== '' && (
+        <div
+          className="bg-user-bubble rounded-[14px] rounded-br-[4px] px-3 py-2 text-[14px] whitespace-pre-wrap"
+          onClick={onRewind === undefined ? undefined : () => setRevealed((v) => !v)}
+        >
+          {entry.text}
+        </div>
+      )}
       {/* 时间、回退入口、状态同一行：回退平时透明但本来就占着这行，时间放进来不加高度 */}
       {(entry.ts > 0 || onRewind !== undefined || badge.label !== undefined) && (
         <div className="flex items-center gap-2 text-[11.5px]">

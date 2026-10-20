@@ -27,6 +27,9 @@ export function createTrineStore(): TrineStore {
     timelines: {},
     drafts: {},
     setDraft: (key, text) => set((s) => ({ drafts: { ...s.drafts, [key]: text } })),
+    attachmentDrafts: {},
+    updateAttachmentDrafts: (key, update) =>
+      set((s) => ({ attachmentDrafts: { ...s.attachmentDrafts, [key]: update(s.attachmentDrafts[key] ?? []) } })),
     prefs: defaultPrefs(),
     notices: [],
     droppedCount: 0,
@@ -88,8 +91,9 @@ export function bindClient(store: TrineStore, client: TrineClient, now: () => nu
         const { [key]: _tl, ...timelines } = s.timelines;
         const { [key]: _caps, ...capabilities } = s.capabilities;
         const { [key]: _draft, ...drafts } = s.drafts;
+        const { [key]: _attachments, ...attachmentDrafts } = s.attachmentDrafts;
         const { [key]: _sync, ...syncing } = s.syncing;
-        return { timelines, capabilities, drafts, syncing };
+        return { timelines, capabilities, drafts, attachmentDrafts, syncing };
       }),
     ),
     client.on('notice', (notice) => {

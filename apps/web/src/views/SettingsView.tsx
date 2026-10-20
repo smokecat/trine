@@ -1,5 +1,5 @@
 /**
- * 设置（方案 §4.1 / §5）：主题、发送键、prompt 片段、已知模型、新会话默认值、设备信息、两级重置。
+ * 设置（方案 §4.1 / §5）：主题、发送键、prompt 片段、已知模型、新会话默认值、附件、设备信息、两级重置。
  *
  * ## 两级重置的区别必须写清楚
  *
@@ -38,7 +38,8 @@ import { useClient, useTrine } from '@/app/runtime.ts';
 import { setTheme, syncFromPrefs, useTheme, type ThemeMode } from '@/app/theme.ts';
 import { browserKv } from '@/lib/adapters.browser.ts';
 import { KV_IDENTITY, KV_PREFS } from '@/lib/storage.ts';
-import { truncate } from '@/lib/format.ts';
+import { formatBytes, truncate } from '@/lib/format.ts';
+import { ATTACHMENTS_MAX_COUNT } from '@trine/core/types';
 import { cn } from '@/lib/utils.ts';
 
 const THEME_OPTIONS: { value: ThemeMode; label: string }[] = [
@@ -261,6 +262,127 @@ function SendKeySetting(): React.JSX.Element {
   );
 }
 
+const COMPRESS_OPTIONS: { value: number; label: string }[] = [
+  { value: 0, label: '不压缩' },
+  { value: 1, label: '超过 1 MB' },
+  { value: 2, label: '超过 2 MB' },
+  { value: 5, label: '超过 5 MB' },
+  { value: 10, label: '超过 10 MB' },
+];
+
+/** 附件：每条消息的个数 / 合计上限，图片压缩阈值 */
+function AttachmentSettings(): React.JSX.Element {
+  const client = useClient();
+  const maxCount = useTrine((s) => s.prefs.attachMaxCount);
+  const maxTotalMb = useTrine((s) => s.prefs.attachMaxTotalMb);
+  const compressMb = useTrine((s) => s.prefs.imageCompressMb);
+  const [relayMax, setRelayMax] = useState<number | null>(null);
+  useEffect(() => {
+    let alive = true;
+    client?.blobConfig().then(
+      (c) => {
+        if (alive) setRelayMax(c.maxBytes);
+      },
+      () => {},
+    );
+    return () => {
+      alive = false;
+    };
+  }, [client]);
+
+  return (
+    <section className="flex flex-col gap-2" data-testid="attachment-settings">
+      <h2 className="font-medium">附件</h2>
+      <p className="text-text-3 text-xs">
+        每条消息能带的图片 / 文件。附件加密后经服务端中转（只存密文，默认保留 7 天），过期后点开时由 agent 重新上传。
+        {relayMax !== null && ` 服务端单个附件上限 ${formatBytes(relayMax)}。`}
+      </p>
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+        <NumberSetting
+          label="最多个数"
+          testId="attach-max-count"
+          value={maxCount}
+          min={1}
+          max={ATTACHMENTS_MAX_COUNT}
+          integer
+          onCommit={(v) => client?.updatePrefs({ attachMaxCount: v })}
+        />
+        <NumberSetting
+          label="合计上限（MB）"
+          testId="attach-max-total"
+          value={maxTotalMb}
+          min={1}
+          max={4096}
+          onCommit={(v) => client?.updatePrefs({ attachMaxTotalMb: v })}
+        />
+      </div>
+      <div className="text-text-3 text-[11px] tracking-[0.05em] uppercase">图片压缩</div>
+      <p className="text-text-3 text-xs">
+        超过阈值的图片先在浏览器里缩到长边 2000px 再上传，省流量也更快；不压缩时大图由 agent 交给 Claude 自己读取缩放。
+      </p>
+      <div className="flex flex-wrap gap-1.5">
+        {COMPRESS_OPTIONS.map((opt) => (
+          <Chip
+            key={opt.value}
+            data-testid={`compress-${opt.value}`}
+            selected={compressMb === opt.value}
+            onClick={() => client?.updatePrefs({ imageCompressMb: opt.value })}
+          >
+            {opt.label}
+          </Chip>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+/** 数字设置项：失焦或回车时校验并提交，非法值还原 */
+function NumberSetting({
+  label,
+  testId,
+  value,
+  min,
+  max,
+  integer = false,
+  onCommit,
+}: {
+  label: string;
+  testId: string;
+  value: number;
+  min: number;
+  max: number;
+  integer?: boolean;
+  onCommit: (value: number) => void;
+}): React.JSX.Element {
+  const [text, setText] = useState(String(value));
+  useEffect(() => setText(String(value)), [value]);
+  const commit = (): void => {
+    const n = Number(text);
+    if (!Number.isFinite(n) || n < min || n > max || (integer && !Number.isInteger(n))) {
+      toast.error(`${label}需要是 ${min}–${max} 之间的${integer ? '整数' : '数'}`);
+      setText(String(value));
+      return;
+    }
+    if (n !== value) onCommit(n);
+  };
+  return (
+    <label className="flex items-center gap-2">
+      <span className="text-text-2 text-xs">{label}</span>
+      <Input
+        data-testid={testId}
+        inputMode="numeric"
+        className="h-8 w-20"
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') commit();
+        }}
+      />
+    </label>
+  );
+}
+
 /** 新会话默认值：新建会话 sheet 预选的模型与权限模式 */
 function SessionDefaults(): React.JSX.Element {
   const client = useClient();
@@ -379,6 +501,9 @@ export function SettingsView(): React.JSX.Element {
 
         <Separator />
         <SessionDefaults />
+
+        <Separator />
+        <AttachmentSettings />
 
         <Separator />
 

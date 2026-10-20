@@ -54,6 +54,8 @@ import type { PermissionDecision } from '@/components/chat/PermissionCard.tsx';
 import { heartbeatView } from '@/components/chat/heartbeat-model.ts';
 import { resolvedAliasModel, shortModel } from '@/components/list/sorting.ts';
 import { Composer } from '@/components/composer/Composer.tsx';
+import { useAttachmentDrafts } from '@/components/composer/use-attachment-drafts.ts';
+import { attachmentRefs, hasFiles } from '@/lib/attachment-model.ts';
 import type { SlashItem } from '@/components/composer/slash-model.ts';
 import {
   SessionSettingsSheet,
@@ -68,6 +70,7 @@ import { SessionHeadMenu } from '@/components/chat/SessionHeadMenu.tsx';
 import { composerOfflineHint } from '@/components/banners/conditions.ts';
 import { useClient, useTrine } from '@/app/runtime.ts';
 import {
+  agentSupportsAttachments,
   agentSupportsBgTaskStop,
   agentSupportsHistory,
   agentSupportsPlanOptions,
@@ -267,14 +270,65 @@ export function ChatView(): React.JSX.Element {
   // 动作
   // ---------------------------------------------------------------------
 
+  const attach = useAttachmentDrafts(key);
+  const attachDisabledReason = agentSupportsAttachments(machine?.info?.agentVersion)
+    ? undefined
+    : machine?.info === undefined
+      ? '还不知道这台 agent 的版本，暂时不能添加附件'
+      : '这台 agent 版本过旧（需要 0.11.0 以上），不支持附件';
+
   const send = useCallback(
     (text: string) => {
       if (!client) return;
-      client.sendInput(machineId, sessionId, text);
+      client.sendInput(machineId, sessionId, text, attach.take());
       setDraft(key, '');
     },
-    [client, machineId, sessionId, key, setDraft],
+    [client, machineId, sessionId, key, setDraft, attach],
   );
+
+  // 拖拽文件到页面任意位置：显示遮罩，松手即加为附件。计数器配对 enter/leave
+  // （进出子元素也会触发），只认带文件的拖拽（拖选中的文字不算）
+  const [dragging, setDragging] = useState(false);
+  const addAttachments = attach.add;
+  useEffect(() => {
+    let depth = 0;
+    const onEnter = (e: DragEvent): void => {
+      if (!hasFiles(e.dataTransfer?.types)) return;
+      e.preventDefault();
+      depth += 1;
+      setDragging(true);
+    };
+    const onOver = (e: DragEvent): void => {
+      // 不 preventDefault 浏览器就不认这是落点，松手会直接打开文件
+      if (hasFiles(e.dataTransfer?.types)) e.preventDefault();
+    };
+    const onLeave = (e: DragEvent): void => {
+      if (!hasFiles(e.dataTransfer?.types)) return;
+      depth = Math.max(0, depth - 1);
+      if (depth === 0) setDragging(false);
+    };
+    const onDrop = (e: DragEvent): void => {
+      if (!hasFiles(e.dataTransfer?.types)) return;
+      e.preventDefault();
+      depth = 0;
+      setDragging(false);
+      if (attachDisabledReason !== undefined) {
+        toast.error(attachDisabledReason);
+        return;
+      }
+      addAttachments(Array.from(e.dataTransfer?.files ?? []));
+    };
+    window.addEventListener('dragenter', onEnter);
+    window.addEventListener('dragover', onOver);
+    window.addEventListener('dragleave', onLeave);
+    window.addEventListener('drop', onDrop);
+    return () => {
+      window.removeEventListener('dragenter', onEnter);
+      window.removeEventListener('dragover', onOver);
+      window.removeEventListener('dragleave', onLeave);
+      window.removeEventListener('drop', onDrop);
+    };
+  }, [addAttachments, attachDisabledReason]);
 
   const handlers: TimelineHandlers = useMemo(
     () => ({
@@ -292,7 +346,7 @@ export function ChatView(): React.JSX.Element {
             break;
           case 'resend':
             // expired 的条目已是终态，只能以新 clientMsgId 重发
-            client.sendInput(machineId, sessionId, entry.text);
+            client.sendInput(machineId, sessionId, entry.text, attachmentRefs(entry));
             break;
         }
       },
@@ -308,6 +362,11 @@ export function ChatView(): React.JSX.Element {
         client?.send(machineId, { type: 'run.resumeAt', sessionId, at });
       },
       onStop: () => client?.stopRun(machineId, sessionId),
+      onOpenAttachment: (entry, index) =>
+        client === null
+          ? Promise.reject(new Error('还没准备好'))
+          : client.openAttachment(machineId, sessionId, entry.id, index),
+      attachmentUrl: (blobId) => client?.attachmentUrl(blobId),
       onLoadSubagentHistory: (toolUseId) =>
         client ? client.loadSubagentHistory(machineId, sessionId, toolUseId) : Promise.reject(new Error('未连接')),
     }),
@@ -596,7 +655,26 @@ export function ChatView(): React.JSX.Element {
           ...(onRename === undefined ? { unavailable: ['rename'] as const } : {}),
         }}
         sendKey={prefs.sendKey}
+        attachments={{
+          drafts: attach.drafts,
+          ready: attach.ready,
+          onAdd: attach.add,
+          onRemove: attach.remove,
+          onRetry: attach.retry,
+          disabledReason: attachDisabledReason,
+        }}
       />
+
+      {dragging && (
+        <div
+          data-testid="drop-overlay"
+          className="bg-background/80 border-brand pointer-events-none fixed inset-3 z-50 flex items-center justify-center rounded-2xl border-2 border-dashed"
+        >
+          <div className="text-text text-[15px]">
+            {attachDisabledReason ?? '松手添加为附件'}
+          </div>
+        </div>
+      )}
 
       <RewindDialog
         open={rewindTarget !== null}

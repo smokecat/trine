@@ -56,14 +56,18 @@ export class BlobStore {
     const writer = Bun.file(part).writer();
     let size = 0;
     let failure: 'too_large' | 'empty' | 'io' | undefined;
+    const reader = body.getReader();
     try {
-      for await (const chunk of body) {
-        size += chunk.length;
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        size += value.length;
         if (size > this.maxBytes) {
           failure = 'too_large';
+          await reader.cancel().catch(() => {});
           break;
         }
-        writer.write(chunk);
+        writer.write(value);
         // flush 才是背压：不等它的话慢磁盘会让数据全堆在内存里
         await writer.flush();
       }

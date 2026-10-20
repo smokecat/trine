@@ -58,6 +58,7 @@ export default defineConfig({
       '/auth': { target: proxyTarget },
       '/healthz': { target: proxyTarget },
       '/devices': { target: proxyTarget },
+      '/blobs': { target: proxyTarget },
     },
   },
   preview: {
@@ -69,6 +70,7 @@ export default defineConfig({
       '/auth': { target: proxyTarget },
       '/healthz': { target: proxyTarget },
       '/devices': { target: proxyTarget },
+      '/blobs': { target: proxyTarget },
     },
   },
   optimizeDeps: {

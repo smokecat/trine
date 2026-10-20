@@ -32,6 +32,7 @@
 import { z } from 'zod';
 import type {
   AgentToClientEvent,
+  AttachmentRef,
   BgTask,
   HistoryItem,
   MachineInfo,
@@ -45,7 +46,9 @@ import type {
 // reducer 在首屏依赖图里（store/types.ts → 这里），从根引就把 libsodium
 // 钉进 entry 的必下集合。类型导入无所谓（编译期擦除），值导入必须挑子路径。
 import {
+  ATTACHMENTS_MAX_COUNT,
   BgTaskSchema,
+  HistoryAttachmentSchema,
   McpServerStatusSchema,
   PermissionModeSchema,
   RunPhaseSchema,
@@ -99,6 +102,12 @@ export const UserEntrySchema = z.object({
    * 目标消息，也用于和历史页去重。**加法字段**。
    */
   uuid: z.string().optional(),
+  /**
+   * 附件（agent ≥ 0.11.0）。本设备发的、回显的都带 blob 引用；历史里的可能没有
+   * （CLI 粘贴的图片 / agent 不知道），点开时用 uuid + 下标找 agent 重新上传。
+   * 只存元数据和引用，字节不进时间线（时间线会落盘到 IndexedDB）。**加法字段**。
+   */
+  attachments: z.array(HistoryAttachmentSchema).max(ATTACHMENTS_MAX_COUNT).optional(),
   /** input.parked 回执里的 seq，撤回（park.recall）与 park.expired 对账用 */
   parkedSeq: z.number().int().nonnegative().optional(),
   /**
@@ -454,6 +463,7 @@ export function applyEvent(tl: Timeline, event: AgentToClientEvent): Timeline {
               status,
               messageId: event.messageId,
               text: event.text,
+              ...(event.attachments === undefined ? {} : { attachments: event.attachments }),
               ...(event.uuid === undefined ? {} : { uuid: event.uuid }),
               seq,
               // 换成 agent 时钟：发送时记的是浏览器时间，与后续 assistant / 工具条目
@@ -476,6 +486,7 @@ export function applyEvent(tl: Timeline, event: AgentToClientEvent): Timeline {
             text: event.text,
             local: false,
             messageId: event.messageId,
+            ...(event.attachments === undefined ? {} : { attachments: event.attachments }),
             ...(event.uuid === undefined ? {} : { uuid: event.uuid }),
             seq,
             ts: event.ts,
@@ -625,6 +636,21 @@ export function applyEvent(tl: Timeline, event: AgentToClientEvent): Timeline {
       });
     case 'bgtask.snapshot':
       return { ...tl, lastAppliedSeq: Math.max(tl.lastAppliedSeq, seq), bgTasks: event.tasks };
+    case 'input.rejected': {
+      // agent 没接受（附件准备失败）：本地条目转 failed，可原样重试。别的设备没有这条本地条目
+      const idx = tl.entries.findIndex((e) => e.kind === 'user' && e.local && e.id === event.clientMsgId);
+      if (idx < 0) return withEntries(tl, tl.entries, seq);
+      const cur = tl.entries[idx] as UserEntry;
+      return withEntries(
+        tl,
+        replaceEntry(tl.entries, idx, {
+          ...cur,
+          status: transitionLocalStatus(cur.status ?? 'sending', 'failed'),
+          failReason: event.reason,
+        }),
+        seq,
+      );
+    }
     case 'input.queued': {
       const idx = tl.entries.findIndex((e) => e.kind === 'user' && e.local && e.id === event.clientMsgId);
       if (idx < 0) return withEntries(tl, tl.entries, seq);
@@ -642,6 +668,8 @@ export function applyEvent(tl: Timeline, event: AgentToClientEvent): Timeline {
     case 'session.history.response':
     // 子 agent 过程由 client 按 reqId 关联后并进父工具条目；这里只推进游标
     case 'subagent.history.response':
+    // 附件新引用由 client.openAttachment 按 reqId 关联后写回条目；这里只推进游标
+    case 'attachment.fetch.response':
     // 命令清单由 client.loadCommands 按 reqId 关联后写进 capabilities；这里只推进游标
     case 'session.commands.response':
     // 回退的预览 / 结果由 client 按 reqId 关联；时间线的变化走 session.rewound
@@ -723,12 +751,16 @@ export function mergeSubagentHistory(
 // ---------------------------------------------------------------------------
 
 /** 用户点发送：立即以 sending 入时间线；同 clientMsgId 已存在（重发）则复位为 sending */
-export function addLocalUserEntry(tl: Timeline, args: { clientMsgId: string; text: string; ts: number }): Timeline {
+export function addLocalUserEntry(
+  tl: Timeline,
+  args: { clientMsgId: string; text: string; ts: number; attachments?: AttachmentRef[] },
+): Timeline {
   const idx = tl.entries.findIndex((e) => e.kind === 'user' && e.local && e.id === args.clientMsgId);
   const entry: UserEntry = {
     kind: 'user',
     id: args.clientMsgId,
     text: args.text,
+    ...(args.attachments === undefined || args.attachments.length === 0 ? {} : { attachments: args.attachments }),
     local: true,
     status: 'sending',
     seq: 0,
@@ -740,6 +772,17 @@ export function addLocalUserEntry(tl: Timeline, args: { clientMsgId: string; tex
     return { ...tl, entries: replaceEntry(tl.entries, idx, entry) };
   }
   return { ...tl, entries: [...tl.entries, entry] };
+}
+
+/** 用新引用替换用户条目的第 index 个附件（agent 重新上传之后） */
+export function setUserAttachment(tl: Timeline, entryId: string, index: number, ref: AttachmentRef): Timeline {
+  const idx = tl.entries.findIndex((e) => e.kind === 'user' && e.id === entryId);
+  if (idx < 0) return tl;
+  const cur = tl.entries[idx] as UserEntry;
+  if (cur.attachments === undefined || index >= cur.attachments.length) return tl;
+  const attachments = cur.attachments.slice();
+  attachments[index] = ref;
+  return { ...tl, entries: replaceEntry(tl.entries, idx, { ...cur, attachments }) };
 }
 
 /** 按状态机迁移本地条目，可附带 parked 信息 / 失败原因 */
@@ -924,7 +967,17 @@ export function isHistoryEntry(entry: TimelineEntry): boolean {
 function historyToEntry(item: HistoryItem): TimelineEntry {
   switch (item.kind) {
     case 'user':
-      return { kind: 'user', id: item.id, text: item.text, local: false, messageId: item.id, uuid: item.id, seq: 0, ts: item.ts };
+      return {
+        kind: 'user',
+        id: item.id,
+        text: item.text,
+        local: false,
+        messageId: item.id,
+        uuid: item.id,
+        ...(item.attachments === undefined ? {} : { attachments: item.attachments }),
+        seq: 0,
+        ts: item.ts,
+      };
     case 'assistant':
       return { kind: 'assistant', id: item.id, text: item.text, done: true, thinking: false, seq: 0, ts: item.ts };
     case 'tool':
@@ -1085,6 +1138,17 @@ export const REWIND_MIN_AGENT_VERSION = '0.9.0';
 /** agent 版本 ≥ REWIND_MIN_AGENT_VERSION；解析不了（未知版本）按不支持处理 */
 export function agentSupportsRewind(agentVersion: string | undefined): boolean {
   return agentAtLeast(agentVersion, REWIND_MIN_AGENT_VERSION);
+}
+
+/**
+ * 附件（input.send / user.message 带 attachments、attachment.fetch、input.rejected）的
+ * 最低 agent 版本。旧 agent 会丢掉附件字段，只带附件的消息整帧被拒——输入框据此决定
+ * 给不给附件入口。
+ */
+export const ATTACHMENTS_MIN_AGENT_VERSION = '0.11.0';
+
+export function agentSupportsAttachments(agentVersion: string | undefined): boolean {
+  return agentAtLeast(agentVersion, ATTACHMENTS_MIN_AGENT_VERSION);
 }
 
 /** 快照里正在运行的后台任务数（没有快照 = 0） */

@@ -20,9 +20,13 @@
  *   的不发（除非用户打开它）。空时间线且游标 > 0 → sinceSeq 0 回填。
  */
 import { sodiumReady } from '@trine/core/crypto';
-import { AuthClient, httpBase, type AuthToken } from '@trine/core/net';
+import { AuthClient, BlobClient, BlobClientError, httpBase, type AuthToken, type BlobConfig } from '@trine/core/net';
+import { ATTACHMENT_NAME_MAX } from '@trine/core/types';
+import { attachmentKind, attachmentRefs } from './attachment-model.ts';
+import { encryptFile, maybeCompressImage, xhrUpload, type UploadFn } from './attachment-transfer.ts';
 import type {
   AgentToClientEvent,
+  AttachmentRef,
   PermissionMode,
   RewindErrorCode,
   RewindMode,
@@ -59,6 +63,7 @@ import {
   mergeSubagentHistory,
   nextParkedExpiry,
   setLocalStatus,
+  setUserAttachment,
   type Capabilities,
   type MachineState,
   type Timeline,
@@ -104,6 +109,8 @@ export interface ClientDeps {
   persistDebounceMs?: number;
   /** 时间线落盘的最大等待（流式期间也要周期落盘） */
   persistMaxWaitMs?: number;
+  /** 附件密文上传（默认 XMLHttpRequest，测试注入假实现） */
+  uploadBlob?: UploadFn;
 }
 
 export type ClientNotice =
@@ -242,6 +249,12 @@ export class TrineClient {
   readonly #commandsInflight = new Map<string, Promise<void>>();
   /** 子 agent 回看的在途请求：key = timelineKey + toolUseId */
   readonly #subagentInflight = new Map<string, Promise<void>>();
+  /** 附件明文的 objectURL（blobId → url），页面生命周期内复用 */
+  readonly #attachmentUrls = new Map<string, string>();
+  /** 附件加载的在途请求：key = timelineKey + 条目 id + 下标 */
+  readonly #attachmentInflight = new Map<string, Promise<string>>();
+  #blobClient: BlobClient | null = null;
+  #blobConfig: Promise<BlobConfig> | null = null;
   readonly #listeners = new Map<keyof ClientEvents, Set<Listener>>();
   readonly #machineWaiters: { resolve: (machineId: string) => void }[] = [];
   #connection: Connection | null = null;
@@ -712,10 +725,13 @@ export class TrineClient {
   // 出站 API
   // -------------------------------------------------------------------------
 
-  /** 发一条用户消息：立即以 sending 入时间线，返回 clientMsgId */
-  sendInput(machineId: string, sessionId: string, text: string): string {
+  /**
+   * 发一条用户消息：立即以 sending 入时间线，返回 clientMsgId。附件须已上传
+   * （`uploadAttachment`），这里只带引用。
+   */
+  sendInput(machineId: string, sessionId: string, text: string, attachments: AttachmentRef[] = []): string {
     const clientMsgId = this.#uuid();
-    this.#sendInputWith(machineId, sessionId, clientMsgId, text);
+    this.#sendInputWith(machineId, sessionId, clientMsgId, text, attachments);
     return clientMsgId;
   }
 
@@ -725,15 +741,30 @@ export class TrineClient {
       (e): e is UserEntry => e.kind === 'user' && e.local && e.id === clientMsgId,
     );
     if (!entry || entry.status !== 'failed') return false;
-    this.#sendInputWith(machineId, sessionId, clientMsgId, entry.text);
+    this.#sendInputWith(machineId, sessionId, clientMsgId, entry.text, attachmentRefs(entry));
     return true;
   }
 
-  #sendInputWith(machineId: string, sessionId: string, clientMsgId: string, text: string): void {
+  #sendInputWith(
+    machineId: string,
+    sessionId: string,
+    clientMsgId: string,
+    text: string,
+    attachments: AttachmentRef[],
+  ): void {
     // 已删除的会话：不入时间线、不发（agent 墓碑只会忽略它，条目会永远停在「发送中」）
     if (!this.openSession(machineId, sessionId)) return;
-    this.#updateTimeline(machineId, sessionId, (tl) => addLocalUserEntry(tl, { clientMsgId, text, ts: this.deps.clock.now() }));
-    if (!this.#safeSend(machineId, { type: 'input.send', sessionId, clientMsgId, text })) {
+    this.#updateTimeline(machineId, sessionId, (tl) =>
+      addLocalUserEntry(tl, { clientMsgId, text, ts: this.deps.clock.now(), attachments }),
+    );
+    const body: OutboundBody = {
+      type: 'input.send',
+      sessionId,
+      clientMsgId,
+      text,
+      ...(attachments.length === 0 ? {} : { attachments }),
+    };
+    if (!this.#safeSend(machineId, body)) {
       // fatal scope：不发，条目立即 failed（可在重置计数器后重发）
       this.#updateTimeline(machineId, sessionId, (tl) =>
         setLocalStatus(tl, clientMsgId, 'failed', { failReason: '该会话出站计数器失效，重置后可重发' }),
@@ -890,6 +921,157 @@ export class TrineClient {
     if (res.type !== 'session.rewind.response') throw new Error(`意外的应答 ${res.type}`);
     if (!res.ok) throw rewindError(res.error);
     return res;
+  }
+
+  // -------------------------------------------------------------------------
+  // 附件（relay blob，见 attachment-transfer.ts）
+  // -------------------------------------------------------------------------
+
+  /** relay 的 blob 配置（单个上限 / 保留时长）；失败不缓存，下次重试 */
+  blobConfig(): Promise<BlobConfig> {
+    if (this.#blobConfig === null) {
+      const task = this.#blobs().config();
+      this.#blobConfig = task;
+      task.catch(() => {
+        if (this.#blobConfig === task) this.#blobConfig = null;
+      });
+    }
+    return this.#blobConfig;
+  }
+
+  /**
+   * （按需压缩后）加密并上传一个文件，返回引用（之后随 sendInput 发出）。
+   * `compressAboveBytes` > 0 时，超过它的图片先在浏览器里缩小重编码。
+   */
+  async uploadAttachment(
+    original: File,
+    options: { onProgress?: (fraction: number) => void; signal?: AbortSignal; compressAboveBytes?: number } = {},
+  ): Promise<AttachmentRef> {
+    const peer = this.#peer;
+    if (peer === null) throw new Error('尚未配对');
+    const file = await maybeCompressImage(original, options.compressAboveBytes ?? 0);
+    const { key, body } = await encryptFile(file);
+    const upload = this.deps.uploadBlob ?? xhrUpload;
+    const url = `${httpBase(peer.serverUrl)}/blobs`;
+    const attempt = async (refresh: boolean) =>
+      upload({
+        url,
+        token: await this.#blobToken(refresh),
+        body,
+        ...(options.onProgress === undefined ? {} : { onProgress: options.onProgress }),
+        ...(options.signal === undefined ? {} : { signal: options.signal }),
+      });
+    let res = await attempt(false);
+    if (res.status === 401) res = await attempt(true);
+    const payload = (res.body ?? {}) as { blobId?: unknown; error?: unknown; maxBytes?: unknown };
+    if (res.status !== 200 || typeof payload.blobId !== 'string') {
+      throw new Error(uploadErrorText(res.status, payload));
+    }
+    const mime = file.type === '' ? 'application/octet-stream' : file.type;
+    const ref: AttachmentRef = {
+      name: (file.name === '' ? 'file' : file.name).slice(0, ATTACHMENT_NAME_MAX),
+      mime,
+      size: file.size,
+      kind: attachmentKind(mime),
+      blobId: payload.blobId,
+      key,
+    };
+    // 本机已有明文：直接缓存预览，自己发的图片点开不用再下载
+    const preview = createObjectUrl(file);
+    if (preview !== undefined) this.#attachmentUrls.set(ref.blobId, preview);
+    return ref;
+  }
+
+  /** 已在本机的附件明文 URL（刚上传的 / 加载过的）；没有返回 undefined */
+  attachmentUrl(blobId: string | undefined): string | undefined {
+    return blobId === undefined ? undefined : this.#attachmentUrls.get(blobId);
+  }
+
+  /**
+   * 取某条用户消息第 index 个附件的明文 URL：有引用就从 relay 下载解密；引用过期
+   * （404）或根本没有（历史里 CLI 粘贴的图片）就请 agent 重新上传，新引用写回条目。
+   */
+  openAttachment(machineId: string, sessionId: string, entryId: string, index: number): Promise<string> {
+    const entry = this.timeline(machineId, sessionId).entries.find(
+      (e): e is UserEntry => e.kind === 'user' && e.id === entryId,
+    );
+    const att = entry?.attachments?.[index];
+    if (entry === undefined || att === undefined) return Promise.reject(new Error('找不到这个附件'));
+    const cached = this.attachmentUrl(att.blobId);
+    if (cached !== undefined) return Promise.resolve(cached);
+    const key = `${timelineKey(machineId, sessionId)}#${entryId}#${index}`;
+    const inflight = this.#attachmentInflight.get(key);
+    if (inflight !== undefined) return inflight;
+    const task = (async () => {
+      if (att.blobId !== undefined && att.key !== undefined) {
+        try {
+          return await this.#downloadAttachment({ ...att, blobId: att.blobId, key: att.key });
+        } catch (err) {
+          if (!(err instanceof BlobClientError && err.status === 404)) throw err;
+        }
+      }
+      const uuid = entry.uuid;
+      if (uuid === undefined) throw new Error('这条消息还没被 agent 确认，暂时无法加载附件');
+      const body: { type: 'attachment.fetch.request'; sessionId: string; messageId: string; index: number } = {
+        type: 'attachment.fetch.request',
+        sessionId,
+        messageId: uuid,
+        index,
+      };
+      const res = await this.request(machineId, body, { timeoutMs: Math.max(this.#requestTimeoutMs, 60_000) });
+      if (res.type !== 'attachment.fetch.response') throw new Error(`意外的应答 ${res.type}`);
+      if (!res.ok || res.attachment === undefined) throw new Error(res.error?.message ?? '附件拉取失败');
+      const fresh = res.attachment;
+      this.#updateTimeline(machineId, sessionId, (tl) => setUserAttachment(tl, entryId, index, fresh));
+      return this.#downloadAttachment(fresh);
+    })().finally(() => {
+      this.#attachmentInflight.delete(key);
+    });
+    this.#attachmentInflight.set(key, task);
+    return task;
+  }
+
+  async #downloadAttachment(ref: AttachmentRef): Promise<string> {
+    const parts: Uint8Array[] = [];
+    await this.#blobs().downloadDecrypted(ref.blobId, ref.key, (chunk) => {
+      parts.push(chunk);
+    }, { maxBytes: ref.size });
+    const blob = new Blob(parts as BlobPart[], { type: ref.mime === '' ? 'application/octet-stream' : ref.mime });
+    const url = createObjectUrl(blob);
+    if (url === undefined) throw new Error('当前环境无法显示附件');
+    this.#attachmentUrls.set(ref.blobId, url);
+    return url;
+  }
+
+  #blobs(): BlobClient {
+    const peer = this.#peer;
+    if (peer === null) throw new Error('尚未配对');
+    this.#blobClient ??= new BlobClient({
+      baseUrl: httpBase(peer.serverUrl),
+      getToken: (refresh) => this.#blobToken(refresh),
+      ...(this.deps.fetchImpl === undefined ? {} : { fetchImpl: this.deps.fetchImpl }),
+    });
+    return this.#blobClient;
+  }
+
+  /** blob 端点用的 token：沿用 WS 那张（未过期时），否则重新挑战-应答并存回 peer */
+  async #blobToken(refresh: boolean): Promise<string> {
+    const peer = this.#peer;
+    if (peer === null) throw new Error('尚未配对');
+    const current = peer.authToken;
+    if (!refresh && current !== undefined && current.expiresAt - 60_000 > this.deps.clock.now()) return current.token;
+    const auth = new AuthClient({
+      baseUrl: httpBase(peer.serverUrl),
+      deviceId: this.#identity.deviceId,
+      signKeys: this.#identity.sign,
+      ...(this.deps.fetchImpl === undefined ? {} : { fetchImpl: this.deps.fetchImpl }),
+    });
+    const token = await auth.authenticate({ signal: AbortSignal.timeout(15_000) });
+    if (this.#peer === peer) {
+      peer.authToken = token;
+      this.#schedulePeerSave();
+    }
+    return token.token;
   }
 
   /** 任意 c2a 事件（不等应答）；返回是否发出（fatal scope 为 false） */
@@ -1717,4 +1899,18 @@ export class TrineClient {
 
 function rewindError(error: { code: RewindErrorCode; message: string } | undefined): RewindError {
   return error === undefined ? new RewindError('io', 'agent 拒绝了回退（未给原因）') : new RewindError(error.code, error.message);
+}
+
+function uploadErrorText(status: number, payload: { error?: unknown; maxBytes?: unknown }): string {
+  if (status === 413) {
+    const max = typeof payload.maxBytes === 'number' ? `（上限 ${Math.floor(payload.maxBytes / 1024 / 1024)}MB）` : '';
+    return `文件超过服务端上限${max}`;
+  }
+  if (status === 503) return '服务端没有启用附件';
+  if (status === 401) return '认证失败，请稍后重试';
+  return `上传失败：HTTP ${status}${typeof payload.error === 'string' ? ` ${payload.error}` : ''}`;
+}
+
+function createObjectUrl(blob: Blob): string | undefined {
+  return typeof URL.createObjectURL === 'function' ? URL.createObjectURL(blob) : undefined;
 }

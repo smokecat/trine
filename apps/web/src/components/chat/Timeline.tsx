@@ -63,6 +63,10 @@ export interface TimelineHandlers {
   onStop: () => void;
   /** 拉子 agent 过程并挂到父工具卡（subagent.history.request）；不给 = 不支持回看 */
   onLoadSubagentHistory?: (toolUseId: string) => Promise<void>;
+  /** 加载用户消息的第 index 个附件，返回明文 URL；不给 = 附件点不开 */
+  onOpenAttachment?: (entry: UserEntry, index: number) => Promise<string>;
+  /** 已在本机的附件明文 URL */
+  attachmentUrl?: (blobId: string | undefined) => string | undefined;
 }
 
 /**
@@ -311,7 +315,16 @@ const Entry = memo(function Entry({
   onEntryRender?.(`${entry.kind}:${entry.id}`);
   switch (entry.kind) {
     case 'user':
-      return <UserMessage entry={entry} now={now} onAction={handlers.onUserAction} onRewind={onRewind} />;
+      return (
+        <UserMessage
+          entry={entry}
+          now={now}
+          onAction={handlers.onUserAction}
+          onRewind={onRewind}
+          onOpenAttachment={handlers.onOpenAttachment}
+          attachmentUrl={handlers.attachmentUrl}
+        />
+      );
     case 'assistant':
       return <AssistantMessage entry={entry} />;
     case 'tool':

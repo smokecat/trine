@@ -13,6 +13,7 @@ import type { ConnectionSnapshot } from '../lib/connection.ts';
 import type { LeaderSnapshot } from '../lib/leader.ts';
 import type { Capabilities, MachineState, Timeline } from '../lib/reducer.ts';
 import type { Prefs } from '../lib/storage.ts';
+import type { DraftAttachment } from '../lib/attachment-model.ts';
 
 export type { ConnectionSnapshot, ConnectionStatus } from '../lib/connection.ts';
 export type { LeaderSnapshot, LeaderState } from '../lib/leader.ts';
@@ -103,6 +104,9 @@ export interface DraftsSlice {
   /** timelineKey → 输入框草稿。纯 UI 态，不落盘（阶段 2 可改为落盘） */
   drafts: Record<string, string>;
   setDraft: (key: string, text: string) => void;
+  /** timelineKey → 输入框里待发的附件（含上传进度）。纯 UI 态，不落盘（File 也落不了） */
+  attachmentDrafts: Record<string, DraftAttachment[]>;
+  updateAttachmentDrafts: (key: string, update: (drafts: DraftAttachment[]) => DraftAttachment[]) => void;
 }
 
 export interface PrefsSlice {

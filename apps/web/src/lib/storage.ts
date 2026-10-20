@@ -33,6 +33,9 @@
 // storage.ts 在首屏的依赖图里（store/index.ts → 这里），从根引就等于把
 // libsodium 钉进 entry 的必下集合。types 子路径只有 zod schema。
 import {
+  ATTACHMENTS_DEFAULT_MAX_COUNT,
+  ATTACHMENTS_DEFAULT_MAX_TOTAL_BYTES,
+  ATTACHMENTS_MAX_COUNT,
   MachineInfoSchema,
   PermissionModeSchema,
   SessionMetaSchema,
@@ -151,6 +154,14 @@ export const PrefsSchema = z.object({
    * 回车永远换行。`.catch` 同 listGroupBy
    */
   sendKey: z.enum(['enter', 'mod-enter']).catch('enter'),
+  /**
+   * 附件上限（设置页可改，见 lib/attachments.ts）：每条消息合计 MB、个数。
+   * 实际生效值还要再夹到 relay 的单 blob 上限与协议硬上限以内。`.catch` 同 listGroupBy
+   */
+  attachMaxTotalMb: z.number().positive().catch(ATTACHMENTS_DEFAULT_MAX_TOTAL_BYTES / (1024 * 1024)),
+  attachMaxCount: z.number().int().min(1).max(ATTACHMENTS_MAX_COUNT).catch(ATTACHMENTS_DEFAULT_MAX_COUNT),
+  /** 图片超过这么多 MB 就先在浏览器压缩再上传；0 = 不压缩（默认）。`.catch` 同 listGroupBy */
+  imageCompressMb: z.number().nonnegative().catch(0),
 });
 export type Prefs = z.infer<typeof PrefsSchema>;
 
@@ -186,6 +197,9 @@ export function defaultPrefs(): Prefs {
     defaultModel: DEFAULT_SESSION_MODEL,
     defaultPermissionMode: DEFAULT_SESSION_PERMISSION_MODE,
     sendKey: 'enter',
+    attachMaxTotalMb: ATTACHMENTS_DEFAULT_MAX_TOTAL_BYTES / (1024 * 1024),
+    attachMaxCount: ATTACHMENTS_DEFAULT_MAX_COUNT,
+    imageCompressMb: 0,
   };
 }
 

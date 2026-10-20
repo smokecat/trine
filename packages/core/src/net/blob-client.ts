@@ -57,7 +57,7 @@ export class BlobClient {
   async upload(body: Uint8Array | Blob, opts: BlobRequestOptions = {}): Promise<{ blobId: string }> {
     const res = await this.#request(
       '/blobs',
-      { method: 'POST', headers: { 'content-type': 'application/octet-stream' }, body },
+      { method: 'POST', headers: { 'content-type': 'application/octet-stream' }, body: body as RequestInit['body'] },
       opts,
     );
     return (await res.json()) as { blobId: string };
