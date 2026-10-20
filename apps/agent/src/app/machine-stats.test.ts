@@ -93,6 +93,12 @@ describe('解析', () => {
     expect(descendantsUsage(ps, 12)).toEqual({ processes: 0, rssBytes: 0 });
   });
 
+  test('descendantsUsage：采样器自己起的命令（root 的直接子进程）不算，带路径的也认', () => {
+    const ps = ['10 1 200 agent', '11 10 300 claude', '12 10 50 ps', '13 10 60 /usr/sbin/sysctl', '14 11 70 ps'].join('\n');
+    // 14 是 claude 起的 ps，不是采样器的，照算
+    expect(descendantsUsage(ps, 10)).toEqual({ processes: 2, rssBytes: (300 + 70) * 1024 });
+  });
+
   test('rate：计数回绕按 0', () => {
     expect(rate({ rx: 0, tx: 100 }, { rx: 2000, tx: 50 }, 2000)).toEqual({ rxBytesPerSec: 1000, txBytesPerSec: 0 });
   });
@@ -163,6 +169,17 @@ describe('MachineStatsSampler', () => {
     expect(h.sleeps).toHaveLength(1);
   });
 
+  test('home 与 / 同一文件系统：两次 statfs 之间 bavail 变了也只报一次', async () => {
+    let bavail = 30;
+    const h = new MachineStatsSampler({
+      platform: 'win32',
+      sleep: async () => {},
+      cpus: () => [{ times: { user: 1, idle: 1 } }],
+      statfs: async () => ({ type: 1, bsize: 4096, blocks: 100, bfree: 40, bavail: bavail-- }),
+    });
+    expect((await h.sample()).disks).toHaveLength(1);
+  });
+
   test('不支持的平台：只有 cpu / 磁盘 / uptime', async () => {
     const stats: MachineStats = await fakeSampler('win32').sampler.sample();
     expect(Object.keys(stats).sort()).toEqual(['at', 'cpu', 'disks', 'uptimeSec']);
@@ -217,6 +234,24 @@ describe('MachineStatsWatcher', () => {
     expect(h.sent.map((s) => s.reqId ?? 'push')).toEqual(['q1', 'push', 'push', 'push']);
     expect(h.sent.every((s) => s.to === 'phone')).toBe(true);
     expect(h.watcher.watcherCount).toBe(0);
+  });
+
+  test('订阅后紧接着退订（首次采样还没回来）：退订生效，不留租约', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const sent: string[] = [];
+    const watcher = new MachineStatsWatcher({
+      sampler: { sample: async () => (await gate, { at: 1 }) },
+      emit: (_to, _s, reqId) => sent.push(reqId ?? 'push'),
+      setTimer: () => 1,
+      clearTimer: () => {},
+    });
+    const sub = watcher.request('phone', 'q1', { intervalMs: 5000, ttlMs: 120_000 });
+    const unsub = watcher.request('phone', 'q2', { intervalMs: 5000, ttlMs: 0 });
+    release();
+    await Promise.all([sub, unsub]);
+    expect(sent).toEqual(['q1', 'q2']);
+    expect(watcher.watcherCount).toBe(0);
   });
 
   test('同一设备新 watch 覆盖旧的；ttlMs 0 退订；设备之间互不影响', async () => {

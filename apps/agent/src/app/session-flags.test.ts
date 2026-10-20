@@ -168,6 +168,18 @@ describe('SessionFlagsStore · 读写', () => {
 });
 
 describe('SessionFlagsStore · sweep / GC', () => {
+  test('gcPinned：置顶超过 30 天且会话已不存在才清', async () => {
+    const store = await load();
+    await store.setPinned('gone', 0);
+    await store.setPinned('alive', 0);
+    await store.setPinned('young', ARCHIVED_GC_AGE_MS);
+    const removed = await store.gcPinned(ARCHIVED_GC_AGE_MS + 1, async (sid) => sid !== 'gone' && sid !== 'young');
+    expect(removed).toBe(1);
+    expect(store.pinnedAt('gone')).toBeUndefined();
+    expect(store.pinnedAt('alive')).toBe(0);
+    expect(store.pinnedAt('young')).toBe(ARCHIVED_GC_AGE_MS);
+  });
+
   test('墓碑 TTL = 8 天（park 24h + relay 7d）：未到期保留，到期清掉', async () => {
     expect(TOMBSTONE_TTL_MS).toBe(8 * 24 * 3600 * 1000);
     const store = await load();

@@ -11,8 +11,8 @@
  * - 磁盘：`statfs` home 与 `/`，同一个文件系统只报一次，标签只给 `/`、`~`。
  * - 网络：物理网卡收发字节的差 / 时间差。Linux 读 `/proc/net/dev`，排除回环与容器、
  *   VPN 等虚拟网卡（否则同一份流量会算两遍）；macOS 只算 `en*`（`netstat -ibn`）。
- * - claude：agent 全部子孙进程的个数与 RSS（`ps -axo pid=,ppid=,rss=`），即 claude CLI
- *   及其拉起的 MCP server 等。
+ * - claude：agent 全部子孙进程的个数与 RSS（`ps -axo pid=,ppid=,rss=,comm=`），即 claude CLI
+ *   及其拉起的 MCP server 等；采样器自己起的命令不算。
  *
  * 每一块独立 try：采不到就省略那一块。CPU / 网速要两次读数：距上次读数太久（或从没读过）
  * 时先读一次、等 `PRIME_MS` 再读。结果缓存 `CACHE_MS`，并发请求合并成一次采样。
@@ -155,15 +155,24 @@ export function parseNetstatIbn(text: string): NetCounters | undefined {
   return seen.size > 0 ? { rx, tx } : undefined;
 }
 
-/** `ps -axo pid=,ppid=,rss=`（rss 单位 KB）→ root 的全部子孙进程个数与 RSS 合计 */
+/** 采样器自己起的命令：它们也是 agent 的子进程，不算进 claude 占用 */
+const SAMPLER_COMMANDS = new Set(['ps', 'sysctl', 'vm_stat', 'netstat']);
+
+/**
+ * `ps -axo pid=,ppid=,rss=,comm=`（rss 单位 KB）→ root 的全部子孙进程个数与 RSS 合计。
+ * root 的直接子进程里，采样器自己起的命令（SAMPLER_COMMANDS）不算。
+ */
 export function descendantsUsage(psText: string, rootPid: number): { processes: number; rssBytes: number } {
   const children = new Map<number, number[]>();
   const rss = new Map<number, number>();
   for (const line of psText.split('\n')) {
-    const cols = line.trim().split(/\s+/);
-    if (cols.length < 3) continue;
-    const [pid, ppid, kb] = cols.map(Number) as [number, number, number];
-    if (!Number.isInteger(pid) || !Number.isInteger(ppid)) continue;
+    const m = /^\s*(\d+)\s+(\d+)\s+(\d+)(?:\s+(.*))?$/.exec(line);
+    if (m === null) continue;
+    const pid = Number(m[1]);
+    const ppid = Number(m[2]);
+    const kb = Number(m[3]);
+    const comm = (m[4] ?? '').trim();
+    if (ppid === rootPid && SAMPLER_COMMANDS.has(comm.slice(comm.lastIndexOf('/') + 1))) continue;
     rss.set(pid, Number.isFinite(kb) ? kb * 1024 : 0);
     const list = children.get(ppid);
     if (list === undefined) children.set(ppid, [pid]);
@@ -352,8 +361,9 @@ export class MachineStatsSampler {
         continue;
       }
       const n = (v: number | bigint): number => Number(v);
-      // 同一个文件系统（home 就在根分区上；macOS 的 / 与数据卷共享 APFS 容器）只报一次
-      const key = `${n(fs.type)}:${n(fs.blocks)}:${n(fs.bavail)}`;
+      // 同一个文件系统（home 就在根分区上；macOS 的 / 与数据卷共享 APFS 容器）只报一次。
+      // 只用不变的字段：bavail 在两次 statfs 之间可能因写入而变
+      const key = `${n(fs.type)}:${n(fs.blocks)}:${n(fs.bsize)}`;
       if (seen.has(key)) continue;
       seen.add(key);
       const bsize = n(fs.bsize);
@@ -369,7 +379,7 @@ export class MachineStatsSampler {
 
   async #claude(): Promise<MachineStats['claude']> {
     if (this.#platform !== 'linux' && this.#platform !== 'darwin') return undefined;
-    return descendantsUsage(await this.#run(['ps', '-axo', 'pid=,ppid=,rss=']), this.#pid);
+    return descendantsUsage(await this.#run(['ps', '-axo', 'pid=,ppid=,rss=,comm=']), this.#pid);
   }
 }
 
@@ -414,6 +424,8 @@ export class MachineStatsWatcher {
   readonly #clearTimer: (handle: unknown) => void;
   readonly #log: (line: string) => void;
   readonly #leases = new Map<string, Lease>();
+  /** 每台设备带 watch 的请求代次：采样期间来了更新的请求，旧请求就不再装租约 */
+  readonly #generation = new Map<string, number>();
 
   constructor(options: MachineStatsWatcherOptions) {
     this.#sampler = options.sampler;
@@ -437,13 +449,18 @@ export class MachineStatsWatcher {
 
   /** 采一次回给请求设备；带 watch 则建立 / 覆盖 / 取消（ttlMs 0）该设备的租约 */
   async request(deviceId: string, reqId: string, watch?: { intervalMs: number; ttlMs: number }): Promise<void> {
-    if (watch !== undefined) this.#cancel(deviceId);
+    let generation: number | undefined;
+    if (watch !== undefined) {
+      this.#cancel(deviceId);
+      generation = (this.#generation.get(deviceId) ?? 0) + 1;
+      this.#generation.set(deviceId, generation);
+    }
     const stats = await this.#sampler.sample();
     this.#emit(deviceId, stats, reqId);
     if (watch === undefined || watch.ttlMs === 0) return;
+    // 采样期间同一设备又来了新的 watch（含退订）：以后来的为准，这次不装租约
+    if (this.#generation.get(deviceId) !== generation) return;
     const lease: Lease = { intervalMs: watch.intervalMs, expiresAt: this.#now() + watch.ttlMs, timer: undefined };
-    // 采样期间同一设备又来了新请求：以后来的为准
-    this.#cancel(deviceId);
     this.#leases.set(deviceId, lease);
     this.#schedule(deviceId, lease);
   }

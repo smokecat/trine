@@ -346,12 +346,13 @@ export class AgentApp {
     const now = this.now();
     try {
       const tombstones = await this.flags.sweepTombstones(now);
-      const archived = await this.flags.gcArchived(
-        now,
-        async (sid) => (await this.manager.sessionInfo(sid)) !== undefined,
-      );
-      if (tombstones + archived > 0) {
-        this.log(`[app] 会话标记清理：过期墓碑 ${tombstones} 条，失效归档标记 ${archived} 条`);
+      const exists = async (sid: string): Promise<boolean> => (await this.manager.sessionInfo(sid)) !== undefined;
+      const archived = await this.flags.gcArchived(now, exists);
+      const pinned = await this.flags.gcPinned(now, exists);
+      if (tombstones + archived + pinned > 0) {
+        this.log(
+          `[app] 会话标记清理：过期墓碑 ${tombstones} 条，失效归档标记 ${archived} 条，失效置顶标记 ${pinned} 条`,
+        );
       }
       // 仍在期内的墓碑逐个复查：删除后的 8s 复查若没来得及跑（agent 先退出了），
       // 子进程 re-stamp 重建的残缺转录在这里清掉（评审 CB1）

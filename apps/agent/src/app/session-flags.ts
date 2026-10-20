@@ -286,8 +286,21 @@ export class SessionFlagsStore implements SessionFlags {
    * @returns 清掉的条目数
    */
   async gcArchived(now: number, exists: (sessionId: string) => Promise<boolean>): Promise<number> {
+    return this.#gcStale(this.#data.archived, now, exists);
+  }
+
+  /** 置顶标记的惰性 GC，规则同 gcArchived（转录在 trine 之外被删掉的会话，置顶标记别留一辈子） */
+  async gcPinned(now: number, exists: (sessionId: string) => Promise<boolean>): Promise<number> {
+    return this.#gcStale(this.#data.pinned, now, exists);
+  }
+
+  async #gcStale(
+    map: Record<string, number>,
+    now: number,
+    exists: (sessionId: string) => Promise<boolean>,
+  ): Promise<number> {
     let removed = 0;
-    for (const [sid, at] of Object.entries(this.#data.archived)) {
+    for (const [sid, at] of Object.entries(map)) {
       if (now - at < ARCHIVED_GC_AGE_MS) continue;
       let alive = true;
       try {
@@ -295,9 +308,9 @@ export class SessionFlagsStore implements SessionFlags {
       } catch {
         alive = true;
       }
-      // await 期间可能已被显式取消归档 / 重新归档：只清仍是同一条标记的
-      if (!alive && this.#data.archived[sid] === at) {
-        delete this.#data.archived[sid];
+      // await 期间可能已被显式取消 / 重新设置：只清仍是同一条标记的
+      if (!alive && map[sid] === at) {
+        delete map[sid];
         removed++;
       }
     }
