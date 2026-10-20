@@ -180,22 +180,49 @@ describe('工作空间分组', () => {
     expect(groupLabel('/x')).toBe('/x');
   });
 
-  test('组序 (min STATE_RANK, max lastActivityAt)：老组里有待批准也排最前', () => {
+  test('组序按工作区创建时间倒序，不随组内状态 / 最后活动跳', () => {
     const rows = [
-      { machineId: 'm', meta: meta({ sessionId: 'new1', cwd: '/new', lastActivityAt: 100 }) },
-      { machineId: 'm', meta: meta({ sessionId: 'old1', cwd: '/old', lastActivityAt: 1 }) },
+      { machineId: 'm', meta: meta({ sessionId: 'new1', cwd: '/new', createdAt: 300, lastActivityAt: 300 }) },
+      { machineId: 'm', meta: meta({ sessionId: 'old1', cwd: '/old', createdAt: 10, lastActivityAt: 10 }) },
       {
         machineId: 'm',
-        meta: meta({ sessionId: 'old2', cwd: '/old/', state: 'waiting_permission', lastActivityAt: 2 }),
+        meta: meta({ sessionId: 'old2', cwd: '/old/', state: 'waiting_permission', createdAt: 400, lastActivityAt: 999 }),
       },
-      { machineId: 'm', meta: meta({ sessionId: 'mid', cwd: '/mid', state: 'running', lastActivityAt: 50 }) },
-      { machineId: 'm', meta: meta({ sessionId: 'rec', cwd: '/rec', lastActivityAt: 200 }) },
+      // 没有 createdAt 的退回 lastActivityAt
+      { machineId: 'm', meta: meta({ sessionId: 'mid', cwd: '/mid', state: 'running', lastActivityAt: 200 }) },
     ];
     const groups = groupRows(rows);
-    expect(groups.map((g) => g.cwd)).toEqual(['/old', '/mid', '/rec', '/new']);
+    expect(groups.map((g) => g.cwd)).toEqual(['/new', '/mid', '/old']);
     // 组内 compareSessions：待批准在上
-    expect(ids(groups[0]!.rows)).toEqual(['old2', 'old1']);
-    expect(groups[0]).toMatchObject({ waitingCount: 1, runningCount: 0, rank: 0, lastActivityAt: 2 });
+    expect(ids(groups[2]!.rows)).toEqual(['old2', 'old1']);
+    expect(groups[2]).toMatchObject({ waitingCount: 1, runningCount: 0, rank: 0, lastActivityAt: 999, createdAt: 10 });
+  });
+
+  test('置顶的工作区在最前，越晚置顶越靠上；置顶按规范化 cwd 匹配', () => {
+    const rows = [
+      { machineId: 'm', meta: meta({ sessionId: 'a', cwd: '/a', createdAt: 1 }) },
+      { machineId: 'm', meta: meta({ sessionId: 'b', cwd: '/b', createdAt: 2 }) },
+      { machineId: 'm', meta: meta({ sessionId: 'c', cwd: '/c', createdAt: 3 }) },
+      { machineId: 'n', meta: meta({ sessionId: 'd', cwd: '/a', createdAt: 4 }) },
+    ];
+    const groups = groupRows(rows, { pinned: { m: { '/a/': 50, '/b': 60 } } });
+    expect(groups.map((g) => g.key)).toEqual([groupKey('m', '/b'), groupKey('m', '/a'), groupKey('n', '/a'), groupKey('m', '/c')]);
+    expect(groups[0]!.pinnedAt).toBe(60);
+    expect(groups[2]!.pinnedAt).toBeUndefined();
+  });
+
+  test('filterSessions：工作区创建时间取全量会话（含归档、被筛掉的），组位置不随筛选变', () => {
+    const s = {
+      m: {
+        // /x 最早的会话已归档，但工作区仍按它的时间算
+        x0: meta({ sessionId: 'x0', cwd: '/x', createdAt: 1, archived: true }),
+        x1: meta({ sessionId: 'x1', cwd: '/x', createdAt: 500, state: 'running' }),
+        y1: meta({ sessionId: 'y1', cwd: '/y', createdAt: 100 }),
+      },
+    };
+    expect(filterSessions(s, q({ groupBy: 'workspace' })).groups?.map((g) => g.cwd)).toEqual(['/y', '/x']);
+    const pinned = filterSessions(s, q({ groupBy: 'workspace' }), {}, { m: { '/x': 1 } });
+    expect(pinned.groups?.map((g) => g.cwd)).toEqual(['/x', '/y']);
   });
 
   test('filterSessions 在 groupBy=workspace 时给出分组，且扁平行仍有序', () => {

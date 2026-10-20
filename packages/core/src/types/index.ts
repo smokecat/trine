@@ -112,6 +112,11 @@ export const SessionMetaSchema = z.object({
   live: z.boolean().optional(),
   /** 最近一次已知的 context 用量（usage-display 新增，可选；agent ≥ 0.12.0）。省略 = 还没取到 / 旧 agent */
   context: ContextUsageSchema.optional(),
+  /**
+   * 置顶时间（sidebar-pin 新增，可选；agent ≥ 0.14.0）。标记存在 agent 的 flags store，
+   * 与 archived 同源；省略 = 未置顶。列表里置顶会话排在所属组 / 平铺列表的最前，越晚置顶越靠上。
+   */
+  pinnedAt: TimestampSchema.optional(),
 });
 export type SessionMeta = z.infer<typeof SessionMetaSchema>;
 

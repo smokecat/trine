@@ -12,24 +12,26 @@ import { useMemo } from 'react';
 import { toast } from 'sonner';
 import { useClient, useTrine } from '@/app/runtime.ts';
 import { copyText } from '@/lib/clipboard.ts';
-import { buildCopyCwd, buildSessionActions, supportedMachinesKey } from './session-actions.ts';
+import { buildCopyCwd, buildSessionActions, supportedMachinesKey, supportsPin } from './session-actions.ts';
 import type { SessionRowActions } from './SessionRowMenu.tsx';
 
 export function useSessionActions(machineId?: string): SessionRowActions {
   const client = useClient();
   // 标量 selector：机器的 online / lastSeenAt 翻转不会让回调换引用
   const supportedKey = useTrine((s) => supportedMachinesKey(s.machines));
+  const pinKey = useTrine((s) => supportedMachinesKey(s.machines, supportsPin));
   return useMemo(
     () => ({
       ...buildSessionActions({
         client,
         supportedMachineIds: new Set(supportedKey === '' ? [] : supportedKey.split(',')),
+        pinMachineIds: new Set(pinKey === '' ? [] : pinKey.split(',')),
         onlyMachine: machineId,
         notify: toast,
       }),
       // 复制不经 agent：与能力探测无关，总是给
       onCopyCwd: buildCopyCwd(copyText, toast),
     }),
-    [client, supportedKey, machineId],
+    [client, supportedKey, pinKey, machineId],
   );
 }

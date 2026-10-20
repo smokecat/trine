@@ -45,7 +45,7 @@ import {
 } from '@trine/core/types';
 import { z } from 'zod';
 import type { DocStore, KvAdapter } from './adapters.ts';
-import type { HistoryState, Timeline, TimelineEntry, ToolEntry } from './reducer.ts';
+import type { HistoryState, MachineCwd, Timeline, TimelineEntry, ToolEntry } from './reducer.ts';
 import { dropPending, isSubagentTool, type PendingChildren } from './tool-tree.ts';
 import { BgTasksSchema, HistoryStateSchema, isHistoryEntry, PendingChildrenSchema, TimelineEntrySchema } from './reducer.ts';
 
@@ -450,7 +450,13 @@ const MachineDocFrameSchema = z.object({
   /** 来源 `machine.info`；从未收到过为 null */
   info: MachineInfoSchema.nullable(),
   /** 来源 `cwd.list.response / cwd.updated` */
-  cwd: z.object({ favorites: z.array(z.string()), defaultCwd: z.string() }).nullable(),
+  cwd: z
+    .object({
+      favorites: z.array(z.string()),
+      defaultCwd: z.string(),
+      pinned: z.record(z.string(), z.number()).optional(),
+    })
+    .nullable(),
   /** sessionId → 完整 SessionMeta（来源 session.list.response / created / updated） */
   sessions: z.record(z.string(), z.unknown()),
 });
@@ -458,7 +464,7 @@ const MachineDocFrameSchema = z.object({
 export interface MachineDoc {
   v: 1;
   info: MachineInfo | null;
-  cwd: { favorites: string[]; defaultCwd: string } | null;
+  cwd: MachineCwd | null;
   sessions: Record<string, SessionMeta>;
 }
 

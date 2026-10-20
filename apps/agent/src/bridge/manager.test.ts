@@ -604,15 +604,17 @@ function fakeFlags() {
   const archived = new Map<string, number>();
   const pending = new Map<string, string>();
   const deleted = new Set<string>();
+  const pinned = new Map<string, number>();
   const flags: SessionFlags = {
     archivedAt: (sid) => archived.get(sid),
+    pinnedAt: (sid) => pinned.get(sid),
     pendingTitle: (sid) => pending.get(sid),
     isDeleted: (sid) => deleted.has(sid),
     unarchiveNow: (sid) => {
       archived.delete(sid);
     },
   };
-  return { flags, archived, pending, deleted };
+  return { flags, archived, pending, deleted, pinned };
 }
 
 /** 让假会话像真 ClaudeSession 一样回调 onMeta（状态迁移时） */

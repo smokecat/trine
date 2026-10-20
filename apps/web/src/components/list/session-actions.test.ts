@@ -7,6 +7,7 @@ import {
   buildSessionActions,
   compareVersions,
   supportedMachinesKey,
+  supportsPin,
   supportsSessionMutations,
   type Notifier,
   type SessionMutationClient,
@@ -75,6 +76,11 @@ function fakeClient(fail?: Error): SessionMutationClient & { calls: string[] } {
     calls,
     renameSession: (m, s, t) => op(`rename ${m}/${s} ${t}`),
     archiveSession: (m, s, a) => op(`archive ${m}/${s} ${a}`),
+    pinSession: (m, s, p) => op(`pin ${m}/${s} ${p}`),
+    pinWorkspace: (m, c, p) => {
+      calls.push(`pinWorkspace ${m}:${c} ${p}`);
+      return fail === undefined;
+    },
     deleteSession: (m, s) => op(`delete ${m}/${s}`),
   };
 }
@@ -143,6 +149,33 @@ describe('buildSessionActions', () => {
   });
 });
 
+describe('置顶 onPin / onPinWorkspace', () => {
+  test('只在支持置顶的机器上给（agent ≥ 0.14.0），supportsPin 逐机器判', () => {
+    const base = { client: fakeClient(), supportedMachineIds: new Set(['new', 'old']), notify: fakeNotify() };
+    expect(buildSessionActions(base).onPin).toBeUndefined();
+    const actions = buildSessionActions({ ...base, pinMachineIds: new Set(['new']) });
+    expect(actions.supportsPin?.('new')).toBe(true);
+    expect(actions.supportsPin?.('old')).toBe(false);
+    expect(buildSessionActions({ ...base, pinMachineIds: new Set(['new']), onlyMachine: 'old' }).onPin).toBeUndefined();
+    expect(supportsPin({ agentVersion: '0.14.0' })).toBe(true);
+    expect(supportsPin({ agentVersion: '0.13.9' })).toBe(false);
+  });
+
+  test('调对应 client 方法；工作区置顶发不出去时报错', async () => {
+    const client = fakeClient();
+    const notify = fakeNotify();
+    const actions = buildSessionActions({ client, supportedMachineIds: new Set(['m']), pinMachineIds: new Set(['m']), notify });
+    await actions.onPin?.('m', 's', true);
+    actions.onPinWorkspace?.('m', '/repo', false);
+    expect(client.calls).toEqual(['pin m/s true', 'pinWorkspace m:/repo false']);
+    const offline = fakeClient(new Error('x'));
+    const n2 = fakeNotify();
+    buildSessionActions({ client: offline, supportedMachineIds: new Set(['m']), pinMachineIds: new Set(['m']), notify: n2 })
+      .onPinWorkspace?.('m', '/repo', true);
+    expect(n2.log[0]).toStartWith('err:置顶失败');
+  });
+});
+
 describe('批量归档 onArchiveMany', () => {
   test('逐条发、一条汇总 toast；撤销只撤成功的', async () => {
     const client = fakeClient();
@@ -167,6 +200,8 @@ describe('批量归档 onArchiveMany', () => {
     const client: SessionMutationClient = {
       renameSession: async () => {},
       deleteSession: async () => {},
+      pinSession: async () => {},
+      pinWorkspace: () => true,
       archiveSession: async (m, s) => {
         calls.push(`${m}/${s}`);
         if (s === 'busy') throw new Error('会话运行中');

@@ -21,11 +21,23 @@
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useLocation } from 'react-router';
-import { ChevronRightIcon } from 'lucide-react';
+import { ChevronRightIcon, MoreHorizontalIcon, PinIcon } from 'lucide-react';
 import type { SessionMeta } from '@trine/core';
 import type { MachineState } from '@/store/types.ts';
 import { cn } from '@/lib/utils.ts';
 import { Button } from '@/components/ui/button.tsx';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu.tsx';
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuTrigger,
+} from '@/components/ui/context-menu.tsx';
 import { SessionRow } from './SessionRow.tsx';
 import {
   emptyText,
@@ -34,6 +46,7 @@ import {
   isFiltering,
   isGroupExpanded,
   type ListQuery,
+  type PinnedCwds,
   type SessionGroup,
 } from './filtering.ts';
 import { useCollapsedGroups } from './collapsed-groups.ts';
@@ -85,9 +98,14 @@ export function SessionList({
     for (const [id, m] of Object.entries(machines)) out[id] = m.name;
     return out;
   }, [machines]);
+  const pinnedCwds = useMemo(() => {
+    const out: PinnedCwds = {};
+    for (const [id, m] of Object.entries(machines)) if (m.cwd?.pinned !== undefined) out[id] = m.cwd.pinned;
+    return out;
+  }, [machines]);
   const result = useMemo(
-    () => filterSessions(sessions, query, machineNames),
-    [sessions, query, machineNames],
+    () => filterSessions(sessions, query, machineNames, pinnedCwds),
+    [sessions, query, machineNames, pinnedCwds],
   );
   const { requestRename, requestDelete, dialogs } = useRowActionDialogs(actions);
 
@@ -292,6 +310,12 @@ export function SessionList({
                 machineName={showMachine ? (machineNames[group.machineId] ?? group.machineId) : null}
                 compact={compact}
                 onToggle={(next) => setCollapsed(group.key, !next)}
+                {...(actions?.onPinWorkspace !== undefined &&
+                group.cwd !== '' &&
+                !query.archived &&
+                (actions.supportsPin?.(group.machineId) ?? true)
+                  ? { onPin: (pinned: boolean) => actions.onPinWorkspace?.(group.machineId, group.cwd, pinned) }
+                  : {})}
               >
                 {group.rows.map(renderRow)}
               </GroupSection>
@@ -310,6 +334,7 @@ function GroupSection({
   machineName,
   compact,
   onToggle,
+  onPin,
   children,
 }: {
   group: SessionGroup;
@@ -320,13 +345,15 @@ function GroupSection({
   machineName: string | null;
   compact: boolean;
   onToggle: (expanded: boolean) => void;
+  /** 置顶 / 取消置顶这个工作区；不给 = 没有组头菜单（旧 agent / 未知目录 / 归档视图） */
+  onPin?: (pinned: boolean) => void;
   children: React.ReactNode;
 }): React.JSX.Element {
   // 有待批准 / 搜索筛选中强制展开：点了也收不起来，别假装能收（评审 M5 / minor 3）
   const forced = group.waitingCount > 0 || filtering;
   const label = group.cwd === '' ? groupLabel('') : shortCwd(group.cwd, compact ? 2 : 3);
-  return (
-    <section data-testid="session-group" data-group-key={group.key} data-expanded={expanded} className="flex flex-col gap-2">
+  const pinned = group.pinnedAt !== undefined;
+  const header = (
       <button
         type="button"
         data-testid="session-group-header"
@@ -341,7 +368,7 @@ function GroupSection({
           if (!forced) onToggle(!expanded);
         }}
         className={cn(
-          'text-text-2 hover:text-text flex min-w-0 items-center gap-1.5 px-1 text-left text-xs',
+          'text-text-2 hover:text-text flex min-w-0 flex-1 items-center gap-1.5 px-1 text-left text-xs',
           forced && 'cursor-default',
         )}
       >
@@ -349,6 +376,7 @@ function GroupSection({
           aria-hidden
           className={cn('size-3.5 shrink-0 transition-transform', expanded && 'rotate-90', forced && 'opacity-40')}
         />
+        {pinned && <PinIcon aria-label="已置顶" data-testid="session-group-pinned" className="size-3 shrink-0" />}
         <span className={cn('min-w-0 truncate font-mono', group.cwd === '' && 'font-sans italic')}>{label}</span>
         {machineName !== null && <span className="text-text-3 shrink-0 truncate">· {machineName}</span>}
         <span className="text-text-3 tabular shrink-0">{group.rows.length}</span>
@@ -367,6 +395,44 @@ function GroupSection({
           </span>
         )}
       </button>
+  );
+  const pinLabel = pinned ? '取消置顶工作区' : '置顶工作区';
+  return (
+    <section data-testid="session-group" data-group-key={group.key} data-expanded={expanded} data-pinned={pinned || undefined} className="flex flex-col gap-2">
+      {onPin === undefined ? (
+        header
+      ) : (
+        // 「⋯」与按钮是兄弟（不嵌套交互元素）；右键整条组头也能出同一个菜单
+        <div className="group/header flex min-w-0 items-center gap-1">
+          <ContextMenu>
+            <ContextMenuTrigger asChild>{header}</ContextMenuTrigger>
+            <ContextMenuContent data-testid="session-group-context-menu">
+              <ContextMenuItem data-testid="group-menu-pin" onSelect={() => onPin(!pinned)}>
+                {pinLabel}
+              </ContextMenuItem>
+            </ContextMenuContent>
+          </ContextMenu>
+          <DropdownMenu modal={false}>
+            <DropdownMenuTrigger asChild>
+              <Button
+                size="icon-xs"
+                variant="ghost"
+                data-testid="session-group-menu"
+                aria-label={`工作区「${groupLabel(group.cwd)}」的操作`}
+                // 有悬停的设备上悬停才出现；触屏一直显示
+                className="text-text-3 hover:text-text size-5 shrink-0 opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover/header:opacity-100"
+              >
+                <MoreHorizontalIcon />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-auto min-w-36" data-testid="session-group-menu-content">
+              <DropdownMenuItem data-testid="group-menu-pin" onSelect={() => onPin(!pinned)}>
+                {pinLabel}
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
+      )}
       {expanded && children}
     </section>
   );

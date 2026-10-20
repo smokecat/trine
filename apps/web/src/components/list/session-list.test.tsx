@@ -241,9 +241,10 @@ describe('行「⋯」菜单（回调壳）', () => {
 describe('工作空间分组', () => {
   const sessions = {
     m: {
-      a: meta({ sessionId: 'a', cwd: '/w/one', state: 'running', lastActivityAt: 5 }),
-      b: meta({ sessionId: 'b', cwd: '/w/two', lastActivityAt: 9 }),
-      c: meta({ sessionId: 'c', cwd: '', lastActivityAt: 1 }),
+      // 组序按工作区创建时间倒序：one 最新
+      a: meta({ sessionId: 'a', cwd: '/w/one', state: 'running', createdAt: 30, lastActivityAt: 5 }),
+      b: meta({ sessionId: 'b', cwd: '/w/two', createdAt: 20, lastActivityAt: 9 }),
+      c: meta({ sessionId: 'c', cwd: '', createdAt: 10, lastActivityAt: 1 }),
     },
   };
 
@@ -266,6 +267,37 @@ describe('工作空间分组', () => {
     expect(first.dataset['expanded']).toBe('false');
     expect(first.querySelectorAll('[data-testid="session-row"]')).toHaveLength(0);
     expect(first.querySelector('[data-testid="session-group-badges"]')?.textContent).toContain('🔧1');
+  });
+
+  test('置顶：组头菜单置顶工作区（未知目录 / 无回调没有菜单），置顶组带图标排最前', () => {
+    const onPinWorkspace = mock((_m: string, _cwd: string, _p: boolean) => {});
+    render(sessions, { query: { groupBy: 'workspace' }, actions: { onPin: () => {}, onPinWorkspace } });
+    expect($$('session-group-menu')).toHaveLength(2);
+    openMenu($$('session-group-menu')[1]!);
+    expect($('group-menu-pin')?.textContent).toBe('置顶工作区');
+    click($('group-menu-pin')!);
+    expect(onPinWorkspace.mock.calls).toEqual([['m', '/w/two', true]]);
+  });
+
+  test('置顶：置顶会话行带图标、菜单项为「取消置顶」；不支持的机器不出置顶项', () => {
+    const onPin = mock((_m: string, _s: string, _p: boolean) => {});
+    render(
+      { m: { a: meta({ sessionId: 'a', pinnedAt: 5 }), b: meta({ sessionId: 'b', lastActivityAt: 9 }) } },
+      { actions: { onPin } },
+    );
+    const rows = $$('session-row');
+    expect(rows.map((r) => r.dataset['sessionId'])).toEqual(['a', 'b']);
+    expect(rows[0]!.querySelector('[data-testid="session-row-pinned"]')).not.toBeNull();
+    openMenu(rows[0]!.querySelector<HTMLElement>('[data-testid="session-row-menu"]')!);
+    expect($('menu-pin')?.textContent).toBe('取消置顶');
+    click($('menu-pin')!);
+    expect(onPin.mock.calls).toEqual([['m', 'a', false]]);
+  });
+
+  test('置顶：supportsPin 返回 false 的机器没有置顶项与组头菜单', () => {
+    render(sessions, { query: { groupBy: 'workspace' }, actions: { onPin: () => {}, onPinWorkspace: () => {}, supportsPin: () => false } });
+    expect($$('session-group-menu')).toHaveLength(0);
+    expect($$('session-row-menu')).toHaveLength(0);
   });
 
   test('会话行的等待 pill 按 meta.waitingFor 区分；没有该字段（旧 agent）按普通权限', () => {

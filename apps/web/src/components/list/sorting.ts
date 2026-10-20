@@ -3,8 +3,8 @@
  *
  * 抽出来的理由是它被三处共用（列表页、侧栏紧凑变体、将来的搜索），而且
  * 是「排序即优先级」这条产品判断的落点（方案 §5「会话列表」、原型
- * `NOTES.list`「排序即优先级：等待批准置顶 > 运行中 > 其余按最后活动时间」），
- * 值得单测钉住。零 React、零浏览器全局。
+ * `NOTES.list`「排序即优先级：等待批准置顶 > 运行中 > 其余按最后活动时间」；
+ * 用户置顶的会话再排在这些之前，见 sidebar-pin），值得单测钉住。零 React、零浏览器全局。
  */
 import type { SessionMeta, SessionState } from '@trine/core';
 
@@ -27,15 +27,26 @@ export const STATE_RANK: Record<SessionState, number> = {
 };
 
 /**
- * 列表比较器：等待批准 > 运行中 > 其余按 lastActivityAt 倒序。
+ * 置顶优先：置顶的排在未置顶的前面，越晚置顶越靠上（sidebar-pin）。会话与工作区共用。
+ */
+export function comparePinned(a: number | undefined, b: number | undefined): number {
+  if (a === undefined) return b === undefined ? 0 : 1;
+  if (b === undefined) return -1;
+  return b - a;
+}
+
+/**
+ * 列表比较器：置顶（越晚置顶越靠上）> 等待批准 > 运行中 > 其余按 lastActivityAt 倒序。
  *
  * 同档内也按 lastActivityAt 倒序（两条都在等批准时，先等的那条更急——
  * 但 lastActivityAt 是「最后活动」不是「开始等待」，倒序意味着刚请求的在上；
  * 这与聊天页「未读优先」的直觉一致，也避免列表因为计时而重排）。
+ * 置顶会话之间只按置顶时间排，不随状态跳。
  * sessionId 兜底保证全序，避免 React key 顺序在等值时抖动。
  */
 export function compareSessions(a: SessionRowData, b: SessionRowData): number {
   return (
+    comparePinned(a.meta.pinnedAt, b.meta.pinnedAt) ||
     STATE_RANK[a.meta.state] - STATE_RANK[b.meta.state] ||
     b.meta.lastActivityAt - a.meta.lastActivityAt ||
     (a.meta.sessionId < b.meta.sessionId ? -1 : a.meta.sessionId > b.meta.sessionId ? 1 : 0)

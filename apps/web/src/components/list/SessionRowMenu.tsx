@@ -11,6 +11,7 @@
  * 失败 toast、agent 版本能力探测）在调用方做——本组件只管交互：
  *
  * - 复制工作目录 → `onCopyCwd(cwd)`（不经 agent，旧 agent 的行上也有；cwd 未知时隐藏）
+ * - 置顶 / 取消置顶 → `onPin(…, pinned)`（agent ≥ 0.14.0，`supportsPin` 另判；归档的行不给）
  * - 重命名 → 列表级共享的 RenameDialog → `onRename(machineId, sessionId, title)`
  * - 归档 → 直接 `onArchive(…, true)`（可撤回，不确认）。运行中 / 待批准时
  *   菜单项**灰显但仍可点**：web 的 state 可能是过期的，以 agent 应答为准（M3）
@@ -68,6 +69,12 @@ export interface SessionRowActions {
   onDelete?: (machineId: string, sessionId: string) => MaybePromise;
   /** 复制工作目录。不经 agent，不受 `supports` 约束 */
   onCopyCwd?: (cwd: string) => MaybePromise;
+  /** 置顶要 agent ≥ 0.14.0，与 `supports` 分开判；不给 = 都支持（有 onPin 时） */
+  supportsPin?: (machineId: string) => boolean;
+  /** 会话置顶 / 取消置顶 */
+  onPin?: (machineId: string, sessionId: string, pinned: boolean) => MaybePromise;
+  /** 工作区（组）置顶 / 取消置顶；cwd 是规范化后的组 cwd */
+  onPinWorkspace?: (machineId: string, cwd: string, pinned: boolean) => void;
 }
 
 export interface RowTarget {
@@ -80,14 +87,20 @@ export function rowMenuItems(
   actions: SessionRowActions | undefined,
   meta: SessionMeta,
   machineId?: string,
-): { copyCwd: boolean; rename: boolean; archive: boolean; unarchive: boolean; delete: boolean } {
+): { copyCwd: boolean; pin: boolean; rename: boolean; archive: boolean; unarchive: boolean; delete: boolean } {
   const copyCwd = actions?.onCopyCwd !== undefined && meta.cwd !== '';
-  if (machineId !== undefined && actions?.supports !== undefined && !actions.supports(machineId)) {
-    return { copyCwd, rename: false, archive: false, unarchive: false, delete: false };
-  }
   const archived = meta.archived === true;
+  // 置顶只在未归档的会话上给（归档会清掉置顶），能力探测与其他命令分开
+  const pin =
+    !archived &&
+    actions?.onPin !== undefined &&
+    (machineId === undefined || actions.supportsPin === undefined || actions.supportsPin(machineId));
+  if (machineId !== undefined && actions?.supports !== undefined && !actions.supports(machineId)) {
+    return { copyCwd, pin, rename: false, archive: false, unarchive: false, delete: false };
+  }
   return {
     copyCwd,
+    pin,
     rename: actions?.onRename !== undefined,
     archive: !archived && actions?.onArchive !== undefined,
     unarchive: archived && actions?.onArchive !== undefined,
@@ -98,7 +111,7 @@ export function rowMenuItems(
 
 export function hasRowMenu(actions: SessionRowActions | undefined, meta: SessionMeta, machineId?: string): boolean {
   const items = rowMenuItems(actions, meta, machineId);
-  return items.copyCwd || items.rename || items.archive || items.unarchive || items.delete;
+  return items.copyCwd || items.pin || items.rename || items.archive || items.unarchive || items.delete;
 }
 
 /** 运行中 / 待批准：归档大概率会被 agent 以 busy 拒绝 */
@@ -211,7 +224,15 @@ function RowMenuItems({
           复制工作目录
         </Item>
       )}
-      {items.copyCwd && mutations && <Separator />}
+      {items.copyCwd && (items.pin || mutations) && <Separator />}
+      {items.pin && (
+        <Item
+          testId="menu-pin"
+          onSelect={() => swallow(actions.onPin?.(machineId, meta.sessionId, meta.pinnedAt === undefined))}
+        >
+          {meta.pinnedAt === undefined ? '置顶' : '取消置顶'}
+        </Item>
+      )}
       {items.rename && (
         <Item testId="menu-rename" onSelect={() => onRequestRename(target)}>
           重命名

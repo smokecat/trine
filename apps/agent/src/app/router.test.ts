@@ -873,7 +873,20 @@ describe('Router · 路由表（机器级）', () => {
     expect((await CwdStore.load(join(dir, 'cwd.json'))).snapshot()).toEqual({
       favorites: ['/repo/b'],
       defaultCwd: '/repo/b',
+      pinned: {},
     });
+  });
+
+  test('cwd.pin → 落盘 + 广播带 pinned 的 cwd.updated（重复请求也广播）', async () => {
+    const h = await makeHarness();
+    await h.router.handle({ type: 'cwd.pin', ...c2a(), path: '/repo/a', pinned: true }, phone);
+    await h.router.handle({ type: 'cwd.pin', ...c2a(), path: '/repo/a', pinned: true }, phone);
+    const updates = h.byType('cwd.updated');
+    expect(updates).toHaveLength(2);
+    expect(updates.at(-1)).toMatchObject({ pinned: { '/repo/a': expect.any(Number) } });
+    await h.router.handle({ type: 'cwd.pin', ...c2a(), path: '/repo/a', pinned: false }, phone);
+    expect(h.byType('cwd.updated').at(-1)).toMatchObject({ pinned: {} });
+    expect((await CwdStore.load(join(dir, 'cwd.json'))).snapshot().pinned).toEqual({});
   });
 
   test('machine.rename → 落盘回调 + 广播 machine.info；machine.unpair 忽略', async () => {
@@ -1018,6 +1031,8 @@ const rename = (sid: string, reqId: string, title: string) =>
   ({ type: 'session.rename', ...c2a(sid), reqId, title }) as ClientToAgentEvent;
 const archive = (sid: string, reqId: string, archived = true) =>
   ({ type: 'session.archive', ...c2a(sid), reqId, archived }) as ClientToAgentEvent;
+const pin = (sid: string, reqId: string, pinned = true) =>
+  ({ type: 'session.pin', ...c2a(sid), reqId, pinned }) as ClientToAgentEvent;
 const del = (sid: string, reqId: string) =>
   ({ type: 'session.delete', ...c2a(sid), reqId }) as ClientToAgentEvent;
 const updatedSessions = (h: Harness) =>
@@ -1337,6 +1352,46 @@ describe('Router · 外部改名跟进（评审 N3 / N4）', () => {
     const after = updatedSessions(h).slice(before);
     expect(after.at(-1)).toMatchObject({ sessionId: sid, title: 'B' });
     expect(h.transcripts.calls).not.toContain(`rename:${sid}:A`);
+  });
+});
+
+describe('Router · session.pin', () => {
+  test('置顶写标记，updated 带 pinnedAt；重复置顶保留原时间；取消置顶反向', async () => {
+    const h = await withHistorical();
+    await h.router.handle(pin('h1', 'p1'), phone);
+    expect(responseOf(h, 'p1').ok).toBe(true);
+    expect(h.flags.pinnedAt('h1')).toBe(130_000);
+    expect(updatedSessions(h).at(-1)).toMatchObject({ sessionId: 'h1', pinnedAt: 130_000 });
+    h.advance(5);
+    await h.router.handle(pin('h1', 'p2'), phone);
+    expect(h.flags.pinnedAt('h1')).toBe(130_000);
+
+    await h.router.handle(pin('h1', 'p3', false), phone);
+    expect(responseOf(h, 'p3').ok).toBe(true);
+    expect(h.flags.pinnedAt('h1')).toBeUndefined();
+    expect(updatedSessions(h).at(-1)!.pinnedAt).toBeUndefined();
+    expect(h.created).toHaveLength(0);
+  });
+
+  test('运行中也能置顶；未知会话 → not_found', async () => {
+    const h = await makeHarness();
+    h.state.rememberSession('s1', params);
+    await h.router.handle({ type: 'input.send', ...c2a('s1'), clientMsgId: 'c', text: 'x' }, phone);
+    h.created[0]!.state = 'running';
+    await h.router.handle(pin('s1', 'p1'), phone);
+    expect(responseOf(h, 'p1').ok).toBe(true);
+    await h.router.handle(pin('ghost', 'p2'), phone);
+    expect(responseOf(h, 'p2')).toMatchObject({ ok: false, error: { code: 'not_found' } });
+  });
+
+  test('归档清掉置顶，取消归档后不恢复', async () => {
+    const h = await withHistorical();
+    await h.router.handle(pin('h1', 'p1'), phone);
+    await h.router.handle(archive('h1', 'a1'), phone);
+    expect(h.flags.pinnedAt('h1')).toBeUndefined();
+    expect(updatedSessions(h).at(-1)!.pinnedAt).toBeUndefined();
+    await h.router.handle(archive('h1', 'a2', false), phone);
+    expect(updatedSessions(h).at(-1)!.pinnedAt).toBeUndefined();
   });
 });
 

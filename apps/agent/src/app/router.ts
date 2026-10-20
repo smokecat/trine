@@ -155,6 +155,7 @@ const MACHINE_LEVEL_TYPES = new Set<ClientToAgentEvent['type']>([
   'cwd.add',
   'cwd.remove',
   'cwd.setDefault',
+  'cwd.pin',
 ]);
 
 /**
@@ -164,6 +165,7 @@ const MACHINE_LEVEL_TYPES = new Set<ClientToAgentEvent['type']>([
 const SESSION_META_TYPES = new Set<ClientToAgentEvent['type']>([
   'session.rename',
   'session.archive',
+  'session.pin',
   'session.delete',
 ]);
 
@@ -243,7 +245,7 @@ export interface RouterDeps {
 type SessionEvent = Extract<ClientToAgentEvent, { sessionId?: string }>;
 type SessionMetaEvent = Extract<
   ClientToAgentEvent,
-  { type: 'session.rename' | 'session.archive' | 'session.delete' }
+  { type: 'session.rename' | 'session.archive' | 'session.pin' | 'session.delete' }
 >;
 
 /** listSessions 结果缓存的每条：resume 参数 + resume 时种进 meta 的字段 */
@@ -636,7 +638,7 @@ export class Router {
     }
   }
 
-  /** rename / archive / delete：业务结果与意外异常都收敛成一帧机器级应答 */
+  /** rename / archive / pin / delete：业务结果与意外异常都收敛成一帧机器级应答 */
   async #handleMetaCommand(sessionId: string, event: SessionMetaEvent): Promise<void> {
     let outcome: MutationOutcome;
     try {
@@ -646,6 +648,9 @@ export class Router {
           break;
         case 'session.archive':
           outcome = await this.#mutations.archive(sessionId, event.archived);
+          break;
+        case 'session.pin':
+          outcome = await this.#mutations.pin(sessionId, event.pinned);
           break;
         case 'session.delete':
           outcome = await this.#mutations.delete(sessionId);
@@ -1199,6 +1204,11 @@ export class Router {
         return;
       case 'cwd.setDefault':
         await cwdStore.setDefault(event.path);
+        this.#emitMachine({ type: 'cwd.updated', ...cwdStore.snapshot() });
+        return;
+      case 'cwd.pin':
+        await cwdStore.setPinned(event.path, event.pinned, this.#now());
+        // 幂等的重复请求也广播：发起端可能是因为本地状态过期才重发
         this.#emitMachine({ type: 'cwd.updated', ...cwdStore.snapshot() });
         return;
       case 'machine.rename':

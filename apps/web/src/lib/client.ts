@@ -1120,6 +1120,9 @@ export class TrineClient {
   }
 
   async listSessions(machineId: string): Promise<SessionMeta[]> {
+    // 列表要按置顶工作区排（cwd.updated.pinned），而 cwd 快照平时只在打开新建会话 / 聊天页时拉：
+    // 顺带拉一次，失败不影响列表
+    void this.request(machineId, { type: 'cwd.list.request' }).catch(() => undefined);
     const res = await this.request(machineId, { type: 'session.list.request' });
     return res.type === 'session.list.response' ? res.sessions : [];
   }
@@ -1135,7 +1138,7 @@ export class TrineClient {
   }
 
   /**
-   * 会话元数据命令（session-list-v2 §2）：rename / archive / delete。
+   * 会话元数据命令（session-list-v2 §2）：rename / archive / pin / delete。
    *
    * 走 `request()`，应答是机器级 `session.mutate.response`（按 reqId 关联）。
    * 业务拒绝抛 `SessionMutateError`（message 是 agent 的原话）；超时抛
@@ -1154,6 +1157,18 @@ export class TrineClient {
     await this.#mutate(machineId, { type: 'session.archive', sessionId, archived });
   }
 
+  async pinSession(machineId: string, sessionId: string, pinned: boolean): Promise<void> {
+    await this.#mutate(machineId, { type: 'session.pin', sessionId, pinned });
+  }
+
+  /**
+   * 置顶 / 取消置顶工作区（sidebar-pin）。fire-and-forget（同 cwd.add）：agent 广播的
+   * `cwd.updated` 带来新的 pinned。机器离线时发不出去返回 false。
+   */
+  pinWorkspace(machineId: string, cwd: string, pinned: boolean): boolean {
+    return this.send(machineId, { type: 'cwd.pin', path: cwd, pinned });
+  }
+
   async deleteSession(machineId: string, sessionId: string): Promise<void> {
     await this.#mutate(machineId, { type: 'session.delete', sessionId });
     this.#removeSession(machineId, sessionId);
@@ -1164,6 +1179,7 @@ export class TrineClient {
     body:
       | { type: 'session.rename'; sessionId: string; title: string }
       | { type: 'session.archive'; sessionId: string; archived: boolean }
+      | { type: 'session.pin'; sessionId: string; pinned: boolean }
       | { type: 'session.delete'; sessionId: string },
   ): Promise<void> {
     let res: AgentToClientEvent;

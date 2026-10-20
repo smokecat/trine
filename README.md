@@ -28,6 +28,8 @@ the agent runs on your own computer.
   snippets live behind a `+` button so the input keeps its width.
 - Lists, resumes, renames and archives sessions across paired machines; right-click or
   multi-select (Ctrl/Cmd/Shift-click) to archive in bulk, and copy a session's working directory.
+- Pins sessions and workspaces (most recently pinned first). When grouped by workspace, groups
+  keep a fixed order (newest workspace first) instead of jumping around as sessions change state.
 - Hides temporary sessions by default (working directory under a system temp directory, or
   non-interactive runs such as `claude -p`); a list filter shows them again.
 - Relays tool approval requests and interactive questions to your browser.

@@ -1,5 +1,5 @@
 /**
- * 会话元数据命令：重命名 / 归档 / 永久删除（session-list-v2，方案 v2 §3.4）。
+ * 会话元数据命令：重命名 / 归档 / 置顶 / 永久删除（session-list-v2，方案 v2 §3.4；置顶见 sidebar-pin）。
  *
  * 由 router 在该会话的命令链上调用（与同 sid 的 input.send 串行），**绝不**
  * resolveSession（评审 B2：历史会话改个名不该占并发名额、更不该先 resume 一次）：
@@ -222,6 +222,8 @@ export class SessionMutations {
         if (!(await this.#known(sessionId))) return fail('not_found', `找不到会话 ${sessionId}`);
         await flags.setArchived(sessionId, now());
       }
+      // 归档 = 暂时不用：置顶一并取消，免得取消归档后它突然出现在最上面
+      await flags.clearPinned(sessionId);
       // 归档 = 暂时不用：顺带回收子进程、让出名额（转录还在，取消归档后随时可恢复）。
       // 有后台任务在跑的不回收——回收会把后台任务一起杀掉，留给空闲回收去等
       const live = manager.get(sessionId);
@@ -235,6 +237,26 @@ export class SessionMutations {
       return fail('not_found', `找不到会话 ${sessionId}`);
     }
     // 幂等的重复请求也广播一次：发起端可能正是因为本地状态过期才重发
+    await this.#broadcastUpdated(sessionId);
+    return OK;
+  }
+
+  // -------------------------------------------------------------------------
+  // pin
+  // -------------------------------------------------------------------------
+
+  /** 置顶 / 取消置顶。只是列表排序标记，不看会话忙不忙 */
+  async pin(sessionId: string, pinned: boolean): Promise<MutationOutcome> {
+    const { flags, now } = this.#deps;
+    if (pinned) {
+      if (flags.pinnedAt(sessionId) === undefined) {
+        if (!(await this.#known(sessionId))) return fail('not_found', `找不到会话 ${sessionId}`);
+        await flags.setPinned(sessionId, now());
+      }
+    } else {
+      // 标记在就清，同 archive：转录不在了也允许清掉残留
+      await flags.clearPinned(sessionId);
+    }
     await this.#broadcastUpdated(sessionId);
     return OK;
   }

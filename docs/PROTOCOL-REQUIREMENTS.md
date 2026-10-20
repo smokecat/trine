@@ -143,7 +143,9 @@ SessionMeta 新增**可选**字段（旧 agent 不发、旧 client 收到会被 
 - `live?: boolean`（live-sessions，agent ≥ 0.10.0）— 会话当前在 agent 上有子进程，占一个活跃名额（上限见 `machine.info.maxSessions`）。子进程拉起（新建 / resume）与关闭（空闲回收、满额腾位、归档、切目录）后都会广播一次 `session.updated`；归档会话时若它不忙且没有后台任务，顺带回收子进程；省略 = 没有 / 旧 agent。名额满时 agent 先回收最久未活动且不忙（不在跑、不等批准、无排队输入、无后台任务）的会话，全都在忙才回 `error.fatal(config)`
 - `context?: { usedTokens, maxTokens, percent, at }`（usage-display，agent ≥ 0.12.0）— 最近一次已知的 context 用量。agent 在主 agent 每轮结束（result）后，在同一个 SDK query 上调 `getContextUsage()` 取值（不消耗模型 token），也可由 client 发 `session.context.request { reqId }`（会话级，agent ≥ 0.13.0）手动刷新：有子进程就直接查，没有就临时起一个 resume 该会话、不发消息的 claude 查完即关（约 2 秒，不写转录；有待生效的截断点时从截断点 resume）。新值随 `session.updated` 广播，应答 `session.context.response { reqId, ok, context?, error?: { code: not_found|failed, message } }` 只发给请求方（会话打不开时为机器级 `not_found`）。`session.status.response` 的 `contextUsedTokens / contextLimitTokens` 填这个最近值（0.13.0 之前恒为 0/0）；`maxTokens` 是自动压缩窗口，`percent` 超窗时可 > 100。子进程回收后保留最后一次的值（agent 重启后清空，等下一轮再取）；省略 = 还没取到 / 旧 agent
 
-agent 侧所有产出 SessionMeta 的出口（list、session.created、session.updated、各命令成功后的广播）都经同一处合并归档标记、`headless` 与 `live`，活跃会话的状态迁移不会冲掉 title / firstPrompt / archived 等非运行时字段。
+- `pinnedAt?: Timestamp`（sidebar-pin，agent ≥ 0.14.0）— 置顶时间，与归档标记存在同一个 `~/.trine/sessions.json`（`pinned: {sid: ts}`）；省略 = 未置顶。见 §2.3
+
+agent 侧所有产出 SessionMeta 的出口（list、session.created、session.updated、各命令成功后的广播）都经同一处合并归档 / 置顶标记、`headless` 与 `live`，活跃会话的状态迁移不会冲掉 title / firstPrompt / archived 等非运行时字段。
 
 ### 2.2 重命名 / 归档 / 永久删除
 
@@ -156,6 +158,14 @@ agent 侧所有产出 SessionMeta 的出口（list、session.created、session.u
 应答统一走**机器级** `session.mutate.response { reqId, targetSessionId, ok, error?: { code, message } }`，`code ∈ busy | not_found | not_archived | invalid | io | deleted`。业务拒绝一律在这里表达，不用 `error.fatal`（那会进聊天时间线且关联不到请求）。目标会话字段叫 `targetSessionId` 而不是 `sessionId`：密文里的 `sessionId` 是信封绑定字段，带上它这帧就成了会话级帧。
 
 成功时另有机器级广播给所有设备：rename / archive → `session.updated`（整份快照，含 `archived`/`archivedAt`）；delete → `session.removed { targetSessionId }`。client 收到 `session.removed` 应清掉该会话的列表条目、时间线、游标、能力缓存、待发帧与 parked 条目，当前正打开它则跳回列表。
+
+### 2.3 置顶（sidebar-pin，agent ≥ 0.14.0）
+
+- `session.pin { sessionId, reqId, pinned: boolean }` — 会话置顶 / 取消置顶。会话级帧，与 §2.2 同一套处理：不 resume、应答走 `session.mutate.response`（未知会话 → `not_found`），成功广播 `session.updated`（带或不带 `pinnedAt`）。不看会话忙不忙；重复置顶保留原时间。**归档会清掉置顶**，取消归档不恢复；删除一并清掉
+- `cwd.pin { path, pinned: boolean }` — 工作区置顶 / 取消置顶（机器级，fire-and-forget，同 `cwd.add`）。工作区不是实体，是 client 按（机器, 去尾 `/` 的 cwd）分出来的组；path 按这个规范化 cwd 发，agent 按字面存进 `~/.trine/cwd.json` 的 `pinned: {cwd: ts}`（最多 100 条，超出丢最早置顶的），随 `cwd.updated` / `cwd.list.response` 的 `pinned` 下发
+- 排序（client）：分组时组序 = 置顶组（越晚置顶越靠上）→ 工作区创建时间倒序（该机器该 cwd 下**全部**会话含已归档的最早 `createdAt`，缺省退回 `lastActivityAt`）；不再看组内状态与最后活动，组不随会话状态跳动。组内 / 平铺时：置顶会话（越晚置顶越靠上）→ 等待批准 → 运行中 → 其余按最后活动时间
+- client 拉会话列表时顺带发一次 `cwd.list.request`，拿到置顶工作区
+- 互操作：按 `machine.info.agentVersion` ≥ 0.14.0 探测，版本不够时隐藏置顶菜单；旧 client 丢弃不认识的 `pinnedAt` / `pinned`
 
 **墓碑**：删除后 agent 保留墓碑 8 天（= 服务端默认 parked 24h + relay 留存 7 天：一帧指向已删会话的旧命令最晚在这个窗口内到达）。命中墓碑的**任何**会话级帧都不会让会话复活：带 `reqId` 的（含 `session.status.request` 等）回 `session.mutate.response{ok:false, code:'deleted'}`；不带的（`input.send`、park 队列或断线补发回来的旧帧）agent 丢弃，并对该会话广播 `session.removed`（按会话限频，60 秒至多一次），让还缓存着它的设备自清。client 侧也记住已删会话 8 天：此后指向它的会话级帧（断线补发回放、迟到帧）直接丢弃，不再对它发 sync，也不能再打开（深链 / 后退回来时提示并跳回列表）。删除后 seq 计数不重置（D10 保守取向）。
 
@@ -206,9 +216,10 @@ agent 侧所有产出 SessionMeta 的出口（list、session.created、session.u
 
 ### 6.2 工作目录管理（agent 端持久化，每机器一份）
 
-- `cwd.list`（req/resp）— `{ favorites: [path], defaultCwd }`；机器详情/新建会话/会话设置三处共用
+- `cwd.list`（req/resp）— `{ favorites: [path], defaultCwd, pinned? }`；机器详情/新建会话/会话设置三处共用；`pinned` 是置顶工作区（§2.3）
 - `cwd.add` / `cwd.remove` — `{ path }`
 - `cwd.setDefault` — `{ path }`；新建会话表单以 defaultCwd 预选
+- `cwd.pin` — `{ path, pinned }`；置顶工作区（§2.3）
 - 变更广播 `cwd.updated` — 多客户端设备保持一致
 - 会话内当前 cwd 的展示：会话头部元信息行（低优先级折叠态），点开会话设置 sheet 查看/切换——数据即 `session.status.cwd`，无需独立事件
 

@@ -330,6 +330,13 @@ export interface Capabilities {
   mcpServers: McpServerStatus[];
 }
 
+/** 机器的工作目录快照（`cwd.list.response / cwd.updated`） */
+export interface MachineCwd {
+  favorites: string[];
+  defaultCwd: string;
+  pinned?: Record<string, number>;
+}
+
 export interface MachineState {
   machineId: string;
   /** null = 还没收到过 machine.status（连接刚建立） */
@@ -339,7 +346,8 @@ export interface MachineState {
   /** info.name → peer.name → machineId，按可用性取 */
   name: string;
   parkedCount: number;
-  cwd: { favorites: string[]; defaultCwd: string } | null;
+  /** pinned：置顶的工作区（cwd → 置顶时间），agent ≥ 0.14.0 才带 */
+  cwd: MachineCwd | null;
   /** 机器级 error.fatal（无 sessionId；outbox 放弃自愈时 agent 发） */
   lastError: { kind: 'quota' | 'auth' | 'config' | 'other'; message: string; at: number } | null;
 }
@@ -1294,7 +1302,14 @@ export function applyMachineEvent(machine: MachineState, event: AgentToClientEve
       return { ...machine, info: event.info, name: event.info.name };
     case 'cwd.list.response':
     case 'cwd.updated':
-      return { ...machine, cwd: { favorites: event.favorites, defaultCwd: event.defaultCwd } };
+      return {
+        ...machine,
+        cwd: {
+          favorites: event.favorites,
+          defaultCwd: event.defaultCwd,
+          ...(event.pinned === undefined ? {} : { pinned: event.pinned }),
+        },
+      };
     case 'error.fatal':
       if (event.sessionId !== undefined) return machine;
       return { ...machine, lastError: { kind: event.kind, message: event.message, at: event.ts } };

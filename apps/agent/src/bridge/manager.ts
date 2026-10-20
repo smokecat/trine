@@ -42,6 +42,7 @@ import type { RateLimitPatch } from './usage.ts';
  */
 export interface SessionFlags {
   archivedAt(sessionId: string): number | undefined;
+  pinnedAt(sessionId: string): number | undefined;
   pendingTitle(sessionId: string): string | undefined;
   isDeleted(sessionId: string): boolean;
   /** 同步清掉归档标记（落盘在后台）——`#onMeta` 是同步回调，等不了写盘 */
@@ -515,7 +516,7 @@ export class SessionManager {
 
   /**
    * 所有产出 SessionMeta 的出口统一经过这里（评审 B3）：合并 flags store 的
-   * archived / archivedAt 与 pendingTitle。入参里若带着 archived 字段一律丢弃
+   * archived / archivedAt / pinnedAt 与 pendingTitle。入参里若带着这几个字段一律丢弃
    * ——标记的唯一来源是 flags store。`headless` 同理，唯一来源是 #headless；
    * `live` 的唯一来源是 #sessions。
    *
@@ -528,7 +529,14 @@ export class SessionManager {
    * 一条补写卡住的 pending 不该盖住它（评审 minor 1）。
    */
   decorate(meta: SessionMeta, options: { hasCustomTitle?: boolean } = {}): SessionMeta {
-    const { archived: _archived, archivedAt: _archivedAt, headless: _headless, live: _live, ...stripped } = meta;
+    const {
+      archived: _archived,
+      archivedAt: _archivedAt,
+      pinnedAt: _pinnedAt,
+      headless: _headless,
+      live: _live,
+      ...stripped
+    } = meta;
     const rest: SessionMeta = {
       ...stripped,
       ...(this.#headless.has(meta.sessionId) ? { headless: true } : {}),
@@ -538,10 +546,12 @@ export class SessionManager {
     if (flags === undefined) return rest;
     const pending = options.hasCustomTitle === true ? undefined : flags.pendingTitle(meta.sessionId);
     const at = flags.archivedAt(meta.sessionId);
+    const pinnedAt = flags.pinnedAt(meta.sessionId);
     return {
       ...rest,
       ...(pending === undefined ? {} : { title: pending }),
       ...(at === undefined ? {} : { archived: true, archivedAt: at }),
+      ...(pinnedAt === undefined ? {} : { pinnedAt }),
     };
   }
 
@@ -553,7 +563,7 @@ export class SessionManager {
    */
   updateMeta(
     sessionId: string,
-    patch: Partial<Omit<SessionMeta, 'sessionId' | 'archived' | 'archivedAt'>>,
+    patch: Partial<Omit<SessionMeta, 'sessionId' | 'archived' | 'archivedAt' | 'pinnedAt'>>,
   ): SessionMeta | undefined {
     const current = this.#meta.get(sessionId);
     if (current === undefined) return undefined;

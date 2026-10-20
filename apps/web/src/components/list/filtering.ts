@@ -9,7 +9,7 @@
  * 零浏览器全局，全部单测覆盖（filtering.test.ts）。
  */
 import type { SessionMeta, SessionState } from '@trine/core';
-import { compareSessions, STATE_RANK, type SessionRowData } from './sorting.ts';
+import { comparePinned, compareSessions, STATE_RANK, type SessionRowData } from './sorting.ts';
 
 /**
  * 状态 chip。「进行中」与 `countActiveSessions` / 机器 chip 的 activeCount
@@ -77,6 +77,10 @@ export interface SessionGroup {
   rank: number;
   /** 组内最近活动（max lastActivityAt） */
   lastActivityAt: number;
+  /** 工作区创建时间（见 workspaceCreatedAt）；组序依据之一 */
+  createdAt: number;
+  /** 工作区置顶时间；省略 = 未置顶 */
+  pinnedAt?: number;
   waitingCount: number;
   runningCount: number;
 }
@@ -153,14 +157,58 @@ export function matchesSearch(
   return fields.some((f) => f !== undefined && f.toLowerCase().includes(needle));
 }
 
-/** 按工作空间分组；组序 (min STATE_RANK, max lastActivityAt)，组内 compareSessions */
-export function groupRows(rows: SessionRowData[]): SessionGroup[] {
+/** 机器 → 置顶的工作区（cwd → 置顶时间）；来源 `cwd.updated.pinned` */
+export type PinnedCwds = Record<string, Record<string, number> | undefined>;
+
+/**
+ * 每个工作区（组 key）的创建时间：该机器该 cwd 下**全部**会话（含已归档、临时）里
+ * 最早的 createdAt（缺省退回 lastActivityAt）。工作区不是实体，只能这样推；
+ * 取全量而不是当前筛选后的行，组的位置才不随搜索 / 状态 chip / 归档变化。
+ */
+export function workspaceCreatedAt(sessions: Record<string, Record<string, SessionMeta>>): Map<string, number> {
+  const out = new Map<string, number>();
+  for (const [machineId, map] of Object.entries(sessions)) {
+    for (const meta of Object.values(map)) {
+      const key = groupKey(machineId, meta.cwd);
+      const at = meta.createdAt ?? meta.lastActivityAt;
+      const prev = out.get(key);
+      if (prev === undefined || at < prev) out.set(key, at);
+    }
+  }
+  return out;
+}
+
+/** 某机器的置顶工作区按规范化 cwd 查（agent 按字面存，旧数据可能带尾 `/`） */
+function pinnedLookup(pinned: PinnedCwds, machineId: string): Map<string, number> {
+  const out = new Map<string, number>();
+  for (const [cwd, at] of Object.entries(pinned[machineId] ?? {})) out.set(normalizeCwd(cwd), at);
+  return out;
+}
+
+/**
+ * 按工作空间分组。组序：置顶（越晚置顶越靠上）→ 工作区创建时间倒序（新的在上）→ key。
+ * 刻意不看组内状态与最后活动——组不该因为某个会话开始跑或在等批准就跳位置
+ * （sidebar-pin）；待批准靠组头角标和强制展开提示。组内 compareSessions。
+ *
+ * `createdAt` 给了就按它（全量会话推出来的，见 workspaceCreatedAt），没给的组用组内行算。
+ */
+export function groupRows(
+  rows: SessionRowData[],
+  ctx: { pinned?: PinnedCwds; createdAt?: ReadonlyMap<string, number> } = {},
+): SessionGroup[] {
   const map = new Map<string, SessionGroup>();
+  const pins = new Map<string, Map<string, number>>();
   for (const row of rows) {
     const cwd = normalizeCwd(row.meta.cwd);
     const key = groupKey(row.machineId, cwd);
     let g = map.get(key);
     if (g === undefined) {
+      let machinePins = pins.get(row.machineId);
+      if (machinePins === undefined) {
+        machinePins = pinnedLookup(ctx.pinned ?? {}, row.machineId);
+        pins.set(row.machineId, machinePins);
+      }
+      const pinnedAt = machinePins.get(cwd);
       g = {
         key,
         machineId: row.machineId,
@@ -168,6 +216,8 @@ export function groupRows(rows: SessionRowData[]): SessionGroup[] {
         rows: [],
         rank: Number.POSITIVE_INFINITY,
         lastActivityAt: 0,
+        createdAt: ctx.createdAt?.get(key) ?? Number.POSITIVE_INFINITY,
+        ...(pinnedAt === undefined ? {} : { pinnedAt }),
         waitingCount: 0,
         runningCount: 0,
       };
@@ -176,6 +226,9 @@ export function groupRows(rows: SessionRowData[]): SessionGroup[] {
     g.rows.push(row);
     g.rank = Math.min(g.rank, STATE_RANK[row.meta.state]);
     g.lastActivityAt = Math.max(g.lastActivityAt, row.meta.lastActivityAt);
+    if (ctx.createdAt?.get(key) === undefined) {
+      g.createdAt = Math.min(g.createdAt, row.meta.createdAt ?? row.meta.lastActivityAt);
+    }
     if (row.meta.state === 'waiting_permission') g.waitingCount += 1;
     if (row.meta.state === 'running') g.runningCount += 1;
   }
@@ -183,8 +236,8 @@ export function groupRows(rows: SessionRowData[]): SessionGroup[] {
   for (const g of groups) g.rows.sort(compareSessions);
   return groups.sort(
     (a, b) =>
-      a.rank - b.rank ||
-      b.lastActivityAt - a.lastActivityAt ||
+      comparePinned(a.pinnedAt, b.pinnedAt) ||
+      b.createdAt - a.createdAt ||
       (a.key < b.key ? -1 : a.key > b.key ? 1 : 0),
   );
 }
@@ -250,6 +303,7 @@ export function filterSessions(
   sessions: Record<string, Record<string, SessionMeta>>,
   query: ListQuery,
   machineNames: Record<string, string> = {},
+  pinnedCwds: PinnedCwds = {},
 ): FilterResult {
   // 1. 机器
   const scoped: SessionRowData[] = [];
@@ -288,7 +342,10 @@ export function filterSessions(
 
   // 6 + 7. 分组 / 排序
   const rows = searched.sort(compareSessions);
-  const groups = query.groupBy === 'workspace' ? groupRows(rows) : null;
+  const groups =
+    query.groupBy === 'workspace'
+      ? groupRows(rows, { pinned: pinnedCwds, createdAt: workspaceCreatedAt(sessions) })
+      : null;
 
   let empty: EmptyReason | null = null;
   if (rows.length === 0) {

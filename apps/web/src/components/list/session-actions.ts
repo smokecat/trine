@@ -1,5 +1,5 @@
 /**
- * 会话 rename / archive / delete（含批量归档）与复制工作目录动作的纯逻辑（session-list-v2 §4.1，评审 B1 / S2）：
+ * 会话 rename / archive / pin / delete（含批量归档）、工作区置顶与复制工作目录动作的纯逻辑（session-list-v2 §4.1，评审 B1 / S2）：
  * agent 版本能力探测 + 把 client 的三条命令包成 `SessionRowActions` 回调（含
  * toast）。React 胶水在 `use-session-actions.ts`，这里零 React 依赖、可直接单测。
  *
@@ -16,6 +16,8 @@ import type { SessionRowActions } from './SessionRowMenu.tsx';
 
 /** 首个支持 session.rename / archive / delete 的 agent 版本 */
 export const SESSION_MUTATIONS_MIN_AGENT = '0.2.0';
+/** 首个支持 session.pin / cwd.pin 的 agent 版本 */
+export const PIN_MIN_AGENT = '0.14.0';
 
 interface ParsedVersion {
   core: [number, number, number];
@@ -61,17 +63,30 @@ export function compareVersions(a: string, b: string): number | null {
   return 0;
 }
 
-/** 这台机器的 agent 是否认识 rename / archive / delete */
-export function supportsSessionMutations(info: Pick<MachineInfo, 'agentVersion'> | null | undefined): boolean {
+/** agent 版本 ≥ min；还没收到 machine.info / 版本号解析不了 → false */
+export function agentAtLeast(info: Pick<MachineInfo, 'agentVersion'> | null | undefined, min: string): boolean {
   if (info === null || info === undefined) return false;
-  const cmp = compareVersions(info.agentVersion, SESSION_MUTATIONS_MIN_AGENT);
+  const cmp = compareVersions(info.agentVersion, min);
   return cmp !== null && cmp >= 0;
 }
 
+/** 这台机器的 agent 是否认识 rename / archive / delete */
+export function supportsSessionMutations(info: Pick<MachineInfo, 'agentVersion'> | null | undefined): boolean {
+  return agentAtLeast(info, SESSION_MUTATIONS_MIN_AGENT);
+}
+
+/** 这台机器的 agent 是否认识 session.pin / cwd.pin */
+export function supportsPin(info: Pick<MachineInfo, 'agentVersion'> | null | undefined): boolean {
+  return agentAtLeast(info, PIN_MIN_AGENT);
+}
+
 /** 支持的机器 id，排序后逗号拼接——给 React selector 用的稳定标量 */
-export function supportedMachinesKey(machines: Record<string, { info: Pick<MachineInfo, 'agentVersion'> | null }>): string {
+export function supportedMachinesKey(
+  machines: Record<string, { info: Pick<MachineInfo, 'agentVersion'> | null }>,
+  supports: (info: Pick<MachineInfo, 'agentVersion'> | null | undefined) => boolean = supportsSessionMutations,
+): string {
   return Object.keys(machines)
-    .filter((id) => supportsSessionMutations(machines[id]?.info))
+    .filter((id) => supports(machines[id]?.info))
     .sort()
     .join(',');
 }
@@ -84,6 +99,8 @@ export interface SessionTarget {
 export interface SessionMutationClient {
   renameSession(machineId: string, sessionId: string, title: string): Promise<void>;
   archiveSession(machineId: string, sessionId: string, archived: boolean): Promise<void>;
+  pinSession(machineId: string, sessionId: string, pinned: boolean): Promise<void>;
+  pinWorkspace(machineId: string, cwd: string, pinned: boolean): boolean;
   deleteSession(machineId: string, sessionId: string): Promise<void>;
 }
 
@@ -108,10 +125,13 @@ const NONE: SessionRowActions = Object.freeze({});
 export function buildSessionActions(args: {
   client: SessionMutationClient | null;
   supportedMachineIds: ReadonlySet<string>;
+  /** 支持置顶（agent ≥ 0.14.0）的机器；不给 = 都不支持 */
+  pinMachineIds?: ReadonlySet<string>;
   onlyMachine?: string | undefined;
   notify: Notifier;
 }): SessionRowActions {
   const { client, supportedMachineIds, onlyMachine, notify } = args;
+  const pinMachineIds = args.pinMachineIds ?? new Set<string>();
   if (client === null || supportedMachineIds.size === 0) return NONE;
   if (onlyMachine !== undefined && !supportedMachineIds.has(onlyMachine)) return NONE;
 
@@ -169,7 +189,22 @@ export function buildSessionActions(args: {
     }
   };
 
+  const pinActions: SessionRowActions =
+    pinMachineIds.size === 0 || (onlyMachine !== undefined && !pinMachineIds.has(onlyMachine))
+      ? {}
+      : {
+          supportsPin: (machineId) => pinMachineIds.has(machineId),
+          onPin: (machineId, sessionId, pinned) =>
+            run(pinned ? '置顶失败' : '取消置顶失败', () => client.pinSession(machineId, sessionId, pinned), () => {}),
+          onPinWorkspace: (machineId, cwd, pinned) => {
+            if (!client.pinWorkspace(machineId, cwd, pinned)) {
+              notify.error(pinned ? '置顶失败' : '取消置顶失败', { description: '连接未就绪，请稍后再试' });
+            }
+          },
+        };
+
   return {
+    ...pinActions,
     supports: (machineId) => supportedMachineIds.has(machineId),
     onRename: (machineId, sessionId, title) =>
       run('重命名失败', () => client.renameSession(machineId, sessionId, title), () => notify.success('已重命名')),

@@ -29,7 +29,7 @@ const readJson = async () => JSON.parse(await readFile(path, 'utf8')) as Record<
 describe('SessionFlagsStore · 读写', () => {
   test('不存在 → 空标记，不写文件', async () => {
     const store = await load();
-    expect(store.snapshot()).toEqual({ v: 1, archived: {}, deleted: {}, pendingTitle: {} });
+    expect(store.snapshot()).toEqual({ v: 1, archived: {}, deleted: {}, pendingTitle: {}, pinned: {} });
     await expect(stat(path)).rejects.toThrow();
     expect(logs).toEqual([]);
   });
@@ -64,13 +64,27 @@ describe('SessionFlagsStore · 读写', () => {
     expect(store.pendingTitle('s1')).toBeUndefined();
   });
 
-  test('markDeleted：一次写盘清掉 archived/pendingTitle 并写墓碑', async () => {
+  test('pinned：重复置顶保留原时间，取消置顶清掉；旧文件无 pinned 键按空读入', async () => {
+    const store = await load();
+    await store.setPinned('s1', 10);
+    await store.setPinned('s1', 20);
+    expect((await load()).pinnedAt('s1')).toBe(10);
+    await store.clearPinned('s1');
+    expect((await readJson()).pinned).toEqual({});
+    await writeFile(path, JSON.stringify({ v: 1, archived: { s2: 1 }, deleted: {}, pendingTitle: {} }));
+    const old = await load();
+    expect(old.archivedAt('s2')).toBe(1);
+    expect(old.pinnedAt('s2')).toBeUndefined();
+  });
+
+  test('markDeleted：一次写盘清掉 archived/pendingTitle/pinned 并写墓碑', async () => {
     const store = await load();
     await store.setArchived('s1', 1);
     await store.setPendingTitle('s1', 't');
+    await store.setPinned('s1', 2);
     await store.markDeleted('s1', 50);
     const file = await readJson();
-    expect(file).toEqual({ v: 1, archived: {}, deleted: { s1: 50 }, pendingTitle: {} });
+    expect(file).toEqual({ v: 1, archived: {}, deleted: { s1: 50 }, pendingTitle: {}, pinned: {} });
     expect((await load()).isDeleted('s1')).toBe(true);
   });
 

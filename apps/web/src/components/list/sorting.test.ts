@@ -41,6 +41,18 @@ describe('compareSessions / selectSessionRows', () => {
     expect(selectSessionRows(sessions, null).map((r) => r.meta.sessionId)).toEqual(['c', 'b', 'd', 'a']);
   });
 
+  test('置顶会话排最前，越晚置顶越靠上，不随状态跳', () => {
+    const sessions = {
+      m1: {
+        a: meta({ sessionId: 'a', state: 'waiting_permission', lastActivityAt: 1 }),
+        p1: meta({ sessionId: 'p1', state: 'idle', lastActivityAt: 1, pinnedAt: 10 }),
+        p2: meta({ sessionId: 'p2', state: 'running', lastActivityAt: 1, pinnedAt: 5 }),
+        b: meta({ sessionId: 'b', state: 'idle', lastActivityAt: 900 }),
+      },
+    };
+    expect(selectSessionRows(sessions, null).map((r) => r.meta.sessionId)).toEqual(['p1', 'p2', 'a', 'b']);
+  });
+
   test('error / stopped 与 idle 同档，只按活动时间排', () => {
     const sessions = {
       m1: {

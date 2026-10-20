@@ -682,7 +682,7 @@ export const SessionCreateResponseSchema = z.object({
 // 命令链上串行），但 agent **不会**因此把会话 resume 起来（不占并发名额）。
 // 应答统一走**机器级** `session.mutate.response`（reqId 关联），业务拒绝也在
 // 这里表达，不用 error.fatal——后者会进聊天时间线且无法关联请求。
-// 成功时另有广播：rename/archive → `session.updated`；delete → `session.removed`。
+// 成功时另有广播：rename/archive/pin → `session.updated`；delete → `session.removed`。
 //
 // 互操作：旧 agent 不认识这些 type，schema 层静默丢弃 → client 的 request()
 // 只能等超时；client 应按 machine.info.agentVersion 做能力探测（>= 0.2.0）。
@@ -706,6 +706,18 @@ export const SessionArchiveSchema = z.object({
   sessionId: z.string().min(1),
   reqId: ReqIdSchema,
   archived: z.boolean(),
+});
+
+/**
+ * client → agent：置顶 / 取消置顶（sidebar-pin，agent 0.14.0 起）。不看会话忙不忙；
+ * 归档会顺带清掉置顶。成功时广播 `session.updated`（带或不带 pinnedAt）。
+ */
+export const SessionPinSchema = z.object({
+  type: z.literal('session.pin'),
+  ...c2aBase,
+  sessionId: z.string().min(1),
+  reqId: ReqIdSchema,
+  pinned: z.boolean(),
 });
 
 /**
@@ -1048,12 +1060,19 @@ export const CwdListRequestSchema = z.object({
   reqId: ReqIdSchema,
 });
 
+/**
+ * 置顶的工作区：cwd（去尾 `/`）→ 置顶时间（sidebar-pin，agent 0.14.0 起；旧 agent 不带）。
+ * 工作区不是实体，是会话列表按 (机器, cwd) 分出来的组；置顶的组排在最前，越晚置顶越靠上。
+ */
+export const PinnedCwdsSchema = z.record(z.string(), TimestampSchema);
+
 export const CwdListResponseSchema = z.object({
   type: z.literal('cwd.list.response'),
   ...a2cBase,
   reqId: ReqIdSchema,
   favorites: z.array(z.string()),
   defaultCwd: z.string(),
+  pinned: PinnedCwdsSchema.optional(),
 });
 
 export const CwdAddSchema = z.object({
@@ -1074,12 +1093,24 @@ export const CwdSetDefaultSchema = z.object({
   path: z.string().min(1),
 });
 
+/**
+ * client → agent：置顶 / 取消置顶工作区（sidebar-pin，agent 0.14.0 起）。path 按 client
+ * 分组用的规范化 cwd 发；agent 按字面存（与 favorites 一样不做存在性校验），广播 `cwd.updated`。
+ */
+export const CwdPinSchema = z.object({
+  type: z.literal('cwd.pin'),
+  ...c2aBase,
+  path: z.string().min(1),
+  pinned: z.boolean(),
+});
+
 /** agent → client：目录变更广播，多客户端设备保持一致 */
 export const CwdUpdatedSchema = z.object({
   type: z.literal('cwd.updated'),
   ...a2cBase,
   favorites: z.array(z.string()),
   defaultCwd: z.string(),
+  pinned: PinnedCwdsSchema.optional(),
 });
 
 // ---------------------------------------------------------------------------
@@ -1163,6 +1194,7 @@ export const ClientToAgentEventSchema = z.discriminatedUnion('type', [
   SessionCreateSchema,
   SessionRenameSchema,
   SessionArchiveSchema,
+  SessionPinSchema,
   SessionDeleteSchema,
   SessionSetModelSchema,
   SessionSetPermissionModeSchema,
@@ -1184,6 +1216,7 @@ export const ClientToAgentEventSchema = z.discriminatedUnion('type', [
   CwdAddSchema,
   CwdRemoveSchema,
   CwdSetDefaultSchema,
+  CwdPinSchema,
 ]);
 export type ClientToAgentEvent = z.infer<typeof ClientToAgentEventSchema>;
 

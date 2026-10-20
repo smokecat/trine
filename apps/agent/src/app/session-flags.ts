@@ -1,8 +1,8 @@
 /**
  * 会话标记：`~/.trine/sessions.json`（session-list-v2，DECISIONS D12）。
  *
- * `{ v:1, archived: {sid: ts}, deleted: {sid: ts}, pendingTitle: {sid: title} }`
- * 三类标记合在一个 store（评审 S3）：
+ * `{ v:1, archived: {sid: ts}, deleted: {sid: ts}, pendingTitle: {sid: title}, pinned: {sid: ts} }`
+ * 几类标记合在一个 store（评审 S3）：
  *
  * - **archived** —— 归档标记。只在显式取消归档 / 删除时移除；**绝不**按
  *   「本次 listSessions 没列出」清理（评审 M2：SDK 单文件读失败静默跳过、
@@ -13,6 +13,8 @@
  * - **pendingTitle** —— 还没有转录（从未发过消息）的会话的标题：SDK
  *   renameSession 对不存在 / 0 字节的 jsonl 抛错（评审 M8），首条消息落盘后
  *   由 router 补写并清掉。
+ * - **pinned** —— 置顶标记（sidebar-pin）。归档、删除时清掉；旧文件没有这个键，
+ *   读进来按空处理。
  *
  * 与 cwd-store 同一范式：文件坏了 warn + 回空、不阻止启动；tmp+rename、0600。
  * 与 cwd-store 不同的是，这份文件存的是用户意图（归档 / 墓碑）：解析失败时先
@@ -57,6 +59,7 @@ export const SessionFlagsFileSchema = z.object({
   archived: TsMap,
   deleted: TsMap,
   pendingTitle: z.record(z.string(), z.string()),
+  pinned: TsMap.default({}),
 });
 export type SessionFlagsFile = z.infer<typeof SessionFlagsFileSchema>;
 
@@ -131,6 +134,10 @@ export class SessionFlagsStore implements SessionFlags {
     return own(this.#data.pendingTitle, sessionId);
   }
 
+  pinnedAt(sessionId: string): number | undefined {
+    return own(this.#data.pinned, sessionId);
+  }
+
   isDeleted(sessionId: string): boolean {
     return own(this.#data.deleted, sessionId) !== undefined;
   }
@@ -170,6 +177,25 @@ export class SessionFlagsStore implements SessionFlags {
     put(this.#data.archived, sessionId, at);
     return this.#persistOrRevert(() => {
       if (own(this.#data.archived, sessionId) === at) delete this.#data.archived[sessionId];
+    });
+  }
+
+  /** 已置顶时保留原 pinnedAt（重复置顶幂等）。写盘失败回滚本次改动并 reject */
+  setPinned(sessionId: string, at: number): Promise<void> {
+    if (own(this.#data.pinned, sessionId) !== undefined) return this.#settled();
+    put(this.#data.pinned, sessionId, at);
+    return this.#persistOrRevert(() => {
+      if (own(this.#data.pinned, sessionId) === at) delete this.#data.pinned[sessionId];
+    });
+  }
+
+  /** 写盘失败回滚本次改动并 reject */
+  clearPinned(sessionId: string): Promise<void> {
+    const previous = own(this.#data.pinned, sessionId);
+    if (previous === undefined) return this.#settled();
+    delete this.#data.pinned[sessionId];
+    return this.#persistOrRevert(() => {
+      if (own(this.#data.pinned, sessionId) === undefined) put(this.#data.pinned, sessionId, previous);
     });
   }
 
@@ -213,13 +239,14 @@ export class SessionFlagsStore implements SessionFlags {
   }
 
   /**
-   * 删除收尾：清 archived / pendingTitle，写墓碑——一次写盘。
+   * 删除收尾：清 archived / pendingTitle / pinned，写墓碑——一次写盘。
    * 此时转录已经删掉了，写盘失败也不回滚（内存墓碑本进程内照样生效，
    * 置脏后下次写盘重试），调用方只 log。
    */
   markDeleted(sessionId: string, at: number): Promise<void> {
     delete this.#data.archived[sessionId];
     delete this.#data.pendingTitle[sessionId];
+    delete this.#data.pinned[sessionId];
     this.#pendingSetAt.delete(sessionId);
     this.#selfWriteAt.delete(sessionId);
     put(this.#data.deleted, sessionId, at);
@@ -323,7 +350,7 @@ export class SessionFlagsStore implements SessionFlags {
 }
 
 function emptyFlags(): SessionFlagsFile {
-  return { v: 1, archived: {}, deleted: {}, pendingTitle: {} };
+  return { v: 1, archived: {}, deleted: {}, pendingTitle: {}, pinned: {} };
 }
 
 /** 只认自有属性（sessionId 来自远端，别让 `__proto__` 之类撞到原型链） */
