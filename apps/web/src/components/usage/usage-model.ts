@@ -10,7 +10,7 @@
  */
 import type { ContextUsage, MachineInfo, RateLimitWindow } from '@trine/core';
 import { compareVersions } from '@/components/list/session-actions.ts';
-import { formatClock, isSameDay } from '@/lib/format.ts';
+import { formatClock, formatRelativeTime, isSameDay } from '@/lib/format.ts';
 
 /** 首个上报用量、支持 machine.usage.request 的 agent 版本 */
 export const USAGE_MIN_AGENT = '0.12.0';
@@ -73,6 +73,48 @@ export function windowView(window: RateLimitWindow, now: number): WindowView {
     reset: window.resetsAt === undefined ? '' : `${resetClockText(window.resetsAt, now)} 重置`,
     expired: false,
   };
+}
+
+/** 距重置还有多久，紧凑写法：「1h20m」「2d5h」「35m」「<1m」；已过返回 undefined */
+export function remainingShort(resetsAt: number, now: number): string | undefined {
+  const ms = resetsAt - now;
+  if (ms <= 0) return undefined;
+  const minutes = Math.floor(ms / 60_000);
+  if (minutes < 1) return '<1m';
+  const days = Math.floor(minutes / 1440);
+  const hours = Math.floor((minutes % 1440) / 60);
+  const mins = minutes % 60;
+  if (days > 0) return hours > 0 ? `${days}d${hours}h` : `${days}d`;
+  if (hours > 0) return mins > 0 ? `${hours}h${mins}m` : `${hours}h`;
+  return `${mins}m`;
+}
+
+/** 距重置还有多久，给人读的写法：「1 小时 20 分」「2 天 5 小时」「35 分钟」「不到 1 分钟」 */
+export function remainingLong(resetsAt: number, now: number): string | undefined {
+  const ms = resetsAt - now;
+  if (ms <= 0) return undefined;
+  const minutes = Math.floor(ms / 60_000);
+  if (minutes < 1) return '不到 1 分钟';
+  const days = Math.floor(minutes / 1440);
+  const hours = Math.floor((minutes % 1440) / 60);
+  const mins = minutes % 60;
+  if (days > 0) return hours > 0 ? `${days} 天 ${hours} 小时` : `${days} 天`;
+  if (hours > 0) return mins > 0 ? `${hours} 小时 ${mins} 分` : `${hours} 小时`;
+  return `${mins} 分钟`;
+}
+
+/**
+ * 限额窗口的悬停提示：「5h 已用 62% · 14:39 重置（还有 1 小时 20 分）· 数据更新于 3 分钟前」。
+ * 限额只有百分比和重置时间，没有 token 数（订阅限额不按 token 公开），所以提示里没有。
+ */
+export function windowTitle(label: string, window: RateLimitWindow, updatedAt: number | undefined, now: number): string {
+  const view = windowView(window, now);
+  const parts = [view.expired ? `${label} 窗口已重置，等待新数据` : `${label} 已用 ${view.percent}`];
+  if (!view.expired && window.resetsAt !== undefined) {
+    parts.push(`${resetClockText(window.resetsAt, now)} 重置（还有 ${remainingLong(window.resetsAt, now)}）`);
+  }
+  if (updatedAt !== undefined) parts.push(`数据更新于 ${formatRelativeTime(updatedAt, now)}`);
+  return parts.join(' · ');
 }
 
 /** token 数：12.4k / 1.2M */

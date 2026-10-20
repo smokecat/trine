@@ -14,9 +14,9 @@ import type { ContextUsage, RateLimits, RateLimitWindow } from '@trine/core';
 import { Button } from '@/components/ui/button.tsx';
 import { useClient, useTrine } from '@/app/runtime.ts';
 import type { MachineState } from '@/store/types.ts';
-import { formatDateTime, formatRelativeTime } from '@/lib/format.ts';
+import { formatRelativeTime } from '@/lib/format.ts';
 import { cn } from '@/lib/utils.ts';
-import { contextView, supportsUsageRefresh, windowView, type UsageTone } from './usage-model.ts';
+import { contextView, remainingShort, supportsUsageRefresh, windowTitle, windowView, type UsageTone } from './usage-model.ts';
 
 const TONE_CLASS: Record<UsageTone, string> = {
   normal: '',
@@ -24,47 +24,87 @@ const TONE_CLASS: Record<UsageTone, string> = {
   danger: 'text-red font-semibold',
 };
 
+/**
+ * 一个限额窗口：「5h 62%」。悬停看详情（windowTitle）；`toggleable` 时是按钮，点一下在
+ * 百分比和距重置的倒计时（「1h20m」）之间切换——手机没有悬停，靠它看重置时间。
+ */
 function WindowValue({
   label,
   window,
+  updatedAt,
   now,
   showReset,
+  toggleable,
 }: {
   label: string;
   window: RateLimitWindow;
+  updatedAt: number | undefined;
   now: number;
   showReset: boolean;
+  toggleable: boolean;
 }): React.JSX.Element {
+  const [countdown, setCountdown] = useState(false);
   const view = windowView(window, now);
-  const title = window.resetsAt === undefined ? undefined : `${label} 窗口 ${formatDateTime(window.resetsAt)} 重置`;
-  return (
-    <span className="tabular inline-flex items-baseline gap-1 whitespace-nowrap" {...(title === undefined ? {} : { title })}>
+  const title = windowTitle(label, window, updatedAt, now);
+  const remaining = window.resetsAt === undefined ? undefined : remainingShort(window.resetsAt, now);
+  // 没有重置时间就没得切：倒计时态下也照常显示百分比
+  const showCountdown = countdown && toggleable && (remaining !== undefined || view.expired);
+  const body = (
+    <>
       <span className="text-text-3">{label}</span>
-      <span className={cn(TONE_CLASS[view.tone])}>{view.percent}</span>
+      {showCountdown ? (
+        <span data-testid="window-countdown">{view.expired ? '已重置' : remaining}</span>
+      ) : (
+        <span className={cn(TONE_CLASS[view.tone])}>{view.percent}</span>
+      )}
       {showReset && view.reset !== '' && <span className="text-text-3 text-[11px]">{view.reset}</span>}
-    </span>
+    </>
+  );
+  const className = 'tabular inline-flex items-baseline gap-1 whitespace-nowrap';
+  if (!toggleable) {
+    return (
+      <span className={className} title={title} data-testid="usage-window-value">
+        {body}
+      </span>
+    );
+  }
+  return (
+    <button
+      type="button"
+      className={cn(className, 'hover:text-text cursor-pointer')}
+      title={`${title} · 点击切换百分比 / 剩余时间`}
+      data-testid="usage-window-value"
+      onClick={() => setCountdown((v) => !v)}
+    >
+      {body}
+    </button>
   );
 }
 
-/** 一台机器的 5h / 1w；没有任何窗口时渲染 null */
+/**
+ * 一台机器的 5h / 1w；没有任何窗口时渲染 null。`interactive` 为 false 时不可点（放在
+ * 整块是链接的机器卡里，按钮嵌在链接里既不合法、点了也会跳页）。
+ */
 export function PlanUsageLine({
   rateLimits,
   now,
   className,
+  interactive = true,
 }: {
   rateLimits: RateLimits | undefined;
   now: number;
   className?: string;
+  interactive?: boolean;
 }): React.JSX.Element | null {
   if (rateLimits === undefined || (rateLimits.fiveHour === undefined && rateLimits.sevenDay === undefined)) return null;
   return (
-    <span
-      data-testid="plan-usage"
-      className={cn('inline-flex flex-wrap items-baseline gap-x-3 gap-y-0.5 text-xs', className)}
-      title={`更新于 ${formatRelativeTime(rateLimits.updatedAt, now)}`}
-    >
-      {rateLimits.fiveHour !== undefined && <WindowValue label="5h" window={rateLimits.fiveHour} now={now} showReset />}
-      {rateLimits.sevenDay !== undefined && <WindowValue label="1w" window={rateLimits.sevenDay} now={now} showReset />}
+    <span data-testid="plan-usage" className={cn('inline-flex flex-wrap items-baseline gap-x-3 gap-y-0.5 text-xs', className)}>
+      {rateLimits.fiveHour !== undefined && (
+        <WindowValue label="5h" window={rateLimits.fiveHour} updatedAt={rateLimits.updatedAt} now={now} showReset toggleable={interactive} />
+      )}
+      {rateLimits.sevenDay !== undefined && (
+        <WindowValue label="1w" window={rateLimits.sevenDay} updatedAt={rateLimits.updatedAt} now={now} showReset toggleable={interactive} />
+      )}
     </span>
   );
 }
@@ -198,8 +238,12 @@ export function SessionUsage({
           </span>
         )
       )}
-      {five !== undefined && <WindowValue label="5h" window={five} now={now} showReset={false} />}
-      {seven !== undefined && <WindowValue label="1w" window={seven} now={now} showReset={false} />}
+      {five !== undefined && (
+        <WindowValue label="5h" window={five} updatedAt={rateLimits?.updatedAt} now={now} showReset={false} toggleable />
+      )}
+      {seven !== undefined && (
+        <WindowValue label="1w" window={seven} updatedAt={rateLimits?.updatedAt} now={now} showReset={false} toggleable />
+      )}
     </span>
   );
 }

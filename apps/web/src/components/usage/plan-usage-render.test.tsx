@@ -100,3 +100,35 @@ describe('SessionUsage · 手动刷新 ctx', () => {
     expect(el.querySelector('[data-testid="session-context"]')?.getAttribute('title')).toContain('取于 刚刚');
   });
 });
+
+describe('限额窗口：悬停提示与点击切换', () => {
+  test('会话头部：5h / 1w 有详细提示，点击在百分比和倒计时之间切换', () => {
+    const el = render(<SessionUsage context={undefined} rateLimits={rateLimits} now={now} />);
+    const [five] = Array.from(el.querySelectorAll('button[data-testid="usage-window-value"]')) as HTMLButtonElement[];
+    expect(five!.title).toBe('5h 已用 62% · 14:39 重置（还有 1 小时 39 分） · 数据更新于 刚刚 · 点击切换百分比 / 剩余时间');
+    expect(five!.textContent).toBe('5h62%');
+    act(() => five!.click());
+    expect(five!.textContent).toBe('5h1h39m');
+    act(() => five!.click());
+    expect(five!.textContent).toBe('5h62%');
+  });
+
+  test('全局：可切换；interactive=false（机器卡）不是按钮但仍有提示', () => {
+    const el = render(<PlanUsageLine rateLimits={rateLimits} now={now} />);
+    const buttons = el.querySelectorAll('button[data-testid="usage-window-value"]');
+    expect(buttons).toHaveLength(2);
+    act(() => (buttons[1] as HTMLButtonElement).click());
+    expect(buttons[1]!.textContent).toBe('1w5d14h周一 03:59 重置');
+    act(() => root?.unmount());
+    const card = render(<PlanUsageLine rateLimits={rateLimits} now={now} interactive={false} />);
+    expect(card.querySelector('button')).toBeNull();
+    expect(card.querySelector('[data-testid="usage-window-value"]')?.getAttribute('title')).toContain('5h 已用 62%');
+  });
+
+  test('没有重置时间的窗口点了也只显示百分比', () => {
+    const el = render(<SessionUsage context={undefined} rateLimits={{ sevenDay: { percent: 16 }, updatedAt: now }} now={now} />);
+    const button = el.querySelector('button[data-testid="usage-window-value"]') as HTMLButtonElement;
+    act(() => button.click());
+    expect(button.textContent).toBe('1w16%');
+  });
+});
