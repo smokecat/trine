@@ -129,6 +129,7 @@ import { Heartbeat } from './heartbeat.ts';
 import { idleInput } from './idle-input.ts';
 import { PermissionBridge, type PermissionVerdict } from './permission.ts';
 import { InputQueue } from './queue.ts';
+import type { PreparedInput, UserContent } from './attachments.ts';
 import { backgroundSubagentEnd, toSingleLine } from './summarize.ts';
 import {
   createTranslateState,
@@ -192,6 +193,8 @@ export interface ClaudeSessionOptions {
   log?: (line: string) => void;
   /** 待生效的对话截断点（上次回退后还没发过消息，app 从 state.json 读出来） */
   rewindPoint?: RewindPoint;
+  /** 额外可读目录（本会话的附件上传目录）：Read 这些路径不弹权限请求 */
+  additionalDirectories?: string[];
   /** 截断点已生效（新分支上有了第一条回复），调用方据此清掉持久化的截断点 */
   onRewindApplied?: () => void;
 }
@@ -269,6 +272,7 @@ export class ClaudeSession {
   readonly #onMeta: ((meta: SessionRuntimeMeta) => void) | undefined;
   readonly #log: (line: string) => void;
   readonly #claudeExecutable: string | undefined;
+  readonly #additionalDirectories: string[];
 
   readonly #queue: InputQueue;
   readonly #heartbeat: Heartbeat;
@@ -356,6 +360,7 @@ export class ClaudeSession {
     this.#onMeta = options.onMeta;
     this.#log = options.log ?? ((line) => console.error(line));
     this.#claudeExecutable = options.pathToClaudeCodeExecutable;
+    this.#additionalDirectories = options.additionalDirectories ?? [];
     this.#resumeRequested = options.resume ?? false;
     this.#pendingRewind = options.rewindPoint;
     this.#onRewindApplied = options.onRewindApplied;
@@ -567,12 +572,12 @@ export class ClaudeSession {
    *
    * @returns 是否是重复消息（调用方无需区分处理，回执逻辑已在内部完成）
    */
-  send(clientMsgId: string, text: string): { duplicate: boolean } {
+  send(clientMsgId: string, text: string, prepared?: PreparedInput): { duplicate: boolean; uuid?: string } {
     this.#touch();
     // 新消息即解除停止态：用户又开口了，说明要继续用这个会话。
     // error 态同理——下一条消息就是重试意图。
     this.#stopped = false;
-    const result = this.#queue.enqueue(clientMsgId, text);
+    const result = this.#queue.enqueue(clientMsgId, text, prepared?.content);
 
     if (result.duplicate) {
       // 重复投递多半是发起端没收到回执，所以仍回一次（见 queue.ts 文件头）
@@ -589,6 +594,7 @@ export class ClaudeSession {
       messageId: clientMsgId,
       clientMsgId,
       text,
+      ...(prepared === undefined || prepared.attachments.length === 0 ? {} : { attachments: prepared.attachments }),
       uuid,
     });
 
@@ -603,7 +609,7 @@ export class ClaudeSession {
       // 运行中 → 排队回执
       this.#emit({ type: 'input.queued', clientMsgId });
     }
-    return { duplicate: false };
+    return { duplicate: false, uuid };
   }
 
   /** 撤回排队中的消息（协议 `input.recall`） */
@@ -771,7 +777,7 @@ export class ClaudeSession {
       // 同宏任务内新来的消息（见下面的代际守卫），跑着时 run 状态仍归它
       this.#drainBusy = true;
       this.#currentMsgId = next.clientMsgId;
-      await this.#runOne(next.text, next.clientMsgId, generation);
+      await this.#runOne(next.content ?? next.text, next.clientMsgId, generation);
     }
 
     // —— 代际守卫：只有「当代」循环才有资格收尾 ——
@@ -809,7 +815,7 @@ export class ClaudeSession {
   }
 
   /** 跑一条消息，含瞬时错误自动续跑 */
-  async #runOne(text: string, clientMsgId: string, generation: number): Promise<void> {
+  async #runOne(content: UserContent, clientMsgId: string, generation: number): Promise<void> {
     this.#queue.setRunning(true);
     this.#setState('running');
     this.#heartbeat.start();
@@ -818,7 +824,7 @@ export class ClaudeSession {
     this.#translate.runStartedAt = this.#now();
     this.#transientRetries = 0;
 
-    let prompt = text;
+    let prompt: UserContent = content;
     let msgId: string | undefined = clientMsgId;
     for (;;) {
       try {
@@ -882,7 +888,7 @@ export class ClaudeSession {
    * 只等 `#inflight` 被解开：result 归它 → resolve；错误型 result / 流意外结束 /
    * query 被拆 → reject，交给 #runOne 分类。
    */
-  async #pumpOnce(text: string, clientMsgId: string | undefined): Promise<void> {
+  async #pumpOnce(content: UserContent, clientMsgId: string | undefined): Promise<void> {
     if (this.#query === undefined) {
       this.#startQuery();
     }
@@ -900,7 +906,7 @@ export class ClaudeSession {
     push({
       type: 'user',
       uuid,
-      message: { role: 'user', content: text },
+      message: { role: 'user', content },
       parent_tool_use_id: null,
       // SDK（SDKMessageOrigin 的说明）："A host wrapping keyboard input must stamp
       // {kind:'human'} explicitly — absent origin is treated as unattributed and
@@ -936,6 +942,7 @@ export class ClaudeSession {
       ...(this.#claudeExecutable === undefined
         ? {}
         : { pathToClaudeCodeExecutable: this.#claudeExecutable }),
+      ...(this.#additionalDirectories.length === 0 ? {} : { additionalDirectories: this.#additionalDirectories }),
       // —— 会话参数 ——
       cwd: this.#cwd,
       model: this.#model,

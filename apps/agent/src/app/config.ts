@@ -50,6 +50,7 @@ export function agentPaths(home: string): {
   state: string;
   cwd: string;
   sessions: string;
+  uploads: string;
 } {
   return {
     identity: join(home, 'identity.json'),
@@ -57,6 +58,8 @@ export function agentPaths(home: string): {
     state: join(home, 'state.json'),
     cwd: join(home, 'cwd.json'),
     sessions: join(home, 'sessions.json'),
+    /** 用户消息附件（见 bridge/attachments.ts） */
+    uploads: join(home, 'uploads'),
   };
 }
 

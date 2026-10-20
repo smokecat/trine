@@ -16,11 +16,14 @@
  *
  * 去重表用有界 LRU：会话可能很长，无界 Set 是内存泄漏。
  */
+import type { UserContent } from './attachments.ts';
 
 /** 队列里的一条待处理消息 */
 export interface QueuedInput {
   clientMsgId: string;
   text: string;
+  /** 交给 SDK 的内容（带附件时是内容块数组）；省略 = 就是 text */
+  content?: UserContent;
   /** 入队时刻 */
   queuedAt: number;
 }
@@ -84,12 +87,12 @@ export class InputQueue {
    *
    * @returns 见 EnqueueResult：重复消息不入队，但调用方仍应回 `input.queued`
    */
-  enqueue(clientMsgId: string, text: string): EnqueueResult {
+  enqueue(clientMsgId: string, text: string, content?: UserContent): EnqueueResult {
     if (this.#seen.has(clientMsgId)) {
       return { accepted: false, duplicate: true };
     }
     this.#remember(clientMsgId);
-    this.#items.push({ clientMsgId, text, queuedAt: this.#now() });
+    this.#items.push({ clientMsgId, text, ...(content === undefined ? {} : { content }), queuedAt: this.#now() });
     return { accepted: true, duplicate: false, shouldRunNow: !this.#running };
   }
 

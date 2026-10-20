@@ -15,12 +15,15 @@ import type {
   SlashCommand as SdkSlashCommand,
 } from '@anthropic-ai/claude-agent-sdk';
 import type { ClientToAgentEvent, PermissionMode, SessionState } from '@trine/core';
+import { sodiumReady } from '@trine/core/crypto';
+import { AttachmentStore, type PreparedInput } from '../bridge/attachments.ts';
 import { EventEmitter } from '../bridge/emitter.ts';
 import { SessionManager, type CreateSessionArgs } from '../bridge/manager.ts';
 import type { PendingPermissionSnapshot, PermissionVerdict } from '../bridge/permission.ts';
 import type { ClaudeSession } from '../bridge/session.ts';
 import type { OutboundEvent } from '../bridge/types.ts';
 import type { Recipient } from '../net/recipients.ts';
+import { FakeBlobs } from '../testing/fake-blobs.ts';
 import { FakeTranscripts } from '../testing/fake-transcripts.ts';
 import type { ClaudeUpdateOutcome } from './claude-cli.ts';
 import { CwdStore } from './cwd-store.ts';
@@ -55,7 +58,7 @@ class FakeSession {
   model: string;
   permissionMode: PermissionMode;
   readonly calls: string[] = [];
-  readonly sent: { clientMsgId: string; text: string }[] = [];
+  readonly sent: { clientMsgId: string; text: string; prepared?: PreparedInput }[] = [];
   readonly verdicts: PermissionVerdict[] = [];
   pendingPermissions: PendingPermissionSnapshot[] = [];
   /** stop() 挂起直到测试手动放行（验证命令链串行） */
@@ -73,10 +76,10 @@ class FakeSession {
   get sessionId(): string {
     return this.args.sessionId;
   }
-  send(clientMsgId: string, text: string): { duplicate: boolean } {
+  send(clientMsgId: string, text: string, prepared?: PreparedInput): { duplicate: boolean; uuid?: string } {
     this.calls.push(`send:${clientMsgId}`);
-    this.sent.push({ clientMsgId, text });
-    return { duplicate: false };
+    this.sent.push({ clientMsgId, text, ...(prepared === undefined ? {} : { prepared }) });
+    return { duplicate: false, uuid: `uuid-${clientMsgId}` };
   }
   recall(clientMsgId: string): boolean {
     this.calls.push(`recall:${clientMsgId}`);
@@ -206,6 +209,8 @@ async function makeHarness(options: {
   updateClaude?: () => Promise<ClaudeUpdateOutcome>;
   /** 注入斜杠命令探测；省略 = 不注入 probe（router 回空数组） */
   probeCommands?: (cwd: string) => Promise<SdkSlashCommand[]>;
+  /** 附件存储；省略 = 不启用附件 */
+  attachments?: AttachmentStore;
 } = {}) {
   const probeCalls: string[] = [];
   const historyCalls: { sessionId: string; dir: string | undefined }[] = [];
@@ -298,6 +303,7 @@ async function makeHarness(options: {
       subagentCalls.push({ sessionId, toolUseId, cwd: locator?.cwd });
       return options.subagentTranscripts?.[`${sessionId}/${toolUseId}`] ?? [];
     },
+    ...(options.attachments === undefined ? {} : { attachments: options.attachments }),
     ...(options.probeCommands === undefined
       ? {}
       : {
@@ -2122,5 +2128,152 @@ describe('Router · 回退', () => {
     const [res] = h.byType('session.rewind.preview.response') as Ev<'session.rewind.preview.response'>[];
     expect(res!.error?.code).toBe('io');
     expect(h.byType('error.fatal')).toHaveLength(0);
+  });
+});
+
+describe('Router · 附件', () => {
+  async function setup() {
+    await sodiumReady();
+    const blobs = new FakeBlobs();
+    const attachments = new AttachmentStore({ root: join(dir, 'uploads'), blobs: () => blobs });
+    const h = await makeHarness({
+      attachments,
+      transcripts: {
+        s1: [
+          {
+            type: 'user',
+            uuid: 'uuid-c1',
+            session_id: 's1',
+            parent_tool_use_id: null,
+            message: { role: 'user', content: 'hi\n\n<attached-files>\n/x/a.txt\n</attached-files>' },
+          } as unknown as SessionMessage,
+          {
+            type: 'user',
+            uuid: 'cli-1',
+            session_id: 's1',
+            parent_tool_use_id: null,
+            message: {
+              role: 'user',
+              content: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAAA' } }],
+            },
+          } as unknown as SessionMessage,
+        ],
+      },
+    });
+    h.state.rememberSession('s1', params);
+    const file = (name: string, bytes: number[]) => {
+      const data = new Uint8Array(bytes);
+      return { name, mime: 'text/plain', size: data.length, kind: 'file' as const, ...blobs.put(data) };
+    };
+    const send = (clientMsgId: string, text: string, refs?: ReturnType<typeof file>[]): ClientToAgentEvent => ({
+      type: 'input.send',
+      ...c2a('s1'),
+      clientMsgId,
+      text,
+      ...(refs === undefined ? {} : { attachments: refs }),
+    });
+    return { ...h, blobs, attachments, file, send };
+  }
+
+  test('带附件：落盘后把内容交给会话，并按转录 uuid 记下附件', async () => {
+    const h = await setup();
+    const ref = h.file('a.txt', [1, 2, 3]);
+    await h.router.handle(h.send('c1', 'hi', [ref]), phone);
+    await h.router.idle();
+
+    const sent = h.created[0]!.sent[0]!;
+    expect(sent.clientMsgId).toBe('c1');
+    expect(sent.prepared?.attachments).toEqual([ref]);
+    expect(sent.prepared?.content).toMatch(/^hi\n\n<attached-files>\n.*a\.txt\n<\/attached-files>$/);
+    expect((await h.attachments.historyIndex('s1')).get('uuid-c1')).toEqual([ref]);
+  });
+
+  test('准备失败回 input.rejected，不碰会话', async () => {
+    const h = await setup();
+    const ref = { ...h.file('a.txt', [1]), blobId: 'missing0000000000000000' };
+    await h.router.handle(h.send('c1', 'hi', [ref]), phone);
+    await h.router.idle();
+    expect(h.created).toHaveLength(0);
+    expect(h.byType('input.rejected')).toEqual([
+      expect.objectContaining({ type: 'input.rejected', clientMsgId: 'c1', sessionId: 's1' }),
+    ]);
+  });
+
+  test('没启用附件的 agent 也回 input.rejected', async () => {
+    const h = await makeHarness();
+    await h.router.handle(
+      {
+        type: 'input.send',
+        ...c2a('s1'),
+        clientMsgId: 'c1',
+        text: '',
+        attachments: [{ name: 'a', mime: '', size: 1, kind: 'file', blobId: 'b'.repeat(22), key: 'k'.repeat(43) }],
+      },
+      phone,
+    );
+    await h.router.idle();
+    expect(h.byType('input.rejected')).toHaveLength(1);
+  });
+
+  test('附件还在下载时，后面的纯文本消息排在它后面', async () => {
+    const h = await setup();
+    let release!: () => void;
+    h.blobs.gate = new Promise((r) => {
+      release = r;
+    });
+    const first = h.router.handle(h.send('c1', 'with file', [h.file('a.txt', [1])]), phone);
+    const second = h.router.handle(h.send('c2', 'plain'), phone);
+    // 同会话的其他命令不被下载堵住
+    await h.router.handle({ type: 'session.history.request', ...c2a('s1'), reqId: 'r1' }, phone);
+    expect(h.byType('session.history.response')).toHaveLength(1);
+    expect(h.created).toHaveLength(0);
+
+    release();
+    await Promise.all([first, second]);
+    await h.router.idle();
+    expect(h.created[0]!.sent.map((m) => m.clientMsgId)).toEqual(['c1', 'c2']);
+  });
+
+  test('历史带附件：trine 发的按 manifest，CLI 粘贴的取图片块；路径清单不外露', async () => {
+    const h = await setup();
+    const ref = h.file('a.txt', [1, 2, 3]);
+    await h.router.handle(h.send('c1', 'hi', [ref]), phone);
+    await h.router.idle();
+    await h.router.handle({ type: 'session.history.request', ...c2a('s1'), reqId: 'r1' }, phone);
+    const [res] = h.byType('session.history.response') as Extract<
+      OutboundEvent['event'],
+      { type: 'session.history.response' }
+    >[];
+    expect(res!.items).toEqual([
+      expect.objectContaining({ kind: 'user', id: 'uuid-c1', text: 'hi', attachments: [ref] }),
+      expect.objectContaining({
+        kind: 'user',
+        id: 'cli-1',
+        text: '',
+        attachments: [{ name: 'image-1.png', mime: 'image/png', size: 3, kind: 'image' }],
+      }),
+    ]);
+  });
+
+  test('attachment.fetch.request：重新上传，只回请求方', async () => {
+    const h = await setup();
+    await h.router.handle(
+      { type: 'attachment.fetch.request', ...c2a('s1'), reqId: 'f1', messageId: 'cli-1', index: 0 },
+      phone,
+    );
+    await h.router.idle();
+    const out = h.events.filter((e) => e.event.type === 'attachment.fetch.response');
+    expect(out).toHaveLength(1);
+    expect(out[0]!.to).toBe('phone');
+    expect(out[0]!.event).toMatchObject({ ok: true, attachment: { name: 'image-1.png', kind: 'image' } });
+    // 不拉起会话
+    expect(h.created).toHaveLength(0);
+
+    await h.router.handle(
+      { type: 'attachment.fetch.request', ...c2a('s1'), reqId: 'f2', messageId: 'nope', index: 0 },
+      phone,
+    );
+    await h.router.idle();
+    expect(h.byType('attachment.fetch.response').at(-1)).toMatchObject({ ok: false, error: { code: 'not_found' } });
   });
 });

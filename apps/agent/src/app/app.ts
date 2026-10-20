@@ -27,6 +27,8 @@ import type {
   query,
   renameSession,
 } from '@anthropic-ai/claude-agent-sdk';
+import { BlobClient, httpBase } from '@trine/core/net';
+import { AttachmentStore } from '../bridge/attachments.ts';
 import { EventEmitter } from '../bridge/emitter.ts';
 import { SessionManager, type CreateSessionArgs } from '../bridge/manager.ts';
 import type { ClaudeSession } from '../bridge/session.ts';
@@ -158,9 +160,15 @@ export class AgentApp {
       },
     });
 
+    // 附件：blob 走 relay 的 HTTP 端点，token 与 WS 同一套挑战-应答（node 晚于此创建，
+    // 回调只在收到带附件的消息时才调用，那时早已就位）
+    let blobClient: BlobClient | undefined;
+    const attachments = new AttachmentStore({ root: paths.uploads, blobs: () => blobClient, now });
+
     const manager = new SessionManager({
       emitter,
       now,
+      uploadsDir: (sessionId) => attachments.sessionDir(sessionId),
       ...(config.maxSessions === undefined ? {} : { maxConcurrent: config.maxSessions }),
       ...(config.idleTimeoutMs === undefined ? {} : { idleTimeoutMs: config.idleTimeoutMs }),
       ...(deps.listSessionsFn === undefined ? {} : { listSessionsFn: deps.listSessionsFn }),
@@ -202,6 +210,18 @@ export class AgentApp {
       onPairingRequest: (session) => app.onPairingRequest?.(session),
       onPairingAborted: (token) => app.onPairingAborted?.(token),
       onOpen: () => app.#onOpen(),
+    });
+
+    let blobToken: { token: string; expiresAt: number } | undefined;
+    blobClient = new BlobClient({
+      baseUrl: httpBase(config.serverUrl),
+      getToken: async (refresh) => {
+        if (refresh || blobToken === undefined || blobToken.expiresAt - 60_000 < now()) {
+          blobToken = await node.auth.authenticate({ signal: AbortSignal.timeout(15_000) });
+        }
+        return blobToken.token;
+      },
+      ...(deps.fetchImpl === undefined ? {} : { fetchImpl: deps.fetchImpl }),
     });
 
     state = await AgentState.load({ path: paths.state, machineId: node.machineId, log });
@@ -250,6 +270,7 @@ export class AgentApp {
       log,
       ...(deps.getSessionMessagesFn === undefined ? {} : { getSessionMessagesFn: deps.getSessionMessagesFn }),
       commandsProbe,
+      attachments,
     });
 
     app = new AgentApp(

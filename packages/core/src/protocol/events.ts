@@ -346,6 +346,18 @@ export const InputQueuedSchema = z.object({
 });
 
 /**
+ * agent → client：这条消息没被接受（agent ≥ 0.11.0；目前只有附件准备失败——
+ * blob 下载 / 解密 / 落盘出错）。没进队列、也没进去重表，client 把本地条目标为
+ * 失败，用户可原样重试。所有设备都收到，只有发起端有对应的本地条目。
+ */
+export const InputRejectedSchema = z.object({
+  type: z.literal('input.rejected'),
+  ...a2cBase,
+  clientMsgId: z.string().min(1),
+  reason: z.string(),
+});
+
+/**
  * client → agent：撤回 **agent 端**排队中的消息（收到过 input.queued 回执的）。
  *
  * 两级排队 → 两级撤回，各管各的：
@@ -1037,6 +1049,7 @@ export const AgentToClientEventSchema = z.discriminatedUnion('type', [
   PermissionResolvedSchema,
   PermissionInvalidatedSchema,
   InputQueuedSchema,
+  InputRejectedSchema,
   BgTaskSnapshotSchema,
   SessionListResponseSchema,
   SessionCreatedSchema,

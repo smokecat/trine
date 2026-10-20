@@ -2149,3 +2149,34 @@ describe('ClaudeSession · 回退（rewind）', () => {
     await session.close();
   });
 });
+
+describe('ClaudeSession · 附件', () => {
+  test('内容块原样推给 SDK，回显带附件引用；additionalDirectories 透传', async () => {
+    const { session, events, calls } = makeSession([[assistantMessage('看到了'), resultMessage()]], {
+      additionalDirectories: ['/h/uploads/s1'],
+    });
+    const content = [
+      { type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/png' as const, data: 'AAAA' } },
+      { type: 'text' as const, text: '这是什么' },
+    ];
+    const ref = { name: 'a.png', mime: 'image/png', size: 3, kind: 'image' as const, blobId: 'b'.repeat(22), key: 'k'.repeat(43) };
+    const sent = session.send('m1', '这是什么', { content, attachments: [ref] });
+    expect(sent.uuid).toBeString();
+    await waitFor(() => events.some((e) => e.type === 'run.done'));
+
+    expect(calls[0]!.userMessages[0]!.message.content).toEqual(content);
+    expect(calls[0]!.options!.additionalDirectories).toEqual(['/h/uploads/s1']);
+    const echo = events.find((e) => e.type === 'user.message') as Extract<EventBody, { type: 'user.message' }>;
+    expect(echo).toMatchObject({ text: '这是什么', attachments: [ref], uuid: sent.uuid });
+    await session.close();
+  });
+
+  test('没有附件：回显不带 attachments 字段，也不加 additionalDirectories', async () => {
+    const { session, events, calls } = makeSession([[resultMessage()]]);
+    session.send('m1', 'hi');
+    await waitFor(() => events.some((e) => e.type === 'run.done'));
+    expect('attachments' in events.find((e) => e.type === 'user.message')!).toBe(false);
+    expect('additionalDirectories' in calls[0]!.options!).toBe(false);
+    await session.close();
+  });
+});

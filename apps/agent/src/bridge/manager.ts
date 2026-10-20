@@ -101,6 +101,8 @@ export interface SessionManagerOptions {
   createSession?: (options: CreateSessionArgs) => ClaudeSession;
   /** 会话拉起的 claude 可执行文件（app 启动时解析）；不给 = SDK 内置 */
   claudeExecutable?: string;
+  /** 会话的附件上传目录（会建好），加进 SDK additionalDirectories；不给 = 不加 */
+  uploadsDir?: (sessionId: string) => string;
   /** 会话标记；不给则不合并 archived / pendingTitle、不过滤墓碑 */
   flags?: SessionFlags;
   /**
@@ -152,6 +154,8 @@ export interface CreateSessionArgs {
   /** 待生效的对话截断点（见 session.ts「回退」） */
   rewindPoint?: RewindPoint;
   onRewindApplied?: () => void;
+  /** 额外可读目录（附件上传目录） */
+  additionalDirectories?: string[];
 }
 
 const DEFAULT_MAX_CONCURRENT = 10;
@@ -190,6 +194,7 @@ export class SessionManager {
   readonly #deleteSession: typeof deleteSession;
   readonly #createSession: (options: CreateSessionArgs) => ClaudeSession;
   readonly #claudeExecutable: string | undefined;
+  readonly #uploadsDir: ((sessionId: string) => string) | undefined;
   readonly #flags: SessionFlags | undefined;
   readonly #rememberedParams: SessionManagerOptions['rememberedParams'];
   readonly #onRunEnd: ((sessionId: string) => void) | undefined;
@@ -219,6 +224,7 @@ export class SessionManager {
     this.#flags = options.flags;
     this.#rememberedParams = options.rememberedParams;
     this.#claudeExecutable = options.claudeExecutable;
+    this.#uploadsDir = options.uploadsDir;
     this.#onRunEnd = options.onRunEnd;
     this.#onPermissionModeChange = options.onPermissionModeChange;
     this.#onRewindApplied = options.onRewindApplied;
@@ -301,6 +307,7 @@ export class SessionManager {
       ...(this.#log === undefined ? {} : { log: this.#log }),
       ...(args.rewindPoint === undefined ? {} : { rewindPoint: args.rewindPoint }),
       onRewindApplied: () => this.#onRewindApplied?.(args.sessionId),
+      ...(this.#uploadsDir === undefined ? {} : { additionalDirectories: [this.#uploadsDir(args.sessionId)] }),
     });
 
     this.#sessions.set(args.sessionId, session);

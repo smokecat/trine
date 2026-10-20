@@ -53,6 +53,19 @@
  * （subagent-history.ts 定位 + history.ts 转换），不拉起会话进程、定向回请求方。
  * 找不到 → 空 items。体积封顶复用 paginateHistory（取最新的一段，截了置 truncated）。
  *
+ * ## 带附件的 input.send
+ *
+ * 附件要先从 relay 下载、解密、落盘（attachments.ts）才能交给会话，几十 MB 要好一会儿。
+ * 这一步放在**命令链外**做，免得堵住同会话的 run.stop / permission.respond；但同会话的
+ * input.send 之间要保序，所以另有一条「输入准备链」：有附件的消息、以及排在它后面的
+ * 消息都先过这条链，准备好了再挂上命令链走正常的 send。准备失败回 `input.rejected`
+ * （没进队列也没进去重表，用户可原样重试）。
+ *
+ * ## 不 resolve 的会话级命令：attachment.fetch.request
+ *
+ * 附件按需重新上传（blob 过期 / CLI 里粘贴的图片）：读 manifest 或转录，不拉起会话进程，
+ * 上传放链外跑，只定向回请求方。
+ *
  * ## 不 resolve 的会话级读命令：session.commands.request
  *
  * 斜杠命令清单：同样不拉起会话进程、不走 resolveSession，交给 CommandsProbe
@@ -79,8 +92,15 @@ import type {
   McpServerStatus,
   SlashCommand,
 } from '@trine/core';
+import { AttachmentError, type AttachmentStore, type PreparedInput } from '../bridge/attachments.ts';
 import type { EventEmitter } from '../bridge/emitter.ts';
-import { cutAtRewind, paginateHistory, toHistoryItems, toSubagentHistoryItems } from '../bridge/history.ts';
+import {
+  cutAtRewind,
+  paginateHistory,
+  toHistoryItems,
+  toSubagentHistoryItems,
+  transcriptImages,
+} from '../bridge/history.ts';
 import { readSubagentTranscript } from '../bridge/subagent-history.ts';
 import {
   ConcurrencyLimitError,
@@ -202,6 +222,8 @@ export interface RouterDeps {
    * 缺省 = 不探测、一律回空数组（测试 / 无 claude 场景）
    */
   commandsProbe?: { commands(cwd: string): Promise<SdkSlashCommand[]> };
+  /** 附件（下载落盘 / 历史还原 / 按需重新上传）；缺省 = 带附件的消息一律拒收 */
+  attachments?: AttachmentStore;
 }
 
 type SessionEvent = Extract<ClientToAgentEvent, { sessionId?: string }>;
@@ -241,6 +263,10 @@ export class Router {
   readonly #mutations: SessionMutations;
   /** 链外执行中的长任务（claude update），idle() 也等它们 */
   readonly #background = new Set<Promise<void>>();
+  /** 输入准备链（见文件头「带附件的 input.send」）：key = sessionId */
+  readonly #inputPrep = new Map<string, Promise<void>>();
+  /** 已准备好、等命令链 send 的附件内容：key = `${sessionId}\n${clientMsgId}` */
+  readonly #prepared = new Map<string, PreparedInput>();
 
   constructor(deps: RouterDeps) {
     this.#deps = deps;
@@ -296,14 +322,71 @@ export class Router {
       this.#log(`[router] 丢弃缺 sessionId 的会话级事件 type=${event.type} from=${sender.deviceId}`);
       return Promise.resolve();
     }
+    if (event.type === 'input.send') return this.#handleInput(sessionId, event, sender);
     return this.#enqueue(sessionId, () => this.#handleSession(sessionId, event, sender));
   }
 
   /** 等全部链跑空（测试用） */
   async idle(): Promise<void> {
-    while (this.#chains.size > 0 || this.#background.size > 0) {
-      await Promise.all([...this.#chains.values(), ...this.#background]);
+    while (this.#chains.size > 0 || this.#background.size > 0 || this.#inputPrep.size > 0) {
+      await Promise.all([...this.#chains.values(), ...this.#background, ...this.#inputPrep.values()]);
     }
+  }
+
+  /** input.send：没有附件、前面也没有在准备的 → 直接上命令链；否则走输入准备链 */
+  #handleInput(
+    sessionId: string,
+    event: Extract<ClientToAgentEvent, { type: 'input.send' }>,
+    sender: Recipient,
+  ): Promise<void> {
+    const refs = event.attachments ?? [];
+    const pending = this.#inputPrep.get(sessionId);
+    if (refs.length === 0 && pending === undefined) {
+      return this.#enqueue(sessionId, () => this.#handleSession(sessionId, event, sender));
+    }
+    const next = (pending ?? Promise.resolve())
+      .then(async () => {
+        if (refs.length > 0 && !this.#deps.flags.isDeleted(sessionId)) {
+          const prepared = await this.#prepareInput(sessionId, event);
+          if (prepared === undefined) return;
+          this.#prepared.set(`${sessionId}\n${event.clientMsgId}`, prepared);
+        }
+        await this.#enqueue(sessionId, () => this.#handleSession(sessionId, event, sender));
+      })
+      .catch((err: unknown) => {
+        this.#log(`[router] 输入准备失败 session=${sessionId}: ${err instanceof Error ? err.message : String(err)}`);
+      });
+    this.#inputPrep.set(sessionId, next);
+    void next.finally(() => {
+      if (this.#inputPrep.get(sessionId) === next) this.#inputPrep.delete(sessionId);
+    });
+    return next;
+  }
+
+  /** 下载落盘附件；失败回 input.rejected 并返回 undefined */
+  async #prepareInput(
+    sessionId: string,
+    event: Extract<ClientToAgentEvent, { type: 'input.send' }>,
+  ): Promise<PreparedInput | undefined> {
+    const store = this.#deps.attachments;
+    let reason: string;
+    if (store === undefined) {
+      reason = '这台 agent 没有启用附件';
+    } else {
+      try {
+        return await store.prepare({
+          sessionId,
+          clientMsgId: event.clientMsgId,
+          text: event.text,
+          refs: event.attachments ?? [],
+        });
+      } catch (err) {
+        reason = err instanceof AttachmentError ? err.message : `附件处理失败：${err instanceof Error ? err.message : String(err)}`;
+        this.#log(`[router] 附件准备失败 session=${sessionId}: ${reason}`);
+      }
+    }
+    this.#emitSession(sessionId, { type: 'input.rejected', clientMsgId: event.clientMsgId, reason: reason.slice(0, 300) });
+    return undefined;
   }
 
   /**
@@ -410,6 +493,11 @@ export class Router {
       await this.#subagentHistory(sessionId, event, sender);
       return;
     }
+    if (event.type === 'attachment.fetch.request') {
+      // 不拉起会话；上传放链外跑（见文件头）
+      this.#runBackground(this.#fetchAttachment(sessionId, event, sender));
+      return;
+    }
     if (event.type === 'session.commands.request') {
       // 同上：不拉起会话；探测放链外跑，不堵同会话后续命令（见文件头）
       this.#runBackground(this.#commands(sessionId, event.reqId, sender));
@@ -436,9 +524,16 @@ export class Router {
     }
 
     switch (event.type) {
-      case 'input.send':
+      case 'input.send': {
+        const key = `${sessionId}\n${event.clientMsgId}`;
+        const prepared = this.#prepared.get(key);
+        this.#prepared.delete(key);
         // duplicate 由 session 内部回执处理，这里不区分
-        session.send(event.clientMsgId, event.text);
+        const sent = session.send(event.clientMsgId, event.text, prepared);
+        if (prepared !== undefined && sent.uuid !== undefined) {
+          // 历史回看按转录 uuid 找回附件列表
+          await this.#deps.attachments?.bindUuid(sessionId, event.clientMsgId, sent.uuid);
+        }
         // 发过消息即有转录：之后（含重启后）对它都该 resume 而非新建
         this.#deps.state.updateSession(sessionId, { started: true });
         // 未落盘时设的标题：先试一次补写（转录多半还没写出来，那就等 onRunEnd）
@@ -446,6 +541,7 @@ export class Router {
           await this.#mutations.flushPendingTitle(sessionId);
         }
         return;
+      }
       case 'session.setModel':
         await session.setModel(event.model);
         this.#deps.state.updateSession(sessionId, { model: event.model });
@@ -506,6 +602,11 @@ export class Router {
           break;
         case 'session.delete':
           outcome = await this.#mutations.delete(sessionId);
+          if (outcome.ok) {
+            await this.#deps.attachments?.removeSession(sessionId).catch((err: unknown) => {
+              this.#log(`[router] 清理会话附件失败 session=${sessionId}: ${String(err)}`);
+            });
+          }
           break;
       }
     } catch (err) {
@@ -587,7 +688,8 @@ export class Router {
   ): Promise<void> {
     const pending = this.#deps.manager.get(sessionId)?.pendingRewind ?? this.#deps.state.pendingRewind(sessionId);
     const messages = cutAtRewind(await this.#readTranscript(sessionId), pending?.dropFrom);
-    const page = paginateHistory(toHistoryItems(messages), { before: event.before, limit: event.limit });
+    const attachments = (await this.#deps.attachments?.historyIndex(sessionId)) ?? new Map();
+    const page = paginateHistory(toHistoryItems(messages, attachments), { before: event.before, limit: event.limit });
     this.#deps.emitter.emit(
       {
         type: 'session.history.response',
@@ -599,6 +701,39 @@ export class Router {
       sessionId,
       { to: sender.deviceId },
     );
+  }
+
+  /** 附件按需重新上传（见文件头），结果只发给请求方 */
+  async #fetchAttachment(
+    sessionId: string,
+    event: Extract<ClientToAgentEvent, { type: 'attachment.fetch.request' }>,
+    sender: Recipient,
+  ): Promise<void> {
+    let body: EventBody;
+    const store = this.#deps.attachments;
+    if (store === undefined) {
+      body = {
+        type: 'attachment.fetch.response',
+        reqId: event.reqId,
+        ok: false,
+        error: { code: 'unavailable', message: '这台 agent 没有启用附件' },
+      };
+    } else {
+      try {
+        const attachment = await store.fetchRef(sessionId, event.messageId, event.index, async () => {
+          const message = (await this.#readTranscript(sessionId)).find((m) => m.uuid === event.messageId);
+          const raw = message?.message as { content?: unknown } | undefined;
+          return message === undefined ? undefined : transcriptImages(raw?.content);
+        });
+        body = { type: 'attachment.fetch.response', reqId: event.reqId, ok: true, attachment };
+      } catch (err) {
+        const code = err instanceof AttachmentError ? err.code : 'io';
+        const message = err instanceof Error ? err.message : String(err);
+        this.#log(`[router] 附件拉取失败 session=${sessionId}: ${message}`);
+        body = { type: 'attachment.fetch.response', reqId: event.reqId, ok: false, error: { code, message: message.slice(0, 300) } };
+      }
+    }
+    this.#deps.emitter.emit(body, sessionId, { to: sender.deviceId });
   }
 
   /**

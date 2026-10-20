@@ -108,17 +108,54 @@ describe('toHistoryItems', () => {
     expect((items[0] as Extract<HistoryItem, { kind: 'tool' }>).status).toBe('ok');
   });
 
-  test('user 字符串 content / 块数组 content / 图片占位 / 空文本丢弃', () => {
+  test('user 字符串 content / 块数组 content / 图片转附件 / 空文本丢弃', () => {
+    const png = { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAAA' } };
     const items = toHistoryItems([
       user('u1', 'plain', T0),
-      user('u2', [{ type: 'text', text: '看图' }, { type: 'image', source: { type: 'base64', data: 'xx' } }], T1),
+      user('u2', [{ type: 'text', text: '看图' }, png], T1),
       user('u3', '   ', T2),
       user('u4', [], T2),
+      // 只有图片也是一条用户消息
+      user('u5', [png, { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: 'AAAAAA==' } }], T2),
       assistant('a1', 'msg_E', [{ type: 'text', text: '' }], T3),
     ]);
     expect(items).toEqual([
       { kind: 'user', id: 'u1', text: 'plain', ts: ms(T0) },
-      { kind: 'user', id: 'u2', text: '看图\n[图片]', ts: ms(T1) },
+      {
+        kind: 'user',
+        id: 'u2',
+        text: '看图',
+        attachments: [{ name: 'image-1.png', mime: 'image/png', size: 3, kind: 'image' }],
+        ts: ms(T1),
+      },
+      {
+        kind: 'user',
+        id: 'u5',
+        text: '',
+        attachments: [
+          { name: 'image-1.png', mime: 'image/png', size: 3, kind: 'image' },
+          { name: 'image-2.jpg', mime: 'image/jpeg', size: 4, kind: 'image' },
+        ],
+        ts: ms(T2),
+      },
+    ]);
+  });
+
+  test('trine 发的附件：按 manifest 还原列表，去掉末尾的路径清单', () => {
+    const file = { name: 'report.pdf', mime: 'application/pdf', size: 10, kind: 'file' as const, blobId: 'b'.repeat(22), key: 'k'.repeat(43) };
+    const items = toHistoryItems(
+      [
+        user('u1', '看看这个\n\n<attached-files>\n/home/x/uploads/s/m/report.pdf\n</attached-files>', T0),
+        user('u2', '<attached-files>\n/a\n</attached-files>', T1),
+      ],
+      new Map([
+        ['u1', [file]],
+        ['u2', [file]],
+      ]),
+    );
+    expect(items).toEqual([
+      { kind: 'user', id: 'u1', text: '看看这个', attachments: [file], ts: ms(T0) },
+      { kind: 'user', id: 'u2', text: '', attachments: [file], ts: ms(T1) },
     ]);
   });
 
@@ -238,7 +275,11 @@ describe('toHistoryItems · Agent/Task 结果（subagent-view）', () => {
 describe('回退辅助（humanUserText / cutAtRewind）', () => {
   test('humanUserText：只认主线程里用户说的话', () => {
     expect(humanUserText(user('u1', '改一下 README', T0))).toBe('改一下 README');
-    expect(humanUserText(user('u2', [{ type: 'text', text: 'a' }, { type: 'image' }], T0))).toBe('a\n[图片]');
+    const png = { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAAA' } };
+    expect(humanUserText(user('u2', [{ type: 'text', text: 'a' }, png], T0))).toBe('a');
+    // 只有图片：仍是用户消息（可作回退目标），预填文本为空
+    expect(humanUserText(user('u2b', [png], T0))).toBe('');
+    expect(humanUserText(user('u2c', 'hi\n\n<attached-files>\n/p\n</attached-files>', T0))).toBe('hi');
     expect(humanUserText(user('u3', '<command-name>/review</command-name><command-args>x</command-args>', T0))).toBe('/review x');
     // 工具结果载体、本地命令输出、子代理行、空文本、助手行都不是
     expect(humanUserText(user('u4', [{ type: 'tool_result', tool_use_id: 't1', content: 'ok' }], T0))).toBeUndefined();

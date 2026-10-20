@@ -32,7 +32,8 @@
  * 最旧那头少给几条并 `hasMore: true`。
  */
 import type { SessionMessage } from '@anthropic-ai/claude-agent-sdk';
-import type { HistoryItem } from '@trine/core';
+import type { HistoryAttachment, HistoryItem } from '@trine/core';
+import { stripAttachedFiles, transcriptImageMeta, type TranscriptImage } from './attachments.ts';
 import { outputPreview, subagentReportText, summarizeToolArgs, summarizeToolResult } from './summarize.ts';
 
 /** 单条 user/assistant 文本上限（字符数），超出截断并标注 */
@@ -95,6 +96,8 @@ const COMMAND_ARGS = /<command-args>([\s\S]*?)<\/command-args>/;
  */
 export function normalizeUserText(text: string): string {
   if (LOCAL_COMMAND_NOISE.test(text)) return '';
+  // trine 发给模型时在末尾附的附件路径清单（见 attachments.ts）：附件另有列表展示
+  text = stripAttachedFiles(text);
   const name = text.match(COMMAND_NAME);
   if (name !== null) {
     const cmd = (name[1] ?? '').trim();
@@ -105,7 +108,7 @@ export function normalizeUserText(text: string): string {
   return text;
 }
 
-/** user 行的 content → 用户文本；图片块给个占位，免得纯图片消息整条消失 */
+/** user 行的 content → 用户文本（只取文字块；图片另由 transcriptImages 取） */
 function userText(content: unknown): string {
   if (typeof content === 'string') return content;
   if (!Array.isArray(content)) return '';
@@ -114,9 +117,22 @@ function userText(content: unknown): string {
     const b = asRecord(block);
     if (b === undefined) continue;
     if (b['type'] === 'text' && typeof b['text'] === 'string') parts.push(b['text']);
-    else if (b['type'] === 'image') parts.push('[图片]');
   }
   return parts.join('\n');
+}
+
+/** user 行里的 base64 图片块（按出现顺序；下标即 attachment.fetch 的 index） */
+export function transcriptImages(content: unknown): TranscriptImage[] {
+  if (!Array.isArray(content)) return [];
+  const out: TranscriptImage[] = [];
+  for (const block of content) {
+    const b = asRecord(block);
+    const source = asRecord(b?.['source']);
+    if (b?.['type'] !== 'image' || source?.['type'] !== 'base64') continue;
+    if (typeof source['media_type'] !== 'string' || typeof source['data'] !== 'string') continue;
+    out.push({ mediaType: source['media_type'], data: source['data'] });
+  }
+  return out;
 }
 
 /**
@@ -132,7 +148,9 @@ export function humanUserText(message: SessionMessage): string | undefined {
   const content = raw['content'];
   if (Array.isArray(content) && content.some((b) => asRecord(b)?.['type'] === 'tool_result')) return undefined;
   const text = normalizeUserText(userText(content));
-  return text.trim() === '' ? undefined : text;
+  // 只有图片的消息也是用户说的话（历史里显示为附件），文本为空串
+  if (text.trim() === '') return transcriptImages(content).length > 0 ? '' : undefined;
+  return text;
 }
 
 /**
@@ -150,8 +168,14 @@ export function cutAtRewind(messages: readonly SessionMessage[], dropFrom: strin
  *
  * 丢弃：system 行、子代理行（`parent_tool_use_id` 非空）、thinking、空文本、
  * 本地命令输出。缺 timestamp 的行沿用上一行的 ts（首行缺则为 0）。
+ *
+ * 附件：经 trine 发的消息按 `attachments`（转录 uuid → manifest 里的列表）还原；
+ * 其余（CLI 里直接粘贴的图片）取转录里的图片块，只给元数据，字节按需拉。
  */
-export function toHistoryItems(messages: readonly SessionMessage[]): HistoryItem[] {
+export function toHistoryItems(
+  messages: readonly SessionMessage[],
+  attachments: ReadonlyMap<string, readonly HistoryAttachment[]> = new Map(),
+): HistoryItem[] {
   const items: HistoryItem[] = [];
   /** assistant message.id → items 下标（按 id 合并文本） */
   const assistantIdx = new Map<string, number>();
@@ -234,10 +258,11 @@ export function toHistoryItems(messages: readonly SessionMessage[]): HistoryItem
       continue;
     }
     const text = normalizeUserText(userText(content));
-    if (text.trim() === '') continue;
+    const files = attachments.get(message.uuid) ?? transcriptImages(content).map(transcriptImageMeta);
+    if (text.trim() === '' && files.length === 0) continue;
     if (seenUser.has(message.uuid)) continue;
     seenUser.add(message.uuid);
-    items.push({ kind: 'user', id: message.uuid, text, ts });
+    items.push({ kind: 'user', id: message.uuid, text, ...(files.length === 0 ? {} : { attachments: [...files] }), ts });
   }
 
   // 截断放最后：合并期间要拼的是全文
