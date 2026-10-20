@@ -14,13 +14,18 @@ const MB = 1024 * 1024;
 /** 能作为图片交给模型的格式；其他图片（heic / svg / bmp …）按普通文件发 */
 const IMAGE_TYPES: ReadonlySet<string> = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
 
+/** 去掉参数（`;charset=…`）并小写 */
+function baseType(mime: string): string {
+  return (mime.split(';')[0] ?? '').trim().toLowerCase();
+}
+
 export function attachmentKind(mime: string): AttachmentKind {
-  return IMAGE_TYPES.has(mime.toLowerCase()) ? 'image' : 'file';
+  return IMAGE_TYPES.has(baseType(mime)) ? 'image' : 'file';
 }
 
 /** 浏览器可以重新编码压缩的图片（gif 可能是动图，不动它） */
 export function isCompressibleImage(mime: string): boolean {
-  const m = mime.toLowerCase();
+  const m = baseType(mime);
   return m === 'image/png' || m === 'image/jpeg' || m === 'image/webp';
 }
 

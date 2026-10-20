@@ -10,6 +10,7 @@
  * 应答」，以及 plan 模式的 ExitPlanMode（批准后像真 CLI 一样自行切模式）。
  * SDK 相关的翻译逻辑在 bridge 层自己的测试里，不该在这里重演。
  */
+import type { PreparedInput } from '../bridge/attachments.ts';
 import type { getSessionMessages, listSessions, query } from '@anthropic-ai/claude-agent-sdk';
 import type { PermissionMode, SessionState } from '@trine/core';
 import { waitingForTool } from '@trine/core/permission';
@@ -60,11 +61,24 @@ export class EchoSession {
     return this.args.sessionId;
   }
 
-  send(clientMsgId: string, text: string): { duplicate: boolean } {
+  /** 收到的附件内容（clientMsgId → 交给 SDK 的 content），测试断言用 */
+  readonly prepared = new Map<string, PreparedInput>();
+
+  send(clientMsgId: string, text: string, prepared?: PreparedInput): { duplicate: boolean; uuid?: string } {
     this.hasProcess = true;
     this.lastActivityAt = this.now();
     this.transcripts?.write(this.sessionId, { firstPrompt: text, cwd: this.args.cwd });
-    this.emit({ type: 'user.message', messageId: clientMsgId, clientMsgId, text });
+    // 带附件的消息才给 uuid（按需拉附件要用）；不带的保持旧行为
+    const uuid = prepared === undefined ? undefined : `echo-${clientMsgId}`;
+    if (prepared !== undefined) this.prepared.set(clientMsgId, prepared);
+    this.emit({
+      type: 'user.message',
+      messageId: clientMsgId,
+      clientMsgId,
+      text,
+      ...(prepared === undefined || prepared.attachments.length === 0 ? {} : { attachments: prepared.attachments }),
+      ...(uuid === undefined ? {} : { uuid }),
+    });
     this.#setState('running');
     const ask =
       text.startsWith('perm:')
@@ -80,7 +94,7 @@ export class EchoSession {
       return { duplicate: false };
     }
     this.#finish(clientMsgId, text);
-    return { duplicate: false };
+    return { duplicate: false, ...(uuid === undefined ? {} : { uuid }) };
   }
 
   respondPermission(verdict: PermissionVerdict): boolean {

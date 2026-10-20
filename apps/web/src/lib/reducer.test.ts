@@ -19,8 +19,10 @@ import {
   expireParked,
   expireParkedBySeq,
   markSendingAsFailed,
+  mergeHistory,
   nextParkedExpiry,
   setLocalStatus,
+  setUserAttachment,
   transitionLocalStatus,
   type Timeline,
   type UserEntry,
@@ -396,5 +398,53 @@ describe('reducer · 后台任务（background-tasks）', () => {
     expect(bgTasksStale({ bgTasks: running, meta: {}, agentVersion: '0.6.0' })).toBe(false);
     expect(bgTasksStale({ bgTasks: [task({ status: 'completed' })], meta: {}, agentVersion: '0.7.0' })).toBe(false);
     expect(bgTasksStale({ bgTasks: undefined, meta: {}, agentVersion: '0.7.0' })).toBe(false);
+  });
+});
+
+describe('reducer · 附件', () => {
+  const ref = { name: 'a.png', mime: 'image/png', size: 3, kind: 'image' as const, blobId: 'b'.repeat(22), key: 'k'.repeat(43) };
+  const fresh = { ...ref, blobId: 'n'.repeat(22) };
+
+  test('本地条目带附件；回显确认后保留，别的设备的回显也带上', () => {
+    let tl = addLocalUserEntry(emptyTimeline(), { clientMsgId: 'c1', text: '', ts: 1, attachments: [ref] });
+    expect((tl.entries[0] as UserEntry).attachments).toEqual([ref]);
+    tl = apply(tl, ev({ type: 'user.message', ...S, messageId: 'c1', clientMsgId: 'c1', text: '', attachments: [ref], uuid: 'u1' }));
+    expect(tl.entries[0]).toMatchObject({ status: 'confirmed', attachments: [ref], uuid: 'u1' });
+
+    const other = apply(emptyTimeline(), ev({ type: 'user.message', ...S, messageId: 'm9', text: 'x', attachments: [ref] }));
+    expect((other.entries[0] as UserEntry).attachments).toEqual([ref]);
+    // 没附件就不加字段
+    expect(addLocalUserEntry(emptyTimeline(), { clientMsgId: 'c2', text: 'x', ts: 1, attachments: [] }).entries[0]).not.toHaveProperty(
+      'attachments',
+    );
+  });
+
+  test('input.rejected：本地条目转 failed 并记原因；没有本地条目只推进游标', () => {
+    let tl = addLocalUserEntry(emptyTimeline(), { clientMsgId: 'c1', text: 'hi', ts: 1, attachments: [ref] });
+    tl = apply(tl, ev({ type: 'input.rejected', ...S, clientMsgId: 'c1', reason: '附件下载失败' }, 5));
+    expect(tl.entries[0]).toMatchObject({ status: 'failed', failReason: '附件下载失败' });
+    expect(tl.lastAppliedSeq).toBe(5);
+    const untouched = apply(emptyTimeline(), ev({ type: 'input.rejected', ...S, clientMsgId: 'zz', reason: 'x' }, 6));
+    expect(untouched.entries).toEqual([]);
+  });
+
+  test('历史条目带附件；setUserAttachment 换新引用', () => {
+    let tl = mergeHistory(emptyTimeline(), {
+      items: [{ kind: 'user', id: 'h1', text: '', attachments: [{ name: 'image-1.png', mime: 'image/png', size: 3, kind: 'image' }], ts: 1 }],
+      hasMore: false,
+    });
+    expect((tl.entries[0] as UserEntry).attachments).toEqual([{ name: 'image-1.png', mime: 'image/png', size: 3, kind: 'image' }]);
+    tl = setUserAttachment(tl, 'h1', 0, fresh);
+    expect((tl.entries[0] as UserEntry).attachments).toEqual([fresh]);
+    // 越界 / 找不到：原样返回
+    expect(setUserAttachment(tl, 'h1', 3, ref)).toBe(tl);
+    expect(setUserAttachment(tl, 'nope', 0, ref)).toBe(tl);
+  });
+
+  test('带附件的条目落盘再读回不丢', async () => {
+    const docs = new MemoryDocStore();
+    const tl = addLocalUserEntry(emptyTimeline(), { clientMsgId: 'c1', text: 'x', ts: 1, attachments: [ref] });
+    await saveTimeline(docs, 'm/s', tl);
+    expect(((await loadTimeline(docs, 'm/s'))?.entries[0] as UserEntry).attachments).toEqual([ref]);
   });
 });

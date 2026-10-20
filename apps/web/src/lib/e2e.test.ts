@@ -16,6 +16,7 @@ import { createInvitation } from '../../../server/src/auth/invitations.ts';
  * @trine/agent / @trine/server 以 devDependency 引入（无 exports 字段，直接引源文件路径）。
  */
 import { afterEach, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
+import { rmSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -141,6 +142,7 @@ beforeEach(async () => {
     allowOpenRegistration: false,
     heartbeatIntervalMs: 60_000,
     sweepIntervalMs: 60_000,
+    blobDir: join(home, 'relay-blobs'),
   });
   agent = await startEchoAgent({
     serverUrl: `http://127.0.0.1:${server.port}`,
@@ -176,6 +178,11 @@ async function newClient(
     random: () => 0, // 退避固定 1s
     persistDebounceMs: 20,
     log: (l) => clientLogs.push(l),
+    // bun 里没有 XMLHttpRequest：附件上传换成 fetch
+    uploadBlob: async ({ url, token, body }) => {
+      const res = await fetch(url, { method: 'POST', headers: { authorization: `Bearer ${token}` }, body });
+      return { status: res.status, body: await res.json().catch(() => null) };
+    },
   });
 }
 
@@ -929,4 +936,78 @@ describe('web lib · 本机转录历史', () => {
     const ts = entries(sid).map((e) => e.ts);
     expect(ts.every((t, i) => i === 0 || t >= ts[i - 1]!)).toBe(true);
   }, 20_000);
+});
+
+describe('web lib · 附件 e2e', () => {
+  /** 读 objectURL 的内容（bun 的 fetch 支持 blob: URL） */
+  async function bytesOf(url: string): Promise<Uint8Array> {
+    return new Uint8Array(await (await fetch(url)).arrayBuffer());
+  }
+
+  test('A 上传并发送 → agent 落盘拿到路径 → B 设备点开加载；blob 过期后由 agent 重新上传', async () => {
+    await pair();
+    const sid = await createSession();
+    // 另外两台设备先配对（relay 只给发送时已配对的设备各存一份回显）
+    const b = { kv: new MemoryKv(), docs: new MemoryDocStore(), sockets: new ControlledSockets() };
+    const c = { kv: new MemoryKv(), docs: new MemoryDocStore(), sockets: new ControlledSockets() };
+    const clientB = await newClient(b);
+    const clientC = await newClient(c);
+    try {
+      await pair(clientB, b.sockets);
+      await pair(clientC, c.sockets);
+
+      const bytes = new TextEncoder().encode('synthetic notes for e2e');
+      const ref = await client.uploadAttachment(new File([bytes], 'notes.txt', { type: 'text/plain' }));
+      // 别用 toMatchObject + 非对称匹配器：bun 1.4.3 会把匹配器写回被比较的对象
+      expect([ref.name, ref.size, ref.kind]).toEqual(['notes.txt', bytes.length, 'file']);
+      expect(ref.mime.startsWith('text/plain')).toBe(true);
+
+      const id = client.sendInput('mbp', sid, '看看这个', [ref]);
+      await waitFor(() => userEntry(sid, id)?.status === 'confirmed', '附件消息确认');
+      expect(userEntry(sid, id)?.attachments).toEqual([ref]);
+
+      // agent：文件落在 home/uploads 下，内容就是明文；交给会话的文字带路径清单
+      const session = agent.app.manager.get(sid) as unknown as { prepared: Map<string, { content: unknown }> };
+      const content = session.prepared.get(id)?.content as string;
+      const path = /<attached-files>\n(.+)\n<\/attached-files>/.exec(content)?.[1];
+      expect(path?.startsWith(join(home, 'uploads'))).toBe(true);
+      expect(new Uint8Array(await Bun.file(path!).arrayBuffer())).toEqual(bytes);
+
+      // 本机：刚上传的直接有预览，不用下载
+      expect(client.attachmentUrl(ref.blobId)).toBeString();
+
+      // B：收到回显，点开 → 从 relay 下载解密
+      const synced = (cl: TrineClient) => {
+        cl.openSession('mbp', sid);
+        return () => cl.timeline('mbp', sid).entries.some((e) => e.kind === 'user' && e.attachments !== undefined);
+      };
+      await waitFor(synced(clientB), 'B 收到带附件的消息');
+      const entryB = clientB.timeline('mbp', sid).entries.find((e): e is UserEntry => e.kind === 'user')!;
+      expect(clientB.attachmentUrl(ref.blobId)).toBeUndefined();
+      expect(await bytesOf(await clientB.openAttachment('mbp', sid, entryB.id, 0))).toEqual(bytes);
+
+      // relay 上的 blob 没了（过期清理）：C 点开时 404 → attachment.fetch → agent 从本机副本重新上传
+      rmSync(join(home, 'relay-blobs', ref.blobId));
+      await waitFor(synced(clientC), 'C 收到带附件的消息');
+      const entryC = clientC.timeline('mbp', sid).entries.find((e): e is UserEntry => e.kind === 'user')!;
+      expect(await bytesOf(await clientC.openAttachment('mbp', sid, entryC.id, 0))).toEqual(bytes);
+      // 新引用写回了条目
+      const fresh = clientC.timeline('mbp', sid).entries.find((e): e is UserEntry => e.kind === 'user')!.attachments![0]!;
+      expect(fresh.blobId).not.toBe(ref.blobId);
+    } finally {
+      clientB.stop();
+      clientC.stop();
+    }
+  }, 20_000);
+
+  test('附件下载失败 → input.rejected → 本地条目失败，可原样重试', async () => {
+    await pair();
+    const sid = await createSession();
+    const ref = await client.uploadAttachment(new File([new Uint8Array([1, 2, 3])], 'a.bin'));
+    rmSync(join(home, 'relay-blobs', ref.blobId));
+    const id = client.sendInput('mbp', sid, '', [ref]);
+    await waitFor(() => userEntry(sid, id)?.status === 'failed', '条目失败');
+    expect(userEntry(sid, id)?.failReason).toContain('附件');
+    expect(userEntry(sid, id)?.attachments).toEqual([ref]);
+  });
 });
