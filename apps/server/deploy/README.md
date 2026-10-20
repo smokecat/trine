@@ -57,6 +57,10 @@ TRINE_WEB_DIST=/opt/trine/apps/web/dist
 ```
 
 All available variables are documented in [trine-server.env.example](trine-server.env.example).
+Message attachments are stored encrypted under `/var/lib/trine/blobs` by default
+(`TRINE_BLOB_DIR`), up to `TRINE_BLOB_MAX_BYTES` (256 MB) per file for
+`TRINE_BLOB_TTL_MS` (7 days). The directory is inside the unit's writable path; include
+it in disk-usage monitoring. Do not set a smaller request body limit in Caddy.
 Keep actual environment files outside the checkout and out of source archives.
 
 ```bash

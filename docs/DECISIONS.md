@@ -86,8 +86,22 @@ SQLite 只保存摘要、撤销 ID 和过期时间；IMMEDIATE 事务将核销�
 浏览器配对、SAS 人工确认、身份角色校验、权限、防重放与 E2E 均保持原有边界。
 详见[注册、恢复和迁移说明](AGENT-ENROLLMENT.zh-CN.md)。
 
+## D14 · 消息附件：先上传、消息里只带引用
+
+附件不进 E2E 帧：单帧整体 crypto_box 再两次 base64，体积约 1.78 倍，几 MB 就会碰到 WS
+帧上限，还会放大离线补发存储和每台设备各一份的扇出。改为浏览器用每个附件独立的随机
+key（libsodium secretstream，64KB 分块、带截断检测）加密后经 HTTP 上传到 relay 的 blob
+目录，`input.send` / `user.message` 只带 `{blobId, key}`——key 在 E2E 密文里。relay 只存
+密文，按 TTL 清理，不进 SQLite。
+
+交给 Claude 的方式对齐 Claude Code CLI：满足 API 限制的小图作为 image 内容块内联，其余
+（大图、普通文件）由 agent 落盘到 `<home>/uploads/<会话>/`，在消息末尾列路径，SDK
+`additionalDirectories` 让 Read 读它们不弹权限。默认不压缩图片，大图交给 Read 缩放。
+blob 过期或从没上传过（CLI 里粘贴的图片只在转录里）时，`attachment.fetch` 请 agent
+从本机副本或转录重新上传。代价：relay 能看到附件大小与时间；agent 磁盘上留有明文副本。
+
 ## 开放问题
 
 - 可操作的设备撤销与恢复界面。
-- 已认证恶意客户端的总体流量/存储配额。
+- 已认证恶意客户端的总体流量/存储配额（附件 blob 只有单个大小上限和 TTL，没有总量配额）。
 - 更多平台与浏览器的持续集成覆盖。

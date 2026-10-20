@@ -8,6 +8,7 @@
 
 - 流式消息、工具调用、子代理过程和历史回看。
 - 回退到某条消息之前：可以还原代码、对话，或两者一起还原。
+- 消息可以带图片和文件：点回形针选择、粘贴剪贴板里的图片或文件，或直接拖到页面上。附件在浏览器里加密后经 relay 中转；小图直接交给 Claude，其他文件存到 agent 所在机器上，以路径交给 Claude 读取。
 - 多台机器的会话列表、继续会话、重命名和归档；右键菜单、多选（Ctrl/Cmd/Shift 点击）批量归档，复制会话工作目录。
 - 默认隐藏临时会话（工作目录在系统临时目录下，或 `claude -p` 等非交互运行），列表筛选里可以重新显示。
 - 配对码/二维码与人工校验码确认，浏览器到 agent 的应用消息端到端加密。
@@ -64,6 +65,7 @@ TRINE_DEFAULT_MODEL=sonnet bun run dev:agent --   --server http://localhost:5173
 - 新会话默认值：新建会话时预选的模型和权限模式在「设置 → 新会话默认值」里改，初值是 `opus[1m]` 和 `bypassPermissions`；会话建好后各自记住自己的模型和权限。不希望新会话跳过工具审批的话，请把默认权限改掉。
 - 发送键：手机、平板等触屏设备上，键盘回车总是换行，点发送按钮发送；电脑键盘在「设置 → 发送键」里二选一：Enter 发送、Shift+Enter 换行（默认），或 Cmd/Ctrl+Enter 发送、Enter 换行。两种模式下 Cmd/Ctrl+Enter 都能发送。
 - 回退：鼠标悬停（触屏上点一下）自己发的消息，选「回退到这里」（需要 agent 0.9.0 及以上，且会话空闲）。对话框先预览改动，再提供与 Claude Code `/rewind` 相同的三个选项：还原代码和对话、只回退对话、只还原代码。回退对话会在所有设备上撤掉这条消息及之后的内容，并把这条消息填回输入框。代码按 Claude Code 的文件快照还原，agent 现在为每个会话开启快照（由 Claude Code 存在它自己的配置目录里）。只能还原 Claude 用编辑工具做的改动，Bash 命令和手工改动无法还原；开启快照之前的轮次只能回退对话，会话的第一条消息只能还原代码。
+- 附件：默认每条消息最多 10 个、合计 64MB，可在「设置 → 附件」里调整，但单个附件不能超过 relay 的上限（`TRINE_BLOB_MAX_BYTES`，默认 256MB）。图片默认原样上传，也可以在设置里给压缩阈值。relay 把加密后的附件存在 `TRINE_BLOB_DIR`（默认数据库旁边的 `blobs/`），保留 `TRINE_BLOB_TTL_MS`（默认 7 天）；过期后再点开，会请 agent 用它在 `<home>/uploads` 下的副本重新上传。约 3.75MB、2000px 以内的图片直接交给 Claude，更大的图片和其他文件以路径交给 Claude 读取。需要 agent 0.11.0 及以上。
 - relay：[配置模板](apps/server/deploy/trine-server.env.example)，复制到仓库外再填写真实值。
 - 验证：`bun run typecheck`、`bun test`、`bun run build`，或 `bun run check`。
 - 架构：[STRUCTURE](docs/STRUCTURE.md)；决策：[DECISIONS](docs/DECISIONS.md)；协议：[PROTOCOL-REQUIREMENTS](docs/PROTOCOL-REQUIREMENTS.md)。

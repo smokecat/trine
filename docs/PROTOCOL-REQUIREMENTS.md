@@ -24,7 +24,7 @@
 - `assistant.delta` — 文本增量：`{ text }`（token 级，SDK includePartialMessages）
 - `assistant.done` — 一条 assistant 消息完成：`{ messageId, text }`（终态覆盖，防乱序）
 - `thinking.start` / `thinking.delta`? — 原型只显示「思考中…」占位，MVP 可只要 start 信号，不传 thinking 正文
-- `user.message` 回显 — 多客户端设备时，别的设备发的消息本设备也要看到
+- `user.message` 回显 — 多客户端设备时，别的设备发的消息本设备也要看到；带附件时附 `attachments`（引用，见 §1.9）
 
 ### 1.2 工具调用卡（原地更新）
 
@@ -50,7 +50,7 @@
 
 ### 1.5 输入与排队
 
-- `input.send`（client→agent）— `{ clientMsgId（幂等去重）, text }`
+- `input.send`（client→agent）— `{ clientMsgId（幂等去重）, text, attachments? }`；带附件时 text 可以为空（见 §1.9）
 - 排队语义：**会话运行中**由 agent 端排队（回执 `input.queued`）；**agent 离线**由 server 排队†（server 只见密文帧 + 目标，回执由 server 发 `input.parked`？）
   - 开放：两级排队的回执如何区分显示（原型统一显示「已排队」+ 不同副文案）
 - `input.recall`（client→server/agent）— 撤回排队消息：`{ clientMsgId }`
@@ -70,7 +70,7 @@
   `before` 是上一页响应给的不透明游标，省略即最新一页。agent **不为它拉起会话进程**
   （读的是 `~/.claude/projects` 转录，SDK `getSessionMessages`）
 - `session.history.response`（agent→client，**只发给请求方设备**）— `{ reqId, items[], hasMore, nextBefore? }`；
-  items 旧→新，三种：`user{id,text,ts}` / `assistant{id=SDK message.id,text,ts}` /
+  items 旧→新，三种：`user{id,text,attachments?,ts}` / `assistant{id=SDK message.id,text,ts}` /
   `tool{id=toolUseId,toolName,argSummary,status?,durationMs?,resultSummary?,outputPreview?,ts}`，
   id 与实时流同源以便去重。单条文本截断（~8KB），整帧体积封顶（~512KB，超了少给并 hasMore）——
   它会进服务端离线补发存储。会话找不到 → 空 items，不报错
@@ -100,6 +100,27 @@
   直到新分支上收到第一条回复才清除，期间历史回看按它截掉被撤的尾巴。`both` 先还原文件，失败则对话不动
 - 互操作：旧 agent 不认识这些 type，client 按 `agentVersion ≥ 0.9.0` 决定显不显示入口；旧 client 丢弃
   `session.rewound`，时间线保留已回退的消息，刷新历史后恢复正确
+
+### 1.9 附件（agent ≥ 0.11.0）
+
+- 字节不走 E2E 帧。发送端为每个附件生成随机 key，用 libsodium secretstream（XChaCha20-Poly1305，
+  64KB 分块，最后一块 FINAL）加密成 `header(24B) ‖ chunks…`，经 HTTP 上传到 relay：
+  - `POST /blobs`（bearer token，请求体为密文）→ `{ blobId, size }`；超过 `TRINE_BLOB_MAX_BYTES` 回 413
+  - `GET /blobs/:id` → 密文；不存在或已过期回 404
+  - `GET /blobs/config` → `{ maxBytes, ttlMs }`
+  任一已认证设备都能读写任一 blob（relay 单一所有者；blobId 为 128 位随机数，内容只有持 key 的一方能解）
+- 引用 `AttachmentRef = { name, mime, size, kind: image|file, blobId, key }`，放在 `input.send.attachments`
+  与 `user.message.attachments`（每条至多 32 个；默认上限 10 个 / 64MB 由 client 设置）。
+  历史 user 条目的 `attachments` 可能不带 `blobId/key`（CLI 里直接粘贴的图片只在转录里）
+- agent 收到 `input.send` 后先下载、解密、落盘（`<home>/uploads/<会话>/<消息>/`），再入队；这一步在命令链外、
+  按会话保序。失败回 `input.rejected { clientMsgId, reason }`（没进队列也没进去重表，client 标失败、可原样重试）
+- 交给 SDK：png/jpeg/gif/webp、原始 ≤ 3.75MB、长边 ≤ 2000px 的图片作为 image 内容块（类型以文件头为准）；
+  其余在文字末尾附 `<attached-files>` 路径清单，由 Claude 用 Read 读取（会话的上传目录在 `additionalDirectories` 里）。
+  历史回看时按 manifest 还原附件列表并去掉路径清单
+- `attachment.fetch.request`（client→agent，会话级，不拉起会话进程）— `{ reqId, messageId（转录 uuid）, index }`；
+  `attachment.fetch.response`（只发给请求方）— `{ reqId, ok, attachment?, error?: { code: not_found|io|unavailable, message } }`。
+  agent 从本机副本（有 manifest）或转录里的图片块重新加密上传，返回新引用。client 在 blob 404 或没有引用时使用
+- 互操作：旧 agent 丢弃 `attachments` 字段、拒收空 text 的 `input.send`，client 按 `agentVersion ≥ 0.11.0` 决定给不给附件入口
 
 ## 2. 会话列表
 

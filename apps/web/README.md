@@ -15,7 +15,7 @@ bun run build
 bun run preview
 ```
 
-The dev/preview proxy forwards `/auth`, `/ws`, `/healthz` and `/devices` to
+The dev/preview proxy forwards `/auth`, `/ws`, `/healthz`, `/devices` and `/blobs` to
 `http://127.0.0.1:8787`. Override with `TRINE_DEV_PROXY`. The UI listens on port
 5173; use the same origin in the browser and the agent's `--server` argument.
 Production output is `dist/`; configure `TRINE_WEB_DIST` on the relay to serve it.

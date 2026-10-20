@@ -16,6 +16,9 @@ the agent runs on your own computer.
 - Shows message times like a chat app: day separators, a time marker after gaps of 10+ minutes,
   the time under each of your messages, and start times for replies and tools on hover or expand.
 - Rewinds a session to before one of your messages, restoring code, the conversation or both.
+- Attaches images and files to messages: pick them, paste them or drop them onto the page.
+  Attachments are encrypted in the browser and relayed as ciphertext; small images go to
+  Claude inline, other files are saved on the agent's machine and handed over by path.
 - Lists, resumes, renames and archives sessions across paired machines; right-click or
   multi-select (Ctrl/Cmd/Shift-click) to archive in bulk, and copy a session's working directory.
 - Hides temporary sessions by default (working directory under a system temp directory, or
@@ -115,6 +118,15 @@ active sessions, i.e. sessions with a running Claude Code child process. When th
 the agent first shuts down the child process of the least recently active idle session (its
 transcript stays and it resumes on the next message); archiving a session also releases its idle child
 process. The web list marks such sessions as 驻留 and shows `子进程 n/max` for the machine.
+
+Attachments: the default limit is 10 files and 64 MB per message, adjustable in
+Settings → Attachments up to the relay's per-file cap (`TRINE_BLOB_MAX_BYTES`, default
+256 MB). Images are sent as-is unless you set a compression threshold there. The relay
+keeps encrypted attachments for `TRINE_BLOB_TTL_MS` (default 7 days) in
+`TRINE_BLOB_DIR` (default `blobs/` next to the database); afterwards, opening one asks
+the agent to upload it again from its copy under `<home>/uploads`. Images up to about
+3.75 MB and 2000 px are given to Claude inline; larger images and other files are listed
+by path for Claude to read. Requires agent 0.11.0 or later.
 
 Model fields accept Claude Code family aliases (`fable`, `opus`, `sonnet`, `haiku`, and
 suffixed forms such as `opus[1m]`), which Claude Code resolves to the latest model in

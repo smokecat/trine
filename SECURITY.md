@@ -18,6 +18,9 @@ Session payloads are encrypted between the browser and agent using libsodium
 crypto_box (X25519 + XSalsa20-Poly1305). Ed25519 challenge-response authenticates
 devices to the relay. Pairing requires manual verification of a short code.
 The relay sees routing metadata, device public keys, timing and ciphertext.
+Message attachments are encrypted in the browser with a random per-file key
+(libsodium secretstream) that travels only inside the encrypted message; the relay
+stores the ciphertext and can see each attachment's size and upload time.
 Optional Bark notifications reveal the event type and a machine identifier or
 configured alias, not the session title or message body.
 
@@ -30,6 +33,9 @@ is not a substitute for those controls, backups or TLS.
   They are not separately encrypted at rest by trine.
 - The agent stores private identity keys on disk and Claude stores its own history
   and credentials locally. Protect the OS account and backups.
+- The agent keeps plaintext copies of received attachments under `<home>/uploads`
+  (deleted with the session) and lets Claude read that session's folder without an
+  approval prompt. Any paired controller can place files there.
 - A compromised frontend host can replace JavaScript and steal browser keys or plaintext.
   Same-origin hosting trusts the relay host to serve the correct frontend.
 - A compromised paired device or agent can read content and send authorized operations.
