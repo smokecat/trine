@@ -11,6 +11,7 @@
 import { useMemo } from 'react';
 import { toast } from 'sonner';
 import { useClient, useTrine } from '@/app/runtime.ts';
+import { openLinkPicker } from '@/components/ext/use-ext.ts';
 import { copyText } from '@/lib/clipboard.ts';
 import { buildCopyCwd, buildSessionActions, supportedMachinesKey, supportsPin } from './session-actions.ts';
 import type { SessionRowActions } from './SessionRowMenu.tsx';
@@ -20,6 +21,13 @@ export function useSessionActions(machineId?: string): SessionRowActions {
   // 标量 selector：机器的 online / lastSeenAt 翻转不会让回调换引用
   const supportedKey = useTrine((s) => supportedMachinesKey(s.machines));
   const pinKey = useTrine((s) => supportedMachinesKey(s.machines, supportsPin));
+  // 有扩展的机器才给「关联…」（具体哪个扩展提供关联，选择器里再看）
+  const linkKey = useTrine((s) =>
+    Object.keys(s.machines)
+      .filter((id) => (s.machines[id]?.info?.extensions?.count ?? 0) > 0)
+      .sort()
+      .join(','),
+  );
   return useMemo(
     () => ({
       ...buildSessionActions({
@@ -31,7 +39,9 @@ export function useSessionActions(machineId?: string): SessionRowActions {
       }),
       // 复制不经 agent：与能力探测无关，总是给
       onCopyCwd: buildCopyCwd(copyText, toast),
+      onLink: (target: string, sessionIds: string[]) => openLinkPicker({ machineId: target, sessionIds }),
+      supportsLinks: (target: string) => linkKey.split(',').includes(target),
     }),
-    [client, supportedKey, pinKey, machineId],
+    [client, supportedKey, pinKey, linkKey, machineId],
   );
 }

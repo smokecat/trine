@@ -140,6 +140,15 @@ export function SessionList({
   );
   const selectedCount = selectedRows.length;
   const clearSelection = useCallback(() => setSelection(EMPTY_SELECTION), []);
+  // 批量关联：只在整批同一台机器、且它支持扩展时给
+  const linkMachine =
+    selectedRows.length > 0 && selectedRows.every((r) => r.machineId === selectedRows[0]!.machineId) ? selectedRows[0]!.machineId : undefined;
+  const linkSelected =
+    actions?.onLink !== undefined &&
+    linkMachine !== undefined &&
+    (actions.supportsLinks === undefined || actions.supportsLinks(linkMachine))
+      ? () => actions.onLink!(linkMachine, selectedRows.map((r) => r.meta.sessionId))
+      : undefined;
   const applyToSelected = useCallback(() => {
     if (onArchiveMany === undefined || selectedRows.length === 0) return;
     const result = onArchiveMany(
@@ -221,6 +230,7 @@ export function SessionList({
           count: selectedCount,
           toggle: () => setSelection((s) => toggleKey(s, key)),
           applyToSelected,
+          linkSelected,
           clear: clearSelection,
         }
       : undefined;
@@ -294,6 +304,11 @@ export function SessionList({
             <Button size="xs" data-testid="bulk-apply" disabled={bulkBusy} onClick={applyToSelected}>
               {bulkBusy ? '处理中…' : query.archived ? '取消归档' : '归档'}
             </Button>
+            {linkSelected !== undefined && (
+              <Button size="xs" variant="outline" data-testid="bulk-link" disabled={bulkBusy} onClick={linkSelected}>
+                关联…
+              </Button>
+            )}
             <Button size="xs" variant="ghost" data-testid="bulk-clear" disabled={bulkBusy} onClick={clearSelection}>
               取消
             </Button>

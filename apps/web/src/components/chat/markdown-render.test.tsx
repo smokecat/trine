@@ -87,3 +87,24 @@ describe('Markdown 真渲染：assistant 文本不得让浏览器外连（N1）'
     expect(html).toContain('data-streamdown="list-item"');
   });
 });
+
+describe('Markdown restricted（扩展详情）：更严的一档', () => {
+  const renderRestricted = (text: string): string =>
+    renderToStaticMarkup(<Markdown text={text} streaming={false} restricted />);
+
+  test.each(PAYLOADS)('%s', (_name, text) => {
+    expect(renderRestricted(text)).not.toContain(EVIL);
+  });
+
+  test('同源相对图片也不渲染（会把文本带进请求 URL）', () => {
+    const html = renderRestricted('![x](/leak?secret=abc)');
+    expect(html).not.toContain('/leak');
+    expect(html).not.toContain('<img');
+  });
+
+  test('链接只留 https：http 与相对路径不带地址', () => {
+    expect(renderRestricted('[a](https://example.com/x)')).toContain('data-streamdown="link"');
+    expect(renderRestricted('[a](http://example.com/plain)')).not.toContain('example.com/plain');
+    expect(renderRestricted('[a](/relative/path)')).not.toContain('/relative/path');
+  });
+});

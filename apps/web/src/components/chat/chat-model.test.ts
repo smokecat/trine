@@ -401,7 +401,7 @@ describe('markdown 外链图片（M4）', () => {
   // （评审 N1）。真正的防线是 `markdown-render.test.tsx` 的真渲染断言。
   test('Markdown.tsx 确实把 urlTransform 传给了 Streamdown', () => {
     const src = readFileSync(new URL('./Markdown.tsx', import.meta.url), 'utf8');
-    expect(src).toContain('urlTransform={safeUrlTransform}');
+    expect(src).toContain('urlTransform={restricted ? restrictedUrlTransform : safeUrlTransform}');
   });
 });
 

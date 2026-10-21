@@ -68,6 +68,18 @@ const plugins = { code };
  */
 const components = { source: (): null => null };
 
+/**
+ * 扩展给的详情文本（`restricted`）更严：图片一律不渲染（同源相对图片也会把文本带进请求 URL、
+ * 暴露给 relay），链接只留 https。
+ */
+const restrictedComponents = { source: (): null => null, img: (): null => null };
+
+export function restrictedUrlTransform(url: string, key: string): string | null {
+  if (key === 'src') return null;
+  if (key === 'href') return /^https:\/\//i.test(url) ? url : null;
+  return url;
+}
+
 /** 图片允许的来源：内联数据，以及同源相对路径（`/x.png`、`./x.png`） */
 function isAllowedImageUrl(url: string): boolean {
   if (url.startsWith('data:image/')) return true;
@@ -90,11 +102,14 @@ export const Markdown = memo(function Markdown({
   text,
   streaming,
   className,
+  restricted = false,
 }: {
   text: string;
   /** 还在流式接收：开 streaming 模式（增量解析 + 未闭合语法修补） */
   streaming: boolean;
   className?: string;
+  /** 扩展输出：禁图、链接只留 https（见 restrictedComponents） */
+  restricted?: boolean;
 }): React.JSX.Element {
   return (
     <Streamdown
@@ -102,9 +117,9 @@ export const Markdown = memo(function Markdown({
       parseIncompleteMarkdown={streaming}
       plugins={plugins}
       // 零远端资源：外域图片一律不请求（streamdown 默认放行 '*'，见文件头 M4）
-      urlTransform={safeUrlTransform}
+      urlTransform={restricted ? restrictedUrlTransform : safeUrlTransform}
       // `<source srcset>` 绕过 urlTransform（见文件头 N1）：整个不渲染
-      components={components}
+      components={restricted ? restrictedComponents : components}
       shikiTheme={['github-light', 'github-dark']}
       // 代码块只留复制（下载会触发浏览器下载，远程场景意义不大）
       controls={{ code: { copy: true, download: false }, table: { copy: true, download: false } }}

@@ -39,7 +39,8 @@ export function SessionHeadMenu({
   const canArchive = actions.onArchive !== undefined && meta !== undefined;
   const cwd = meta?.cwd ?? '';
   const canCopyCwd = actions.onCopyCwd !== undefined && cwd !== '';
-  if (!canRename && !canArchive && !canCopyCwd) return null;
+  const canLink = actions.onLink !== undefined && (actions.supportsLinks === undefined || actions.supportsLinks(machineId));
+  if (!canRename && !canArchive && !canCopyCwd && !canLink) return null;
   const archived = meta?.archived === true;
   const busy = meta !== undefined && archiveLikelyBusy(meta);
   const swallow = (r: void | Promise<unknown>): void => {
@@ -65,7 +66,12 @@ export function SessionHeadMenu({
             复制工作目录
           </DropdownMenuItem>
         )}
-        {canCopyCwd && (canRename || canArchive) && <DropdownMenuSeparator />}
+        {canCopyCwd && (canRename || canArchive || canLink) && <DropdownMenuSeparator />}
+        {canLink && (
+          <DropdownMenuItem data-testid="head-menu-link" onSelect={() => actions.onLink?.(machineId, [sessionId])}>
+            关联…
+          </DropdownMenuItem>
+        )}
         {canRename && (
           <DropdownMenuItem data-testid="head-menu-rename" onSelect={onRequestRename}>
             重命名

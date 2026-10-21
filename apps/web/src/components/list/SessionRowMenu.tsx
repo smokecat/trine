@@ -75,6 +75,9 @@ export interface SessionRowActions {
   onPin?: (machineId: string, sessionId: string, pinned: boolean) => MaybePromise;
   /** 工作区（组）置顶 / 取消置顶；cwd 是规范化后的组 cwd */
   onPinWorkspace?: (machineId: string, cwd: string, pinned: boolean) => void;
+  /** 打开扩展的关联选择器（一个或一批同机器的会话）；supportsLinks 判这台机器有没有扩展 */
+  onLink?: (machineId: string, sessionIds: string[]) => void;
+  supportsLinks?: (machineId: string) => boolean;
 }
 
 export interface RowTarget {
@@ -87,8 +90,11 @@ export function rowMenuItems(
   actions: SessionRowActions | undefined,
   meta: SessionMeta,
   machineId?: string,
-): { copyCwd: boolean; pin: boolean; rename: boolean; archive: boolean; unarchive: boolean; delete: boolean } {
+): { copyCwd: boolean; pin: boolean; link: boolean; rename: boolean; archive: boolean; unarchive: boolean; delete: boolean } {
   const copyCwd = actions?.onCopyCwd !== undefined && meta.cwd !== '';
+  const link =
+    actions?.onLink !== undefined &&
+    (machineId === undefined || actions.supportsLinks === undefined || actions.supportsLinks(machineId));
   const archived = meta.archived === true;
   // 置顶只在未归档的会话上给（归档会清掉置顶），能力探测与其他命令分开
   const pin =
@@ -96,11 +102,12 @@ export function rowMenuItems(
     actions?.onPin !== undefined &&
     (machineId === undefined || actions.supportsPin === undefined || actions.supportsPin(machineId));
   if (machineId !== undefined && actions?.supports !== undefined && !actions.supports(machineId)) {
-    return { copyCwd, pin, rename: false, archive: false, unarchive: false, delete: false };
+    return { copyCwd, pin, link, rename: false, archive: false, unarchive: false, delete: false };
   }
   return {
     copyCwd,
     pin,
+    link,
     rename: actions?.onRename !== undefined,
     archive: !archived && actions?.onArchive !== undefined,
     unarchive: archived && actions?.onArchive !== undefined,
@@ -111,7 +118,7 @@ export function rowMenuItems(
 
 export function hasRowMenu(actions: SessionRowActions | undefined, meta: SessionMeta, machineId?: string): boolean {
   const items = rowMenuItems(actions, meta, machineId);
-  return items.copyCwd || items.pin || items.rename || items.archive || items.unarchive || items.delete;
+  return items.copyCwd || items.pin || items.link || items.rename || items.archive || items.unarchive || items.delete;
 }
 
 /** 运行中 / 待批准：归档大概率会被 agent 以 busy 拒绝 */
@@ -132,6 +139,8 @@ export interface RowSelection {
   toggle: () => void;
   /** 对整批执行归档（归档视图里是取消归档） */
   applyToSelected: () => void;
+  /** 给整批打开关联选择器；批里跨机器或机器不支持时不给 */
+  linkSelected?: (() => void) | undefined;
   clear: () => void;
 }
 
@@ -207,6 +216,11 @@ function RowMenuItems({
         <Item testId="menu-bulk-apply" onSelect={selection.applyToSelected}>
           {meta.archived === true ? '取消归档' : '归档'}已选 {selection.count} 个
         </Item>
+        {selection.linkSelected !== undefined && (
+          <Item testId="menu-bulk-link" onSelect={selection.linkSelected}>
+            关联已选 {selection.count} 个…
+          </Item>
+        )}
         <Item testId="menu-bulk-clear" onSelect={selection.clear}>
           取消选择
         </Item>
@@ -224,13 +238,18 @@ function RowMenuItems({
           复制工作目录
         </Item>
       )}
-      {items.copyCwd && (items.pin || mutations) && <Separator />}
+      {items.copyCwd && (items.pin || items.link || mutations) && <Separator />}
       {items.pin && (
         <Item
           testId="menu-pin"
           onSelect={() => swallow(actions.onPin?.(machineId, meta.sessionId, meta.pinnedAt === undefined))}
         >
           {meta.pinnedAt === undefined ? '置顶' : '取消置顶'}
+        </Item>
+      )}
+      {items.link && (
+        <Item testId="menu-link" onSelect={() => actions.onLink?.(machineId, [meta.sessionId])}>
+          关联…
         </Item>
       )}
       {items.rename && (

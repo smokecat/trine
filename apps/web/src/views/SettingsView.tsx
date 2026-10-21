@@ -42,6 +42,7 @@ import { copyText } from '@/lib/clipboard.ts';
 import { formatBytes } from '@/lib/format.ts';
 import { ATTACHMENTS_MAX_COUNT } from '@trine/core/types';
 import { cn } from '@/lib/utils.ts';
+import { ExtensionsSettings } from '@/components/ext/ExtensionsSettings.tsx';
 
 const THEME_OPTIONS: { value: ThemeMode; label: string }[] = [
   { value: 'system', label: '跟随系统' },
@@ -630,6 +631,8 @@ export function SettingsView(): React.JSX.Element {
         <Separator />
         <AttachmentSettings />
 
+        <ExtensionsSettingsBlock />
+
         <Separator />
 
         <section className="flex flex-col gap-2">
@@ -787,6 +790,18 @@ export function SettingsView(): React.JSX.Element {
           })();
         }}
       />
+    </>
+  );
+}
+
+/** 有支持扩展的机器时才出现（带分隔线） */
+function ExtensionsSettingsBlock(): React.JSX.Element | null {
+  const any = useTrine((s) => Object.values(s.machines).some((m) => m.info?.extensions !== undefined));
+  if (!any) return null;
+  return (
+    <>
+      <Separator />
+      <ExtensionsSettings />
     </>
   );
 }

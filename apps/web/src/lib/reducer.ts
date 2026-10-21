@@ -751,6 +751,12 @@ export function applyEvent(tl: Timeline, event: AgentToClientEvent): Timeline {
     case 'machine.stats':
     case 'cwd.list.response':
     case 'cwd.updated':
+    case 'ext.catalog.response':
+    case 'ext.read.response':
+    case 'ext.action.plan':
+    case 'ext.action.result':
+    case 'ext.config.response':
+    case 'session.links.update.response':
       return tl;
   }
 }

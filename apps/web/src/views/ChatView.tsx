@@ -93,6 +93,7 @@ import {
 import { timelineKey } from '@/lib/storage.ts';
 import { formatCost } from '@/lib/format.ts';
 import { waitingForOfTool } from '@/lib/waiting.ts';
+import { ExtHeadEntry, ExtPanelSheet } from '@/components/ext/ExtPanel.tsx';
 
 type InfoCardState =
   | { kind: 'status'; rows: { label: string; value: string }[] }
@@ -134,6 +135,8 @@ export function ChatView(): React.JSX.Element {
   // 从归档视图点进来的（SessionRow 带 state.from）：返回 / 被删后跳回 /archived（评审 minor 9）
   const backTo = backTarget(useLocation().state);
   const [renameOpen, setRenameOpen] = useState(false);
+  const [extOpen, setExtOpen] = useState(false);
+  const [insertRequest, setInsertRequest] = useState<{ id: number; text: string } | undefined>(undefined);
   const [renameBusy, setRenameBusy] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   /** 正在确认回退的目标用户消息（RewindDialog 打开中） */
@@ -654,6 +657,7 @@ export function ChatView(): React.JSX.Element {
                 <ChipLabel title="子进程里还有后台任务在跑">后台 {bgRunning}</ChipLabel>
               </span>
             )}
+            <ExtHeadEntry machineId={machineId} sessionId={sessionId} meta={meta} onOpen={() => setExtOpen(true)} />
             <ChipLabel>
               <StatusDot tone={machine?.online === true ? 'on' : 'off'} />
               {machine?.name ?? machineId}
@@ -730,6 +734,7 @@ export function ChatView(): React.JSX.Element {
         onManageSnippets={() => navigate('/settings')}
         sendKey={prefs.sendKey}
         pending={pendingEntries.length > 0 ? <PendingTray entries={pendingEntries} onAction={onPendingAction} /> : undefined}
+        insertRequest={insertRequest}
         onEditLast={editLastPending}
         attachments={{
           drafts: attach.drafts,
@@ -751,6 +756,15 @@ export function ChatView(): React.JSX.Element {
           </div>
         </div>
       )}
+
+      <ExtPanelSheet
+        open={extOpen}
+        onOpenChange={setExtOpen}
+        machineId={machineId}
+        sessionId={sessionId}
+        meta={meta}
+        onInsert={(text) => setInsertRequest((r) => ({ id: (r?.id ?? 0) + 1, text }))}
+      />
 
       <RewindDialog
         open={rewindTarget !== null}

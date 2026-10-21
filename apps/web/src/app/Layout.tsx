@@ -22,6 +22,7 @@
 import { createContext, useContext, useMemo, useState } from 'react';
 import { Outlet, useLocation } from 'react-router';
 import { Toaster } from '@/components/ui/sonner.tsx';
+import { ExtDialogsHost } from '@/components/ext/ExtDialogs.tsx';
 import { TooltipProvider } from '@/components/ui/tooltip.tsx';
 import { Button } from '@/components/ui/button.tsx';
 import { BannerStack } from '@/components/shell/BannerStack.tsx';
@@ -183,6 +184,7 @@ export function Layout(): React.JSX.Element {
         </ListFiltersContext>
       </MachineFilterContext>
       <Toaster position="top-center" richColors closeButton />
+      <ExtDialogsHost />
     </TooltipProvider>
   );
 }

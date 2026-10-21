@@ -205,6 +205,9 @@ export const CLAUDE_UPDATE_TIMEOUT_MS = 6 * 60_000;
 /** 手动刷新限额用量的等待上限：agent 可能要临时起一个 claude 进程（agent 侧 30s 超时） */
 export const USAGE_REFRESH_TIMEOUT_MS = 45_000;
 
+/** 扩展请求超时：扩展进程最长 30s（action），留出余量 */
+export const EXT_REQUEST_TIMEOUT_MS = 45_000;
+
 /** `session.context.response`（ok 为 false 也照常返回，由调用方展示原因） */
 export type ContextRefreshResult = Extract<AgentToClientEvent, { type: 'session.context.response' }>;
 
@@ -1714,6 +1717,41 @@ export class TrineClient {
    * 手动刷新会话的 context 用量（agent >= 0.13.0，调用方先做能力探测）。新值随 agent
    * 先广播的 session.updated 到达；这里只返回成败。业务失败不抛，发不出去 / 超时才抛。
    */
+  // -------------------------------------------------------------------------
+  // 扩展（ext.*，agent 带 machine.info.extensions 时才支持；视图模型见 lib/ext-model.ts）
+  // -------------------------------------------------------------------------
+
+  /** 扩展请求-应答：agent 定向回本设备，按 reqId 关联 */
+  extRequest<T extends AgentToClientEvent['type']>(
+    machineId: string,
+    body: Extract<OutboundBody, { reqId: string }> extends infer B ? Omit<B & { type: string }, 'reqId'> : never,
+    expect: readonly T[],
+    timeoutMs = EXT_REQUEST_TIMEOUT_MS,
+  ): Promise<Extract<AgentToClientEvent, { type: T }>> {
+    return this.request(machineId, body as never, { timeoutMs }).then((res) => {
+      if (!(expect as readonly string[]).includes(res.type)) throw new Error(`意外的应答 ${res.type}`);
+      return res as Extract<AgentToClientEvent, { type: T }>;
+    });
+  }
+
+  /** 发而不等应答（ext.action.cancel、退订） */
+  extSend(machineId: string, body: OutboundBody): boolean {
+    return this.#safeSend(machineId, body);
+  }
+
+  /**
+   * agent 代发的消息（扩展的 prompt.send）在会话忙时排队：排队回执只对有本地条目的设备生效，
+   * 所以发起设备补一条本地「排队中」条目，撤回 / 停止恢复文字照常工作。已有同 id 条目
+   * （回显先到了）就不补。
+   */
+  adoptAgentSentInput(machineId: string, sessionId: string, clientMsgId: string, text: string): void {
+    const exists = this.timeline(machineId, sessionId).entries.some((e) => e.kind === 'user' && e.id === clientMsgId);
+    if (exists) return;
+    this.#updateTimeline(machineId, sessionId, (tl) =>
+      setLocalStatus(addLocalUserEntry(tl, { clientMsgId, text, ts: this.deps.clock.now() }), clientMsgId, 'queued'),
+    );
+  }
+
   async refreshContext(machineId: string, sessionId: string): Promise<ContextRefreshResult> {
     const res = await this.request(
       machineId,

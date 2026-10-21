@@ -100,6 +100,7 @@ export function Composer({
   attachments,
   pending,
   onEditLast,
+  insertRequest,
 }: {
   value: string;
   onChange: (text: string) => void;
@@ -124,6 +125,8 @@ export function Composer({
   pending?: React.ReactNode;
   /** 输入框为空时按 ↑：编辑最后一条排队消息，返回是否接手了这次按键 */
   onEditLast?: (() => boolean) | undefined;
+  /** 外部要求插入一段文字（扩展的「插入」动作）：id 变化时按 prompt 片段的规则插在光标处 */
+  insertRequest?: { id: number; text: string } | undefined;
 }): React.JSX.Element {
   const rootRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -232,6 +235,15 @@ export function Composer({
     onChange(text);
     el?.focus();
   };
+
+  // 扩展的插入请求：同一个 id 只插一次
+  const handledInsert = useRef<number | undefined>(undefined);
+  useEffect(() => {
+    if (insertRequest === undefined || handledInsert.current === insertRequest.id) return;
+    handledInsert.current = insertRequest.id;
+    insert(insertRequest.text);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [insertRequest?.id]);
 
   const togglePicker = (): void => {
     setTrayOpen(false);
