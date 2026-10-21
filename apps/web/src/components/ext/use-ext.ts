@@ -63,7 +63,9 @@ function runtimeFor(client: TrineClient): ExtRuntime {
   client.on('event', (machineId, event) => {
     if (event.type === 'ext.record' || event.type === 'ext.records.response') {
       const key = recordsKey(machineId, event.targetSessionId);
-      rt.records.set(key, mergeRecords(rt.records.get(key), event.type === 'ext.record' ? [event.record] : event.records));
+      // 拉取的结果是 agent 那一刻的全量快照（之后的记录按流内顺序在它后面广播）：直接替换，
+      // 删除 / 清空也能生效；实时推送按 id 合并
+      rt.records.set(key, event.type === 'ext.record' ? mergeRecords(rt.records.get(key), [event.record]) : mergeRecords(undefined, event.records));
       for (const l of rt.listeners) l();
       return;
     }
@@ -72,6 +74,10 @@ function runtimeFor(client: TrineClient): ExtRuntime {
     if (!isNewer(rt.views.get(key), event)) return;
     rt.views.set(key, event);
     for (const l of rt.listeners) l();
+  });
+  // 会话被永久删除：它的记录也不再留在页面内存里
+  client.on('sessionRemoved', (machineId, sessionId) => {
+    if (rt.records.delete(recordsKey(machineId, sessionId))) for (const l of rt.listeners) l();
   });
   runtime = rt;
   return rt;
@@ -204,13 +210,15 @@ export function useExtRead(target: ReadTarget | null, options: { watch?: boolean
 const NO_RECORDS: readonly ExtRecord[] = [];
 
 /**
- * 会话的时间线记录卡（U8）：打开会话时拉一次，机器重新上线（agent 可能重启过）时重拉；
- * 之后靠 agent 广播的 ext.record 追加。agent 不支持时为空数组。
+ * 会话的时间线记录卡（U8）：打开会话时拉一次，机器重新上线（agent 可能重启过）或本页重连
+ * （断线期间的广播可能已过 relay 留存期）时重拉；之后靠 agent 广播的 ext.record 追加。
+ * agent 不支持时为空数组。
  */
 export function useExtRecords(machineId: string, sessionId: string): readonly ExtRecord[] {
   const rt = useRuntimeExt();
   const supported = useTrine((s) => supportsExtRecords(s.machines[machineId]?.info));
   const online = useTrine((s) => s.machines[machineId]?.online === true);
+  const connected = useTrine((s) => s.connection.status === 'open');
   const key = recordsKey(machineId, sessionId);
   const subscribe = useCallback(
     (l: () => void) => {
@@ -222,11 +230,11 @@ export function useExtRecords(machineId: string, sessionId: string): readonly Ex
   );
   const records = useSyncExternalStore(subscribe, () => rt?.records.get(key));
   useEffect(() => {
-    if (rt === null || !supported || !online) return;
+    if (rt === null || !supported || !online || !connected) return;
     rt.client
       .extRequest(machineId, { type: 'ext.records.request', targetSessionId: sessionId } as never, ['ext.records.response'])
       .catch(() => {});
-  }, [rt, machineId, sessionId, supported, online]);
+  }, [rt, machineId, sessionId, supported, online, connected]);
   return supported ? (records ?? NO_RECORDS) : NO_RECORDS;
 }
 

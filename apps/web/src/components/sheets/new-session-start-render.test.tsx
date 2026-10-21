@@ -185,6 +185,23 @@ describe('NewSessionSheet · 从任务开始（U7）', () => {
     expect(calls.order).toEqual(['create']);
   });
 
+  test('选中后扩展不再可用（别处停用）：这一节消失，也不关联、不发送看不到的文字', async () => {
+    const calls = setup();
+    await flush();
+    act(() => $$('ns-start-item')[0]!.click());
+    expect($('ns-prompt')).not.toBeNull();
+    act(() => {
+      store.setState((st) => ({
+        machines: { [MACHINE]: { ...st.machines[MACHINE]!, info: { name: 'MBP' } } } as never,
+      }));
+    });
+    await flush();
+    expect($('ns-start')).toBeNull();
+    await act(async () => $('ns-create')!.click());
+    await flush();
+    expect(calls.order).toEqual(['create']);
+  });
+
   test('关联失败：会话照样建、消息照样发', async () => {
     const calls = setup({ linkOk: false });
     await flush();

@@ -1032,6 +1032,8 @@ export class ExtensionService {
 
   #record(token: TokenRecord, message: string | undefined): void {
     if (this.#records === undefined || token.targetSessionId === undefined) return;
+    // 扩展进程在会话链外跑：期间会话可能已被永久删除（记录已清），不能再写回去
+    if (this.#host.isDeleted(token.targetSessionId)) return;
     try {
       const ext = this.#registry.get(token.ext);
       this.#records.append(token.targetSessionId, {

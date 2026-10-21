@@ -33,6 +33,7 @@ interface Harness {
   created: Parameters<ExtHost['createSession']>[0][];
   prompts: { sid: string; text: string }[];
   sessions: Map<string, SessionMeta>;
+  deleted: Set<string>;
   timers: (() => void)[];
   clock: { now: number };
   /** 进会话链时调（模拟排在前面的命令先生效） */
@@ -93,6 +94,7 @@ async function harness(
     created: [],
     prompts: [],
     sessions: new Map([['s1', meta('s1')]]),
+    deleted: new Set(),
     timers: [],
     clock: { now: 1_000_000 },
   };
@@ -100,7 +102,7 @@ async function harness(
     machine: () => ({ id: 'm1', name: 'mbp' }),
     sessionMeta: async (sid) => h.sessions!.get(sid),
     cachedMeta: (sid) => h.sessions!.get(sid),
-    isDeleted: () => false,
+    isDeleted: (sid) => h.deleted!.has(sid),
     createSession: async (args) => {
       h.created!.push(args);
       h.sessions!.set('new1', meta('new1', { cwd: args.cwd }));
@@ -484,6 +486,19 @@ describe('动作', () => {
       ['linked', 'A'],
       ['unlinked', 'A2'],
     ]);
+  });
+
+  test('时间线记录：invoke 运行期间会话被删除 → 不再写回记录', async () => {
+    const h = await harness({}, { trust: 'full' });
+    h.outputs.set('view', { view: VIEW });
+    h.outputs.set('action', () => {
+      h.deleted.add('s1');
+      return { ok: true };
+    });
+    await read(h);
+    await prepare(h, tokenOf(h, 'archive'));
+    expect(h.last('ext.action.result')).toMatchObject({ ok: true });
+    expect(h.records.of('s1')).toEqual([]);
   });
 
   test('时间线记录：失败的 invoke、工作区面板的 invoke 不记', async () => {

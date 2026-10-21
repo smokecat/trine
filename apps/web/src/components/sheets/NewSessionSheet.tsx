@@ -83,6 +83,15 @@ export function NewSessionSheet({
   const machine = machines[machineId];
   const offline = machine !== undefined && machine.online !== true;
   const startExts = useNewSessionExtensions(machineId);
+  // 选中后扩展被停用 / 移除（别的设备改了设置）：这一节会消失，选择与预填的文字一并作废，
+  // 不能把用户已经看不到的内容发出去
+  const startAvailable = start !== null && !offline && startExts.some((e) => e.id === start.ext);
+  useEffect(() => {
+    if (start !== null && !startAvailable) {
+      setStart(null);
+      setPrompt('');
+    }
+  }, [start, startAvailable]);
 
   // 起点属于某个目录下的数据：换机器 / 换目录就清掉（连同预填的文字）
   const changeStart = (next: NewSessionStart | null): void => {
@@ -149,8 +158,9 @@ export function NewSessionSheet({
         model: model.trim(),
         permissionMode: modeState.value,
       });
-      if (start?.link !== undefined) await linkNewSession(meta.sessionId, start);
-      if (start !== null && prompt.trim() !== '') client.sendInput(machineId, meta.sessionId, prompt.trim());
+      const from = startAvailable ? start : null;
+      if (from?.link !== undefined) await linkNewSession(meta.sessionId, from);
+      if (from !== null && prompt.trim() !== '') client.sendInput(machineId, meta.sessionId, prompt.trim());
       onOpenChange(false);
       navigate(`/s/${machineId}/${meta.sessionId}`);
     } catch (err) {

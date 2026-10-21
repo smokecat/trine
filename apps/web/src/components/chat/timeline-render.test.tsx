@@ -173,6 +173,31 @@ describe('Timeline · 扩展记录卡', () => {
   });
 });
 
+describe('Timeline · 扩展记录卡与时间分隔', () => {
+  test('记录排在后一条消息的时间分隔线之前（跨天时归属前一天）', () => {
+    const day1 = new Date(2026, 9, 20, 23, 50).getTime();
+    const day2 = new Date(2026, 9, 21, 0, 10).getTime();
+    const entries: TimelineEntry[] = [
+      { kind: 'assistant', id: 'a-1', text: '一', done: true, thinking: false, seq: 1, ts: day1 },
+      { kind: 'assistant', id: 'a-2', text: '二', done: true, thinking: false, seq: 2, ts: day2 },
+    ];
+    const records = [{ id: 'r', at: day1 + 5 * 60_000, ext: 'tasks', extName: 'Tasks', kind: 'linked', label: 'X' }];
+    host = document.createElement('div');
+    document.body.appendChild(host);
+    root = createRoot(host);
+    act(() => {
+      root?.render(
+        <Timeline entries={entries} syncing={undefined} deviceId="web-1" now={day2} runningToolId={null} runningElapsedMs={0} handlers={handlers} records={records} />,
+      );
+    });
+    const ids = Array.from(host.querySelectorAll('[data-testid="timeline"] > li')).map((li) => li.getAttribute('data-testid'));
+    const record = ids.indexOf('entry-ext-record');
+    const lastDivider = ids.lastIndexOf('time-divider');
+    expect(record).toBeGreaterThan(-1);
+    expect(record).toBeLessThan(lastDivider);
+  });
+});
+
 describe('Timeline · 自发轮标记', () => {
   test('run.state running 带 detail → 一行「⟳ …，Claude 继续」；不带 detail 的 running 不画', () => {
     const entries: TimelineEntry[] = [

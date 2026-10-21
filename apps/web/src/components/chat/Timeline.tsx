@@ -235,6 +235,8 @@ export function Timeline({
           const marker = markers[i];
           return (
             <Fragment key={`${entry.kind}:${entry.id}`}>
+              {/* 记录比这条条目早：排在它的时间分隔线之前，日期归属才对 */}
+              {placed?.before.get(i)?.map((r) => <ExtRecordNote key={`rec:${r.id}`} record={r} />)}
               {marker !== undefined && (
                 <TimeDivider
                   at={marker.at}
@@ -242,7 +244,6 @@ export function Timeline({
                   day={marker.kind === 'day' ? formatDayLabel(marker.at, now) : undefined}
                 />
               )}
-              {placed?.before.get(i)?.map((r) => <ExtRecordNote key={`rec:${r.id}`} record={r} />)}
               <Entry
                 entry={entry}
                 deviceId={deviceId}

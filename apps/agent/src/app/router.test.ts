@@ -2494,6 +2494,12 @@ describe('Router · 扩展', () => {
     const [r1, r2] = h.byType('ext.records.response') as { reqId: string; targetSessionId: string; records: { label: string }[] }[];
     expect(r1).toMatchObject({ reqId: 'r1', targetSessionId: 'h1', records: [{ kind: 'linked', label: 'A' }] });
     expect(r2).toMatchObject({ reqId: 'r2', records: [] });
+    // 本机已不认得的会话（如回滚到旧版期间删掉的）：回空并清掉残留
+    records.append('ghost', { ext: 'tasks', extName: 'Tasks', kind: 'linked', label: 'G' });
+    await h.router.handle({ type: 'ext.records.request', ...c2a(), reqId: 'r3', targetSessionId: 'ghost' }, phone);
+    await h.router.idle();
+    expect(h.byType('ext.records.response').at(-1)).toMatchObject({ reqId: 'r3', records: [] });
+    expect(records.of('ghost')).toEqual([]);
     expect(h.events.find((e) => e.event.type === 'ext.records.response')!.to).toBe('phone');
 
     await h.router.handle(archive('h1', 'q-arch'), phone);

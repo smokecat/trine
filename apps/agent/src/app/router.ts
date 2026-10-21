@@ -1321,9 +1321,7 @@ export class Router {
       return;
     }
     if (event.type === 'ext.records.request') {
-      const sid = event.targetSessionId;
-      const records = this.#deps.flags.isDeleted(sid) ? [] : (this.#deps.records?.of(sid) ?? []);
-      this.#deps.emitter.emit({ type: 'ext.records.response', reqId: event.reqId, targetSessionId: sid, records }, null, { to: deviceId });
+      await this.#replyRecords(event, deviceId);
       return;
     }
     if (service === undefined) {
@@ -1357,6 +1355,31 @@ export class Router {
     }
   }
 
+  /**
+   * 某会话的时间线记录卡。会话已不存在时回空并清掉残留（例如回滚到旧版期间删掉的会话，
+   * 旧版不认识记录文件、没替我们清）。
+   */
+  async #replyRecords(event: Extract<ClientToAgentEvent, { type: 'ext.records.request' }>, deviceId: string): Promise<void> {
+    const sid = event.targetSessionId;
+    const store = this.#deps.records;
+    let records = store?.of(sid) ?? [];
+    if (records.length > 0 && (this.#deps.flags.isDeleted(sid) || !(await this.#sessionKnown(sid)))) {
+      store?.forget(sid);
+      records = [];
+    }
+    this.#deps.emitter.emit({ type: 'ext.records.response', reqId: event.reqId, targetSessionId: sid, records }, null, { to: deviceId });
+  }
+
+  /** 本机认得这个会话：活跃实例、缓存的 meta、记过参数，或磁盘上有转录 */
+  async #sessionKnown(sid: string): Promise<boolean> {
+    return (
+      this.#deps.manager.has(sid) ||
+      this.#deps.manager.metaOf(sid) !== undefined ||
+      this.#deps.state.sessionParams(sid) !== undefined ||
+      (await this.#deps.manager.sessionInfo(sid).catch(() => undefined)) !== undefined
+    );
+  }
+
   /** 宿主界面上的手动关联：用户本人的操作，不受扩展权限约束（见协议注释） */
   async #updateLinks(event: Extract<ClientToAgentEvent, { type: 'session.links.update' }>, deviceId: string): Promise<void> {
     const reply = (body: Omit<EventBodyOf<'session.links.update.response'>, 'type' | 'reqId'>): void => {
@@ -1374,12 +1397,7 @@ export class Router {
         reply({ ok: false, error: { code: 'not_found', message: '会话已删除' } });
         return;
       }
-      const known =
-        this.#deps.manager.has(sid) ||
-        this.#deps.manager.metaOf(sid) !== undefined ||
-        this.#deps.state.sessionParams(sid) !== undefined ||
-        (await this.#deps.manager.sessionInfo(sid).catch(() => undefined)) !== undefined;
-      if (!known) {
+      if (!(await this.#sessionKnown(sid))) {
         reply({ ok: false, error: { code: 'not_found', message: '找不到会话' } });
         return;
       }
