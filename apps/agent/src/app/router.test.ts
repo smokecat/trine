@@ -2502,7 +2502,7 @@ describe('Router · 扩展', () => {
     await h.router.idle();
     expect(h.created).toHaveLength(1);
     expect(h.created[0]!.args).toMatchObject({ sessionId: created.sessionId, cwd: '/repo', model: 'opus', permissionMode: 'default' });
-    expect(h.created[0]!.sent).toEqual([{ clientMsgId: created.clientMsgId, text: '继续 task-a 任务' }]);
+    expect(h.created[0]!.sent).toEqual([{ clientMsgId: created.clientMsgId!, text: '继续 task-a 任务' }]);
     expect(h.links.of(created.sessionId)).toMatchObject([{ ext: 'tasks', ref: 'task-a' }]);
     expect(h.flags.pendingTitle(created.sessionId)).toBe('接续 task-a');
     const updated = h.byType('session.updated').find(
@@ -2510,7 +2510,7 @@ describe('Router · 扩展', () => {
     ) as { session: { links?: unknown; title: string } };
     expect(updated.session).toMatchObject({ title: '接续 task-a', links: [{ ref: 'task-a' }] });
 
-    const sent = await host.sendPrompt(created.sessionId, '再来一条');
+    const sent = await host.withSession(created.sessionId, (api) => api.send('再来一条'));
     expect(sent.queued).toBe(false);
     expect(h.created[0]!.sent.at(-1)).toEqual({ clientMsgId: sent.clientMsgId, text: '再来一条' });
   });

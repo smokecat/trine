@@ -2,7 +2,7 @@
  * 全局挂一次的扩展弹窗：执行计划确认、关联选择器。状态在 use-ext.ts 的模块级 store，
  * 菜单、面板等任何地方都能打开它们。
  */
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import type { ExtPlan, ExtPlanStep } from '@trine/core';
 import { Button } from '@/components/ui/button.tsx';
@@ -164,8 +164,9 @@ function LinkPickerBody({ request, ext, multiple }: { request: LinkPickerRequest
     return () => clearTimeout(t);
   }, [query]);
   const single = request.sessionIds.length === 1 ? request.sessionIds[0] : undefined;
+  // 批量时用第一个会话作上下文（扩展要知道工作目录才能列出条目）
   const read = useExtRead(
-    { machineId: request.machineId, ext, op: 'pick', point: 'linkPicker', ...(single === undefined ? {} : { targetSessionId: single }) },
+    { machineId: request.machineId, ext, op: 'pick', point: 'linkPicker', targetSessionId: request.sessionIds[0]! },
     { query: debounced },
   );
   const sessions = useTrine((s) => s.sessions[request.machineId]);
@@ -178,6 +179,9 @@ function LinkPickerBody({ request, ext, multiple }: { request: LinkPickerRequest
   const current = checked ?? initial;
   const [saving, setSaving] = useState(false);
   const items = (read.response?.items ?? []).filter((i) => i.link !== undefined);
+  // 搜索过的结果都记住 label：换了搜索词，之前勾选的仍能保存
+  const labels = useRef(new Map<string, string>());
+  for (const i of items) labels.current.set(i.link!.ref, i.link!.label);
 
   const toggle = (ref: string): void => {
     const next = new Set(multiple ? current : []);
@@ -190,10 +194,10 @@ function LinkPickerBody({ request, ext, multiple }: { request: LinkPickerRequest
     if (client === null) return;
     setSaving(true);
     try {
-      const labels = new Map(items.map((i) => [i.link!.ref, i.link!.label]));
-      // 当前结果里看不到的已有关联（被搜索过滤掉）保留，不当作取消
-      const add = [...current].filter((r) => !initial.has(r) && labels.has(r)).map((r) => ({ ref: r, label: labels.get(r)! }));
-      const remove = [...initial].filter((r) => !current.has(r) && labels.has(r));
+      const known = labels.current;
+      const add = [...current].filter((r) => !initial.has(r) && known.has(r)).map((r) => ({ ref: r, label: known.get(r)! }));
+      // 取消勾选的就是要取消的，不管它此刻在不在搜索结果里
+      const remove = [...initial].filter((r) => !current.has(r));
       for (const sid of request.sessionIds) {
         await updateLinks(client, request.machineId, sid, ext, {
           ...(add.length === 0 ? {} : { add }),

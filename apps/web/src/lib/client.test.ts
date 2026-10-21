@@ -975,3 +975,33 @@ describe('client · 斜杠命令补拉（session.commands.request）', () => {
     expect(relayCount(h)).toBe(n + 1);
   });
 });
+
+describe('client · 扩展代发的消息（adoptAgentSentInput）', () => {
+  const localEntry = (h: Awaited<ReturnType<typeof connected>>, sid: string, id: string) =>
+    h.client.timeline('mbp', sid).entries.find((e): e is UserEntry => e.kind === 'user' && e.local && e.id === id);
+  test('会话忙：补一条排队条目，排队回执后可撤回', async () => {
+    const h = await connected();
+    h.sockets.last.emitMessage({ type: 'sync.done', machineId: 'mbp', sessionId: 's1', upTo: 0 });
+    h.client.adoptAgentSentInput('mbp', 's1', 'x1', '继续');
+    expect(localEntry(h, 's1', 'x1')).toMatchObject({ status: 'queued', text: '继续' });
+  });
+
+  test('回显先到：不重复补', async () => {
+    const h = await connected();
+    h.sockets.last.emitMessage({ type: 'sync.done', machineId: 'mbp', sessionId: 's1', upTo: 0 });
+    h.sockets.last.emitMessage(h.a2c({ type: 'user.message', sessionId: 's1', messageId: 'x1', clientMsgId: 'x1', text: '继续' }, 1));
+    h.client.adoptAgentSentInput('mbp', 's1', 'x1', '继续');
+    expect(h.client.timeline('mbp', 's1').entries.filter((e) => e.kind === 'user')).toHaveLength(1);
+  });
+
+  test('取消回执先到：补成「已停止，未发送」而不是永远排队；撤回的不补', async () => {
+    const h = await connected();
+    h.sockets.last.emitMessage({ type: 'sync.done', machineId: 'mbp', sessionId: 's1', upTo: 0 });
+    h.sockets.last.emitMessage(h.a2c({ type: 'input.cancelled', sessionId: 's1', clientMsgId: 'x1', reason: 'stopped' }, 1));
+    h.sockets.last.emitMessage(h.a2c({ type: 'input.cancelled', sessionId: 's1', clientMsgId: 'x2', reason: 'recalled' }, 2));
+    h.client.adoptAgentSentInput('mbp', 's1', 'x1', '一');
+    h.client.adoptAgentSentInput('mbp', 's1', 'x2', '二');
+    expect(localEntry(h, 's1', 'x1')).toMatchObject({ status: 'cancelled', failReason: '已停止，未发送' });
+    expect(localEntry(h, 's1', 'x2')).toBeUndefined();
+  });
+});

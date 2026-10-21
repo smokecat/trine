@@ -102,8 +102,15 @@ export interface ExtHost {
     ext: string;
     links: readonly ExtLinkRef[];
     prompt: string;
-  }): Promise<{ sessionId: string; clientMsgId: string }>;
-  sendPrompt(sessionId: string, text: string): Promise<{ clientMsgId: string; queued: boolean }>;
+  }): Promise<{ sessionId: string; clientMsgId?: string; sendError?: string }>;
+  /**
+   * 在该会话的命令链上执行 fn：前置条件复查与提交在同一环里完成，排在前面的改权限 / 改目录 /
+   * 删除都已生效，排在后面的还没开始。fn 里用 api.send 发消息（不要再排一次链）。
+   */
+  withSession<T>(
+    sessionId: string,
+    fn: (api: { meta(): Promise<SessionMeta | undefined>; send(text: string): Promise<{ clientMsgId: string; queued: boolean }> }) => Promise<T>,
+  ): Promise<T>;
   /** 关联改了：广播该会话的 session.updated */
   broadcastSession(sessionId: string): Promise<void>;
   /** 定向发给一台设备（机器级） */
@@ -112,7 +119,7 @@ export interface ExtHost {
 
 export interface ExtensionServiceDeps {
   registry: ExtensionRegistry;
-  runner: Pick<ExtensionRunner, 'run'>;
+  runner: Pick<ExtensionRunner, 'run'> & { dispose?: () => void };
   links: SessionLinksStore;
   host: ExtHost;
   now?: () => number;
@@ -193,7 +200,7 @@ class ExtFailure extends Error {
 
 export class ExtensionService {
   readonly #registry: ExtensionRegistry;
-  readonly #runner: Pick<ExtensionRunner, 'run'>;
+  readonly #runner: Pick<ExtensionRunner, 'run'> & { dispose?: () => void };
   readonly #links: SessionLinksStore;
   readonly #host: ExtHost;
   readonly #now: () => number;
@@ -210,8 +217,10 @@ export class ExtensionService {
   readonly #epoch = new Map<string, number>();
   readonly #leases = new Map<string, Lease>();
   readonly #dirty = new Set<string>();
+  #disposed = false;
   #refreshTimer: unknown = undefined;
-  #rev = 0;
+  /** 读取结果的 rev：从启动时刻起算，agent 重启后也不会比旧进程发出的小 */
+  #rev: number;
 
   constructor(deps: ExtensionServiceDeps) {
     this.#registry = deps.registry;
@@ -229,6 +238,7 @@ export class ExtensionService {
         return t;
       });
     this.#clearTimer = deps.clearTimer ?? ((h) => clearTimeout(h as ReturnType<typeof setTimeout>));
+    this.#rev = this.#now() * 1_000;
   }
 
   /** 测试用 */
@@ -289,7 +299,10 @@ export class ExtensionService {
   /** 会话一轮结束：目标是该会话或其 cwd 的订阅标脏 */
   onRunEnd(sessionId: string): void {
     const cwd = this.#host.cachedMeta(sessionId)?.cwd;
-    this.#markDirty((lease) => lease.read.targetSessionId === sessionId || (cwd !== undefined && lease.read.cwd === cwd));
+    const match = (lease: Lease): boolean => lease.read.targetSessionId === sessionId || (cwd !== undefined && lease.read.cwd === cwd);
+    // 这一轮可能改了扩展读的文件：相关扩展的缓存作废，推送的才是新内容（同一轮的多个订阅仍只跑一次）
+    for (const ext of new Set([...this.#leases.values()].filter(match).map((l) => l.read.ext))) this.#bumpEpoch(ext);
+    this.#markDirty(match);
   }
 
   /** 宿主的「关联…」改了关联（session.links.update）：相关视图要重算 */
@@ -299,6 +312,8 @@ export class ExtensionService {
   }
 
   dispose(): void {
+    this.#disposed = true;
+    this.#runner.dispose?.();
     if (this.#refreshTimer !== undefined) this.#clearTimer(this.#refreshTimer);
     this.#refreshTimer = undefined;
     this.#leases.clear();
@@ -335,6 +350,8 @@ export class ExtensionService {
       ...(event.targetSessionId === undefined ? {} : { targetSessionId: event.targetSessionId }),
       ...(event.cwd === undefined ? {} : { cwd: event.cwd }),
     };
+    // rev 在开始时分配：动作前启动、动作后才完成的旧读取拿到的是更小的 rev，client 会丢掉它
+    const rev = ++this.#rev;
     try {
       const ext = this.#usable(event.ext);
       checkPoint(ext, event.op, event.point);
@@ -359,7 +376,6 @@ export class ExtensionService {
         if (this.#epochOf(ext.id) === epoch) this.#cache.set(key, { at: this.#now(), output });
         this.#pruneCache();
       }
-      const rev = ++this.#rev;
       const target = { ext, deviceId, point: event.point, targetSessionId: event.targetSessionId, cwd };
       switch (event.op) {
         case 'view': {
@@ -385,7 +401,7 @@ export class ExtensionService {
       if (error.code !== 'disabled' && error.code !== 'not_found' && error.code !== 'unsupported') {
         this.#registry.noteError(event.ext, `${event.op}/${event.point}：${error.message}`);
       }
-      return { ...base, rev: ++this.#rev, ok: false, error };
+      return { ...base, rev, ok: false, error };
     }
   }
 
@@ -709,7 +725,10 @@ export class ExtensionService {
     ext: LoadedExtension,
     newSession: PlanRecord['newSession'],
   ): Promise<void> {
+    this.#assertCurrent(token);
     const { cwd, context } = await this.#context(ext, token.targetSessionId, token.cwd);
+    // 会话换了目录：扩展会在别的数据上执行，不跑
+    if (cwd !== token.cwd) throw new ExtFailure('stale', '会话的工作目录已变化，请刷新后重试');
     const output = await this.#runOp(
       ext,
       'action',
@@ -726,6 +745,8 @@ export class ExtensionService {
     );
     // 扩展可能改了自己的数据：相关缓存全部作废
     this.#bumpEpoch(ext.id);
+    // 进程跑的这段时间里扩展被停用 / 改了权限：返回的效果不再执行
+    this.#assertCurrent(token);
     this.#markDirty((lease) => lease.read.ext === ext.id);
     const parsed = ExtActionOutputSchema.parse(output);
     if (!parsed.ok) throw new ExtFailure('extension_error', parsed.message ?? '扩展报告操作失败');
@@ -770,11 +791,16 @@ export class ExtensionService {
   ): Promise<void> {
     let needsConfirm = extra.extraConfirm && steps.length > 0;
     for (const step of steps) {
+      const capabilities: ExtCapability[] = [];
       const capability = capabilityOf(step.effect.type as ExtEffect['type']);
-      if (capability === undefined) continue;
-      const decision = this.#registry.decide(ext.id, capability);
-      if (decision === 'deny') throw new ExtFailure('denied', `扩展没有 ${capability} 权限`);
-      if (decision === 'confirm') needsConfirm = true;
+      if (capability !== undefined) capabilities.push(capability);
+      // 新会话顺带的关联同样要 links.write
+      if (step.effect.type === 'session.create' && (step.effect.links?.length ?? 0) > 0) capabilities.push('links.write');
+      for (const cap of capabilities) {
+        const decision = this.#registry.decide(ext.id, cap);
+        if (decision === 'deny') throw new ExtFailure('denied', `扩展没有 ${cap} 权限`);
+        if (decision === 'confirm') needsConfirm = true;
+      }
     }
     if (needsConfirm) {
       this.#issuePlan(deviceId, reqId, invocationId, token, ext, steps, extra);
@@ -866,12 +892,20 @@ export class ExtensionService {
         }
         case 'links.add': {
           const meta = await needTarget();
-          steps.push({ effect, view: { type: 'links.add', targetSessionId: meta.sessionId, links: effect.links } });
+          steps.push({
+            effect,
+            view: { type: 'links.add', targetSessionId: meta.sessionId, links: effect.links },
+            expectSession: { sessionId: meta.sessionId, cwd: meta.cwd, permissionMode: meta.permissionMode },
+          });
           break;
         }
         case 'links.remove': {
           const meta = await needTarget();
-          steps.push({ effect, view: { type: 'links.remove', targetSessionId: meta.sessionId, refs: effect.refs } });
+          steps.push({
+            effect,
+            view: { type: 'links.remove', targetSessionId: meta.sessionId, refs: effect.refs },
+            expectSession: { sessionId: meta.sessionId, cwd: meta.cwd, permissionMode: meta.permissionMode },
+          });
           break;
         }
       }
@@ -899,11 +933,14 @@ export class ExtensionService {
   ): Promise<Omit<ResultBody, 'reqId' | 'type' | 'invocationId'>> {
     const result: Omit<ResultBody, 'reqId' | 'type' | 'invocationId'> = { ok: true };
     const touched = new Set<string>();
+    let warning: string | undefined;
+    this.#assertCurrent(token);
     for (const step of steps) {
       const effect = step.effect;
       switch (effect.type) {
         case 'session.create': {
           const view = step.view as Extract<ExtPlanStep, { type: 'session.create' }>;
+          this.#assertCurrent(token);
           const created = await this.#host.createSession({
             cwd: view.cwd,
             model: view.model,
@@ -914,24 +951,31 @@ export class ExtensionService {
             prompt: view.prompt,
           });
           result.createdSessionId = created.sessionId;
+          if (created.sendError !== undefined) warning = `会话已建好，但接续消息没有发出去（${created.sendError}），请在新会话里重发`;
           break;
         }
         case 'prompt.send': {
           const view = step.view as Extract<ExtPlanStep, { type: 'prompt.send' }>;
-          const sent = await this.#host.sendPrompt(view.targetSessionId, view.text);
+          const sent = await this.#host.withSession(view.targetSessionId, async (api) => {
+            await this.#verifyInChain(token, step, api);
+            return api.send(view.text);
+          });
           result.sent = { targetSessionId: view.targetSessionId, clientMsgId: sent.clientMsgId, text: view.text, queued: sent.queued };
           break;
         }
         case 'links.add':
         case 'links.remove': {
           const sid = token.targetSessionId!;
-          const changed = await this.#links.update(
-            sid,
-            token.ext,
-            effect.type === 'links.add' ? effect.links : [],
-            effect.type === 'links.remove' ? effect.refs : [],
-            this.#now(),
-          );
+          const changed = await this.#host.withSession(sid, async (api) => {
+            await this.#verifyInChain(token, step, api);
+            return this.#links.update(
+              sid,
+              token.ext,
+              effect.type === 'links.add' ? effect.links : [],
+              effect.type === 'links.remove' ? effect.refs : [],
+              this.#now(),
+            );
+          });
           if (changed) touched.add(sid);
           break;
         }
@@ -945,8 +989,30 @@ export class ExtensionService {
     if (extra.local.length > 0) result.local = extra.local;
     if (extra.view !== undefined) result.view = extra.view;
     if (extra.viewRev !== undefined) result.viewRev = extra.viewRev;
-    if (extra.message !== undefined) result.message = extra.message;
+    const message = [extra.message, warning].filter((m): m is string => m !== undefined).join('；');
+    if (message !== '') result.message = message;
     return result;
+  }
+
+  /** 扩展仍可用、代次没变（停用 / 改权限 / reload 后在途的动作不再提交） */
+  #assertCurrent(token: TokenRecord): void {
+    if (this.#disposed) throw new ExtFailure('stale', 'agent 正在退出');
+    const ext = this.#registry.get(token.ext);
+    if (ext === undefined || !ext.enabled || ext.manifest === undefined || ext.generation !== token.generation) {
+      throw new ExtFailure('stale', '扩展已变更，请重新操作');
+    }
+  }
+
+  /** 会话链上的复查：会话还在、目录与权限模式与确认时一致、扩展没变 */
+  async #verifyInChain(token: TokenRecord, step: ResolvedStep, api: { meta(): Promise<SessionMeta | undefined> }): Promise<void> {
+    this.#assertCurrent(token);
+    const expect = step.expectSession;
+    if (expect === undefined) return;
+    const meta = await api.meta();
+    if (meta === undefined) throw new ExtFailure('stale', '会话已不存在');
+    if (meta.cwd !== expect.cwd || meta.permissionMode !== expect.permissionMode) {
+      throw new ExtFailure('stale', '会话的工作目录或权限模式已变化，请重新确认');
+    }
   }
 
   #finish(invocationId: string, result: Omit<ResultBody, 'reqId' | 'type' | 'invocationId'>): void {

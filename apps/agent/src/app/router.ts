@@ -1406,53 +1406,61 @@ export class Router {
       },
       createSession: async (args) => {
         // 建会话占机器链（与 session.create 串行，名额判断才可靠）
-        let sessionId = '';
-        let failure: unknown;
-        await this.#enqueue(MACHINE_CHAIN, async () => {
-          try {
-            sessionId = await this.#createSession(args.cwd, args.model, args.permissionMode);
-            if (args.title !== undefined && args.title.trim() !== '') {
-              await deps.flags.setPendingTitle(sessionId, args.title.trim().slice(0, 200), this.#now()).catch(() => {});
-            }
-            if (args.links.length > 0) await deps.links?.update(sessionId, args.ext, args.links, [], this.#now());
-            await this.#broadcastSession(sessionId);
-          } catch (err) {
-            failure = err;
+        const sessionId = await this.#onChain(MACHINE_CHAIN, async () => {
+          const sid = await this.#createSession(args.cwd, args.model, args.permissionMode);
+          if (args.title !== undefined && args.title.trim() !== '') {
+            await deps.flags.setPendingTitle(sid, args.title.trim().slice(0, 200), this.#now()).catch(() => {});
           }
+          if (args.links.length > 0) await deps.links?.update(sid, args.ext, args.links, [], this.#now());
+          await this.#broadcastSession(sid);
+          return sid;
         });
-        if (failure !== undefined) throw failure;
-        // 会话已建好：首条消息发送失败也保留会话（用户可在新会话里重发），不重新创建
-        const sent = await this.#sendPrompt(sessionId, args.prompt).catch((err: unknown) => {
+        // 会话已建好：首条消息发送失败也保留会话（用户可在新会话里重发），不重新创建，失败原因交回调用方
+        try {
+          const sent = await this.#onChain(sessionId, () => this.#sendNow(sessionId, args.prompt));
+          return { sessionId, clientMsgId: sent.clientMsgId };
+        } catch (err) {
           this.#log(`[router] 扩展新建会话的首条消息发送失败 session=${sessionId}: ${String(err)}`);
-          return { clientMsgId: '' };
-        });
-        return { sessionId, clientMsgId: sent.clientMsgId };
+          return { sessionId, sendError: err instanceof Error ? err.message : String(err) };
+        }
       },
-      sendPrompt: (sid, text) => this.#sendPrompt(sid, text),
+      // 在会话链上执行：前置条件复查与提交在同一环里，排在它前面的改权限 / 改目录 / 删除都已生效
+      withSession: (sid, fn) =>
+        this.#onChain(sid, () =>
+          fn({
+            meta: async () => (deps.flags.isDeleted(sid) ? undefined : deps.manager.snapshot(sid).catch(() => undefined)),
+            send: (text) => this.#sendNow(sid, text),
+          }),
+        ),
     };
   }
 
-  /** 代发一条消息：挂会话链，走与 input.send 相同的路径 */
-  async #sendPrompt(sessionId: string, text: string): Promise<{ clientMsgId: string; queued: boolean }> {
-    const clientMsgId = randomUUID();
-    let result: { clientMsgId: string; queued: boolean } | undefined;
+  /** 把一个有返回值的任务挂到命令链上，失败原样抛给调用方（不走链的 error.fatal 兜底） */
+  async #onChain<T>(key: string, task: () => Promise<T>): Promise<T> {
+    let result: { value: T } | undefined;
     let failure: unknown;
-    await this.#enqueue(sessionId, async () => {
+    await this.#enqueue(key, async () => {
       try {
-        if (this.#deps.flags.isDeleted(sessionId)) throw new Error('会话已删除');
-        const session = await this.resolveSession(sessionId);
-        if (session === undefined) throw new Error('无法打开这个会话（会话不存在，或活跃会话已达上限）');
-        const queued = session.state === 'running' || session.state === 'waiting_permission';
-        session.send(clientMsgId, text);
-        this.#deps.state.updateSession(sessionId, { started: true });
-        if (this.#deps.flags.pendingTitle(sessionId) !== undefined) await this.#mutations.flushPendingTitle(sessionId);
-        result = { clientMsgId, queued };
+        result = { value: await task() };
       } catch (err) {
         failure = err;
       }
     });
     if (result === undefined) throw failure instanceof Error ? failure : new Error(String(failure));
-    return result;
+    return result.value;
+  }
+
+  /** 代发一条消息（调用方已在该会话链上）：与 input.send 相同的路径 */
+  async #sendNow(sessionId: string, text: string): Promise<{ clientMsgId: string; queued: boolean }> {
+    if (this.#deps.flags.isDeleted(sessionId)) throw new Error('会话已删除');
+    const session = await this.resolveSession(sessionId);
+    if (session === undefined) throw new Error('无法打开这个会话（会话不存在，或活跃会话已达上限）');
+    const clientMsgId = randomUUID();
+    const queued = session.state === 'running' || session.state === 'waiting_permission';
+    session.send(clientMsgId, text);
+    this.#deps.state.updateSession(sessionId, { started: true });
+    if (this.#deps.flags.pendingTitle(sessionId) !== undefined) await this.#mutations.flushPendingTitle(sessionId);
+    return { clientMsgId, queued };
   }
 
   /** 跑 claude update 并回机器级应答（广播：别的设备按 reqId 对不上会忽略） */

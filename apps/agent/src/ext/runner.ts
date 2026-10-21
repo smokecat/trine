@@ -48,7 +48,7 @@ export interface RunRequest {
 /** 执行一个进程（不排队）。导出给 `trine-agent ext test` 直接用 */
 export async function runProcess(
   request: Omit<RunRequest, 'ext' | 'priority'>,
-  options: { env?: NodeJS.ProcessEnv; now?: () => number; killGraceMs?: number } = {},
+  options: { env?: NodeJS.ProcessEnv; now?: () => number; killGraceMs?: number; signal?: AbortSignal } = {},
 ): Promise<RunResult> {
   const now = options.now ?? (() => Date.now());
   const started = now();
@@ -105,6 +105,10 @@ export async function runProcess(
 
     const timer = setTimeout(() => fail('timeout', `扩展超过 ${request.timeoutMs}ms 没有返回`), request.timeoutMs);
     timer.unref?.();
+    // agent 退出：杀掉整组，不留下继续运行的扩展进程
+    const onAbort = (): void => fail('io', 'agent 正在退出');
+    if (options.signal?.aborted === true) onAbort();
+    else options.signal?.addEventListener('abort', onAbort, { once: true });
 
     child.stdout?.on('data', (chunk: Buffer) => {
       if (failure !== undefined) return;
@@ -126,6 +130,7 @@ export async function runProcess(
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      options.signal?.removeEventListener('abort', onAbort);
       // 主进程退了，组里可能还有它起的子进程：收拾掉
       if (child.pid !== undefined) signalGroup(child.pid, 'SIGKILL');
       if (killTimer !== undefined) clearTimeout(killTimer);
@@ -186,13 +191,25 @@ export class ExtensionRunner {
   readonly #running = new Map<string, number>();
   #globalRunning = 0;
   readonly #queue: Waiter[] = [];
+  readonly #abort = new AbortController();
 
   constructor(options: { run?: typeof runProcess; now?: () => number } = {}) {
     this.#run = options.run ?? runProcess;
     this.#now = options.now ?? (() => Date.now());
   }
 
+  /** agent 退出：杀掉在跑的进程组，排队的全部以 busy 结束 */
+  dispose(): void {
+    this.#abort.abort();
+    for (const waiter of this.#queue.splice(0)) {
+      waiter.resolve({ ok: false, code: 'busy', message: 'agent 正在退出', stderr: '', durationMs: 0 });
+    }
+  }
+
   run(request: RunRequest): Promise<RunResult> {
+    if (this.#abort.signal.aborted) {
+      return Promise.resolve({ ok: false, code: 'busy', message: 'agent 正在退出', stderr: '', durationMs: 0 });
+    }
     const queued = this.#queue.filter((w) => w.request.ext === request.ext).length;
     if (queued >= PER_EXT_QUEUE) {
       return Promise.resolve({ ok: false, code: 'busy', message: '扩展请求排队过多，请稍后再试', stderr: '', durationMs: 0 });
@@ -208,6 +225,9 @@ export class ExtensionRunner {
         this.#queue.push(waiter);
       }
       this.#pump();
+      // 排队期限要有人来检查：没有新请求进来时也按时报 busy
+      const deadline = setTimeout(() => this.#pump(), QUEUE_DEADLINE_MS + 1);
+      (deadline as { unref?: () => void }).unref?.();
     });
   }
 
@@ -229,7 +249,7 @@ export class ExtensionRunner {
       this.#globalRunning++;
       this.#running.set(ext, (this.#running.get(ext) ?? 0) + 1);
       const { ext: _ext, priority: _priority, ...processRequest } = waiter.request;
-      void this.#run(processRequest)
+      void this.#run(processRequest, { signal: this.#abort.signal })
         .catch((err: unknown): RunResult => ({
           ok: false,
           code: 'io',

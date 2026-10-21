@@ -2,8 +2,8 @@
  * 扩展的 React 胶水：目录、读取（含订阅续租）、动作执行、全局弹窗（确认 / 关联选择器）的状态。
  * 规则在 lib/ext-model.ts；这里只管 client 引用、页面可见性与组件生命周期。
  */
-import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
-import { useNavigate } from 'react-router';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useLocation, useNavigate } from 'react-router';
 import { toast } from 'sonner';
 import type { ExtCatalogItem, ExtLocalEffect, ExtPlan, ExtPoint } from '@trine/core';
 import { useClient, useTrine } from '@/app/runtime.ts';
@@ -126,6 +126,8 @@ export function useExtRead(target: ReadTarget | null, options: { watch?: boolean
   const visible = usePageVisible();
   const watch = options.watch === true && visible;
   const query = options.query;
+  // agent 重启 / 扩展变更时 rev 会变：重新读取、重建订阅（旧进程的订阅随进程没了）
+  const catalogRev = useTrine((s) => (target === null ? undefined : s.machines[target.machineId]?.info?.extensions?.rev));
 
   const send = useCallback(
     (extra: { force?: boolean; watchTtl?: number }) => {
@@ -180,7 +182,7 @@ export function useExtRead(target: ReadTarget | null, options: { watch?: boolean
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key, watch, send]);
+  }, [key, watch, send, catalogRev]);
 
   const refresh = useCallback(() => void send({ force: true }), [send]);
   return { response, loading, failure, refresh };
@@ -271,6 +273,10 @@ export interface ActionContext {
 export function useExtAction(): (action: { local?: readonly ExtLocalEffect[]; token?: string; label: string }, ctx: ActionContext) => Promise<void> {
   const client = useClient();
   const navigate = useNavigate();
+  const location = useLocation();
+  // 结果回来时用户可能已经离开发起的页面：迟到的跳转 / 插入不能作用到别的页面
+  const pathRef = useRef(location.pathname);
+  pathRef.current = location.pathname;
   const model = useTrine((s) => s.prefs.defaultModel);
   const permissionMode = useTrine((s) => s.prefs.defaultPermissionMode);
   const newSession = useMemo(() => ({ model, permissionMode }), [model, permissionMode]);
@@ -278,16 +284,23 @@ export function useExtAction(): (action: { local?: readonly ExtLocalEffect[]; to
   return useCallback(
     async (action, ctx) => {
       if (client === null) return;
-      const handlers = {
-        insert: (text: string) => {
-          if (ctx.insert !== undefined) ctx.insert(text);
-          else void copyWithToast(text);
-        },
-        copy: copyWithToast,
-        refresh: ctx.refresh,
+      const origin = pathRef.current;
+      const stillHere = (): boolean => pathRef.current === origin;
+      const apply = async (effects: readonly ExtLocalEffect[]): Promise<void> => {
+        // 同一个动作的多段插入合成一次（逐段插入会被 React 合批成只剩最后一段）
+        const inserts: string[] = [];
+        await applyLocalEffects(effects, {
+          insert: (text) => inserts.push(text),
+          copy: copyWithToast,
+          refresh: ctx.refresh,
+        });
+        if (inserts.length === 0) return;
+        const text = inserts.join('\n');
+        if (ctx.insert !== undefined && stillHere()) ctx.insert(text);
+        else void copyWithToast(text);
       };
       if (action.local !== undefined && action.token === undefined) {
-        await applyLocalEffects(action.local, handlers);
+        await apply(action.local);
         return;
       }
       if (action.token === undefined) return;
@@ -322,11 +335,13 @@ export function useExtAction(): (action: { local?: readonly ExtLocalEffect[]; to
       if (result.sent?.queued === true) {
         client.adoptAgentSentInput(ctx.machineId, result.sent.targetSessionId, result.sent.clientMsgId, result.sent.text);
       }
-      if (result.local !== undefined) await applyLocalEffects(result.local, handlers);
+      if (result.local !== undefined) await apply(result.local);
       if (result.message !== undefined) toast.success(result.message);
       ctx.refresh();
       if (result.createdSessionId !== undefined) {
-        navigate(`/s/${encodeURIComponent(ctx.machineId)}/${encodeURIComponent(result.createdSessionId)}`);
+        const path = `/s/${encodeURIComponent(ctx.machineId)}/${encodeURIComponent(result.createdSessionId)}`;
+        if (stillHere()) navigate(path);
+        else toast.success('新会话已建好', { action: { label: '打开', onClick: () => navigate(path) } });
       }
     },
     [client, navigate, newSession],

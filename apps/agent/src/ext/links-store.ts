@@ -27,6 +27,7 @@ export class LinkLimitError extends Error {
 export class SessionLinksStore {
   #data: LinksFile;
   readonly #writer: SerialWriter;
+  #updates: Promise<unknown> = Promise.resolve();
   /** 每次改动 +1：读取缓存键用（关联变了，扩展视图就该重算） */
   #rev = 0;
 
@@ -69,7 +70,14 @@ export class SessionLinksStore {
    * 增删一个扩展在某会话下的关联。add 里已存在的 (ext, ref) 只更新 label。
    * @returns 是否有改动
    */
-  async update(sessionId: string, ext: string, add: readonly ExtLinkRef[], remove: readonly string[], at: number): Promise<boolean> {
+  update(sessionId: string, ext: string, add: readonly ExtLinkRef[], remove: readonly string[], at: number): Promise<boolean> {
+    // 串行：写盘失败时回滚到「本次之前」，中间不能夹着别的更新，否则回滚会吞掉它
+    const next = this.#updates.catch(() => {}).then(() => this.#update(sessionId, ext, add, remove, at));
+    this.#updates = next;
+    return next;
+  }
+
+  async #update(sessionId: string, ext: string, add: readonly ExtLinkRef[], remove: readonly string[], at: number): Promise<boolean> {
     const before = own(this.#data.links, sessionId);
     const next = (before ?? []).map((l) => ({ ...l }));
     let changed = false;

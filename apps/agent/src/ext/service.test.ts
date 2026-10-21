@@ -33,6 +33,8 @@ interface Harness {
   sessions: Map<string, SessionMeta>;
   timers: (() => void)[];
   clock: { now: number };
+  /** 进会话链时调（模拟排在前面的命令先生效） */
+  chainHook?: (sid: string) => void;
   last<T extends EventBody['type']>(type: T): Extract<EventBody, { type: T }>;
 }
 
@@ -100,9 +102,15 @@ async function harness(
       h.sessions!.set('new1', meta('new1', { cwd: args.cwd }));
       return { sessionId: 'new1', clientMsgId: 'c-new' };
     },
-    sendPrompt: async (sid, text) => {
-      h.prompts!.push({ sid, text });
-      return { clientMsgId: 'c1', queued: h.sessions!.get(sid)?.state === 'running' };
+    withSession: async (sid, fn) => {
+      h.chainHook?.(sid);
+      return fn({
+        meta: async () => h.sessions!.get(sid),
+        send: async (text) => {
+          h.prompts!.push({ sid, text });
+          return { clientMsgId: 'c1', queued: h.sessions!.get(sid)?.state === 'running' };
+        },
+      });
     },
     broadcastSession: async () => {},
     emitTo: (to, body) => h.sent!.push({ to, body }),
@@ -116,7 +124,7 @@ async function harness(
       run: async (req): Promise<RunResult> => {
         h.runs!.push({ op: req.op, input: req.input });
         const out = h.outputs!.get(req.op);
-        const value = typeof out === 'function' ? (out as (r: unknown) => unknown)(req) : out;
+        const value = await (typeof out === 'function' ? (out as (r: unknown) => unknown)(req) : out);
         if (value instanceof Error) return { ok: false, code: 'timeout', message: value.message, stderr: '', durationMs: 1 };
         return { ok: true, output: value, stderr: '', durationMs: 1 };
       },
@@ -456,5 +464,113 @@ describe('订阅', () => {
     await read(h, 'd1', { watch: { ttlMs: 0 } });
     expect(h.service.watchCount).toBe(0);
     expect(REFRESH_DEBOUNCE_MS).toBe(1_000);
+  });
+});
+
+describe('评审回归（Codex 代码 review）', () => {
+  test('前置条件在会话链里复查：排在前面的改权限生效后才判断，不按旧权限发送', async () => {
+    const h = await harness();
+    h.outputs.set('view', { view: VIEW });
+    await read(h);
+    await prepare(h, tokenOf(h, 'resume-here'));
+    const plan = h.last('ext.action.plan');
+    // commit 前的快查看到的还是旧值；进链时前面排着的改权限才落地
+    h.chainHook = () => h.sessions.set('s1', meta('s1', { permissionMode: 'bypassPermissions' }));
+    await commit(h, plan.planId);
+    expect(h.last('ext.action.result')).toMatchObject({ ok: false, error: { code: 'stale' } });
+    expect(h.prompts).toEqual([]);
+  });
+
+  test('links 步骤：确认期间会话被删 → stale，不写关联', async () => {
+    const h = await harness({}, { trust: 'custom', capabilities: { 'links.write': 'confirm' } });
+    h.outputs.set('pick', { items: [{ id: 'a', title: 'A', effects: [{ type: 'links.add', links: [{ ref: 'a', label: 'A' }] }] }] });
+    await read(h, 'd1', { op: 'pick', point: 'linkPicker' });
+    await prepare(h, h.last('ext.read.response').items![0]!.token!);
+    const plan = h.last('ext.action.plan');
+    h.chainHook = () => h.sessions.delete('s1');
+    await commit(h, plan.planId);
+    expect(h.last('ext.action.result')).toMatchObject({ ok: false, error: { code: 'stale' } });
+    expect(h.links.of('s1')).toBeUndefined();
+  });
+
+  test('invoke：确认后会话换了目录 → 不起扩展进程', async () => {
+    const h = await harness();
+    h.outputs.set('view', { view: VIEW });
+    h.outputs.set('action', { ok: true });
+    await read(h);
+    await prepare(h, tokenOf(h, 'archive'));
+    const plan = h.last('ext.action.plan');
+    h.sessions.set('s1', meta('s1', { cwd: '/elsewhere' }));
+    await commit(h, plan.planId);
+    expect(h.last('ext.action.result')).toMatchObject({ ok: false, error: { code: 'stale' } });
+    expect(h.runs.filter((r) => r.op === 'action')).toHaveLength(0);
+  });
+
+  test('invoke 执行期间扩展被停用：返回的效果不再执行', async () => {
+    const h = await harness({}, { trust: 'full' });
+    const view: ExtRawView = { sections: [{ id: 's', items: [{ id: 'i', title: 'x', actions: [{ id: 'go', label: 'go', invoke: {} }] }] }] };
+    h.outputs.set('view', { view });
+    h.outputs.set('action', async () => {
+      // 进程运行期间用户在另一台设备上停用了扩展
+      await h.registry.setConfig('tasks', { enabled: false });
+      return { effects: [{ type: 'prompt.send', text: '不该发出' }] };
+    });
+    await read(h);
+    await prepare(h, tokenOf(h, 'go'));
+    await Bun.sleep(0);
+    expect(h.last('ext.action.result')).toMatchObject({ ok: false, error: { code: 'stale' } });
+    expect(h.prompts).toEqual([]);
+  });
+
+  test('dispose 之后的动作不执行', async () => {
+    const h = await harness({}, { trust: 'full' });
+    h.outputs.set('view', { view: VIEW });
+    await read(h);
+    const token = tokenOf(h, 'resume-here');
+    h.service.dispose();
+    await prepare(h, token);
+    expect(h.prompts).toEqual([]);
+  });
+
+  test('session.create 带关联需要 links.write：没声明 → 拒绝', async () => {
+    const h = await harness({ capabilities: ['session.create'] }, { trust: 'full' });
+    h.outputs.set('view', { view: VIEW });
+    await read(h);
+    await prepare(h, tokenOf(h, 'resume-new'));
+    expect(h.last('ext.action.result')).toMatchObject({ ok: false, error: { code: 'denied' } });
+    expect(h.created).toEqual([]);
+  });
+
+  test('rev 在读取开始时分配：先开始、后完成的旧读取 rev 更小', async () => {
+    const h = await harness();
+    let release!: () => void;
+    let first = true;
+    h.outputs.set('view', () => {
+      if (!first) return { view: { sections: [] } };
+      first = false;
+      return new Promise((resolve) => {
+        release = () => resolve({ view: VIEW });
+      });
+    });
+    // runner 桩里的返回值可以是 Promise：包一层
+    const slow = read(h, 'd1', { reqId: 'slow' });
+    await Bun.sleep(0);
+    await read(h, 'd1', { reqId: 'fast', force: true });
+    release();
+    await slow;
+    const byReq = (id: string) => h.sent.map((s) => s.body).find((b) => b.type === 'ext.read.response' && b.reqId === id) as { rev: number };
+    expect(byReq('slow').rev).toBeLessThan(byReq('fast').rev);
+  });
+
+  test('一轮结束推送跑新进程，不复用缓存', async () => {
+    const h = await harness();
+    h.outputs.set('view', { view: VIEW });
+    await read(h, 'd1', { watch: { ttlMs: 60_000 } });
+    expect(h.runs).toHaveLength(1);
+    h.service.onRunEnd('s1');
+    h.timers.shift()!();
+    await Bun.sleep(0);
+    await Bun.sleep(0);
+    expect(h.runs).toHaveLength(2);
   });
 });

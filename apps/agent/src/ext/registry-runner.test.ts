@@ -272,3 +272,11 @@ describe('SessionLinksStore', () => {
     expect(({} as Record<string, unknown>).ext).toBeUndefined();
   });
 });
+
+describe('评审回归：解释器后的脚本路径', () => {
+  test('["sh", "bin/run"]：存在于扩展目录的相对参数按扩展目录解析', async () => {
+    const dir = await makeExtension('interp', 'echo {}', { entry: ['sh', 'bin/run', 'view-flag'] });
+    const inspected = await inspectExtensionDir(dir, (cmd) => (cmd === 'sh' ? '/bin/sh' : null));
+    expect(inspected.argv).toEqual(['/bin/sh', join(inspected.dir, 'bin', 'run'), 'view-flag']);
+  });
+});

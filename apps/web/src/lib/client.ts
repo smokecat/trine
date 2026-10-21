@@ -257,6 +257,8 @@ export class TrineClient {
   readonly #openSessions = new Set<string>();
   /** 撤回乐观态的结算定时器，每个会话至多一个（评审 C-2） */
   readonly #recallTimers = new Map<string, unknown>();
+  /** 没有本地条目的 input.cancelled（key = machine\nsession\nclientMsgId → reason），见 adoptAgentSentInput */
+  readonly #orphanCancels = new Map<string, string>();
   readonly #pending = new Map<string, PendingRequest>();
   /** 进行中的历史拉取（timelineKey → promise），同一会话同时只一发 */
   readonly #historyInflight = new Map<string, Promise<void>>();
@@ -671,6 +673,11 @@ export class TrineClient {
       // 为编辑而撤回的：条目随这帧删除，删之前取文本放回输入框
       const restore =
         event.type === 'input.cancelled' && event.reason === 'recalled' ? this.#editableText(machineId, sessionId, event.clientMsgId, true) : undefined;
+      if (event.type === 'input.cancelled' && !this.timeline(machineId, sessionId).entries.some((e) => e.kind === 'user' && e.local && e.id === event.clientMsgId)) {
+        // 没有本地条目的取消回执：可能是扩展代发、动作结果还没到的那条（见 adoptAgentSentInput）
+        this.#orphanCancels.set(`${machineId}\n${sessionId}\n${event.clientMsgId}`, event.reason);
+        if (this.#orphanCancels.size > 100) this.#orphanCancels.delete(this.#orphanCancels.keys().next().value!);
+      }
       this.#updateTimeline(machineId, sessionId, (tl) => applyEvent(tl, event));
       if (restore !== undefined) this.#emit('restoreDraft', machineId, sessionId, restore);
       if (event.type === 'run.state') {
@@ -1747,9 +1754,17 @@ export class TrineClient {
   adoptAgentSentInput(machineId: string, sessionId: string, clientMsgId: string, text: string): void {
     const exists = this.timeline(machineId, sessionId).entries.some((e) => e.kind === 'user' && e.id === clientMsgId);
     if (exists) return;
-    this.#updateTimeline(machineId, sessionId, (tl) =>
-      setLocalStatus(addLocalUserEntry(tl, { clientMsgId, text, ts: this.deps.clock.now() }), clientMsgId, 'queued'),
-    );
+    // 取消回执比动作结果先到：按它的结局补条目（撤回的不补；停止 / 关闭的显示为未发送，可重发或编辑）
+    const key = `${machineId}\n${sessionId}\n${clientMsgId}`;
+    const cancelled = this.#orphanCancels.get(key);
+    this.#orphanCancels.delete(key);
+    if (cancelled === 'recalled') return;
+    this.#updateTimeline(machineId, sessionId, (tl) => {
+      const added = addLocalUserEntry(tl, { clientMsgId, text, ts: this.deps.clock.now() });
+      return cancelled === undefined
+        ? setLocalStatus(added, clientMsgId, 'queued')
+        : setLocalStatus(added, clientMsgId, 'cancelled', { failReason: cancelled === 'stopped' ? '已停止，未发送' : '会话关闭，未发送' });
+    });
   }
 
   async refreshContext(machineId: string, sessionId: string): Promise<ContextRefreshResult> {
