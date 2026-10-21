@@ -13,6 +13,10 @@
  *
  * cwd 列表是 agent 端数据，打开 sheet 时对在线机器发一次 `cwd.list.request`
  * （不轮询；离线机器不发——评审 C4「离线机器的机器级请求静默无回执」）。
+ *
+ * 「从任务开始」（扩展 U7，机器有提供 newSession 的扩展时才出现）：选一项预填首条消息，
+ * 建好后自动关联。顺序是 建会话 → 关联（等回执，失败只提示）→ 发首条消息 → 跳转，
+ * 先关联再发，扩展在这一轮结束时看得到关联。
  */
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router';
@@ -20,10 +24,12 @@ import { toast } from 'sonner';
 import type { PermissionMode } from '@trine/core';
 import { Button } from '@/components/ui/button.tsx';
 import { Input } from '@/components/ui/input.tsx';
+import { Textarea } from '@/components/ui/textarea.tsx';
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet.tsx';
 import { Chip, StatusDot } from '@/components/shell/StatusDot.tsx';
 import { useClient, useTrine } from '@/app/runtime.ts';
 import { cn } from '@/lib/utils.ts';
+import { ExtNewSessionPicker, useNewSessionExtensions, type NewSessionStart } from '@/components/ext/ExtNewSessionPicker.tsx';
 import { CwdPicker } from './CwdPicker.tsx';
 import {
   clickMode,
@@ -71,9 +77,22 @@ export function NewSessionSheet({
   const [customModel, setCustomModel] = useState('');
   const [creating, setCreating] = useState(false);
   const [cwdRequested, setCwdRequested] = useState<string | null>(null);
+  const [start, setStart] = useState<NewSessionStart | null>(null);
+  const [prompt, setPrompt] = useState('');
 
   const machine = machines[machineId];
   const offline = machine !== undefined && machine.online !== true;
+  const startExts = useNewSessionExtensions(machineId);
+
+  // 起点属于某个目录下的数据：换机器 / 换目录就清掉（连同预填的文字）
+  const changeStart = (next: NewSessionStart | null): void => {
+    setStart(next);
+    setPrompt(next?.prompt ?? '');
+  };
+  const changeCwd = (next: string): void => {
+    setCwd(next);
+    if (next !== cwd) changeStart(null);
+  };
 
   // 打开时选默认机器（在线优先）
   useEffect(() => {
@@ -109,6 +128,8 @@ export function NewSessionSheet({
     if (!open) return;
     setModel(defaultModel);
     setModeState(initialModeState(defaultMode));
+    setStart(null);
+    setPrompt('');
   }, [open, defaultModel, defaultMode]);
 
   const modelChips = useMemo(() => {
@@ -128,6 +149,8 @@ export function NewSessionSheet({
         model: model.trim(),
         permissionMode: modeState.value,
       });
+      if (start?.link !== undefined) await linkNewSession(meta.sessionId, start);
+      if (start !== null && prompt.trim() !== '') client.sendInput(machineId, meta.sessionId, prompt.trim());
       onOpenChange(false);
       navigate(`/s/${machineId}/${meta.sessionId}`);
     } catch (err) {
@@ -136,6 +159,24 @@ export function NewSessionSheet({
       });
     } finally {
       setCreating(false);
+    }
+  };
+
+  /** 关联失败不挡建会话：会话已经建好，提示用户手动关联 */
+  const linkNewSession = async (sessionId: string, from: NewSessionStart): Promise<void> => {
+    if (!client || from.link === undefined) return;
+    const failed = (reason: string): void => {
+      toast.warning('会话已建好，但没能关联', { description: `${from.link!.label}：${reason}。可在会话菜单里手动关联。` });
+    };
+    try {
+      const res = await client.extRequest(
+        machineId,
+        { type: 'session.links.update', targetSessionId: sessionId, ext: from.ext, add: [from.link] } as never,
+        ['session.links.update.response'],
+      );
+      if (!res.ok) failed(res.error?.message ?? '未知错误');
+    } catch (err) {
+      failed(err instanceof Error ? err.message : String(err));
     }
   };
 
@@ -166,6 +207,7 @@ export function NewSessionSheet({
                       onClick={() => {
                         setMachineId(m.machineId);
                         setCwd('');
+                        changeStart(null);
                       }}
                     >
                       <StatusDot tone={m.online === true ? 'on' : 'off'} />
@@ -186,7 +228,7 @@ export function NewSessionSheet({
                   favorites={machine?.cwd?.favorites ?? []}
                   defaultCwd={machine?.cwd?.defaultCwd ?? ''}
                   value={cwd}
-                  onChange={setCwd}
+                  onChange={changeCwd}
                   disabled={offline}
                   loading={machine?.cwd === null && !offline}
                   onAdd={(p) => client?.send(machineId, { type: 'cwd.add', path: p })}
@@ -194,6 +236,28 @@ export function NewSessionSheet({
                   onSetDefault={(p) => client?.send(machineId, { type: 'cwd.setDefault', path: p })}
                 />
               </section>
+
+              {!offline && startExts.length > 0 && (
+                <section data-testid="ns-start">
+                  <Label>{startExts.length === 1 ? (startExts[0]!.contributes.newSession?.title ?? '从扩展开始') : '从扩展开始'}（可选）</Label>
+                  <ExtNewSessionPicker
+                    machineId={machineId}
+                    cwd={cwd.trim()}
+                    extensions={startExts}
+                    selected={start}
+                    onSelect={changeStart}
+                  />
+                  {start !== null && (
+                    <Textarea
+                      data-testid="ns-prompt"
+                      className="mt-1.5 max-h-48 min-h-20 text-[13px]"
+                      placeholder="首条消息（留空则只建会话）"
+                      value={prompt}
+                      onChange={(e) => setPrompt(e.target.value)}
+                    />
+                  )}
+                </section>
+              )}
 
               <section>
                 <Label>模型</Label>

@@ -5,7 +5,7 @@
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import { useNavigate } from 'react-router';
 import { toast } from 'sonner';
-import type { ExtCatalogItem, ExtLocalEffect, ExtPlan, ExtPoint } from '@trine/core';
+import type { ExtCatalogItem, ExtLocalEffect, ExtPlan, ExtPoint, ExtRecord } from '@trine/core';
 import { useClient, useTrine } from '@/app/runtime.ts';
 import { copyText } from '@/lib/clipboard.ts';
 import type { TrineClient } from '@/lib/client.ts';
@@ -13,10 +13,12 @@ import {
   applyLocalEffects,
   ExtCatalogCache,
   isNewer,
+  mergeRecords,
   readKey,
   responseKey,
   runTokenAction,
   supportsExtensions,
+  supportsExtRecords,
   type ExtActionPlanEvent,
   type ExtActionResult,
   type ExtReadResponse,
@@ -36,8 +38,12 @@ interface ExtRuntime {
   catalogs: ExtCatalogCache;
   /** 读取结果：readKey → 最新一份 */
   views: Map<string, ExtReadResponse>;
+  /** 时间线记录卡：`machineId\nsessionId` → 按时间正序 */
+  records: Map<string, ExtRecord[]>;
   listeners: Set<() => void>;
 }
+
+const recordsKey = (machineId: string, sessionId: string): string => `${machineId}\n${sessionId}`;
 
 let runtime: ExtRuntime | null = null;
 
@@ -50,10 +56,17 @@ function runtimeFor(client: TrineClient): ExtRuntime {
       return { rev: res.rev, items: res.items };
     }),
     views: new Map(),
+    records: new Map(),
     listeners: new Set(),
   };
-  // 推送（不带 reqId）与应答都经这里落进 views
+  // 推送（不带 reqId）与应答都经这里落进 views / records
   client.on('event', (machineId, event) => {
+    if (event.type === 'ext.record' || event.type === 'ext.records.response') {
+      const key = recordsKey(machineId, event.targetSessionId);
+      rt.records.set(key, mergeRecords(rt.records.get(key), event.type === 'ext.record' ? [event.record] : event.records));
+      for (const l of rt.listeners) l();
+      return;
+    }
     if (event.type !== 'ext.read.response') return;
     const key = responseKey(machineId, event);
     if (!isNewer(rt.views.get(key), event)) return;
@@ -186,6 +199,35 @@ export function useExtRead(target: ReadTarget | null, options: { watch?: boolean
 
   const refresh = useCallback(() => void send({ force: true }), [send]);
   return { response, loading, failure, refresh };
+}
+
+const NO_RECORDS: readonly ExtRecord[] = [];
+
+/**
+ * 会话的时间线记录卡（U8）：打开会话时拉一次，机器重新上线（agent 可能重启过）时重拉；
+ * 之后靠 agent 广播的 ext.record 追加。agent 不支持时为空数组。
+ */
+export function useExtRecords(machineId: string, sessionId: string): readonly ExtRecord[] {
+  const rt = useRuntimeExt();
+  const supported = useTrine((s) => supportsExtRecords(s.machines[machineId]?.info));
+  const online = useTrine((s) => s.machines[machineId]?.online === true);
+  const key = recordsKey(machineId, sessionId);
+  const subscribe = useCallback(
+    (l: () => void) => {
+      if (rt === null) return () => {};
+      rt.listeners.add(l);
+      return () => rt.listeners.delete(l);
+    },
+    [rt],
+  );
+  const records = useSyncExternalStore(subscribe, () => rt?.records.get(key));
+  useEffect(() => {
+    if (rt === null || !supported || !online) return;
+    rt.client
+      .extRequest(machineId, { type: 'ext.records.request', targetSessionId: sessionId } as never, ['ext.records.response'])
+      .catch(() => {});
+  }, [rt, machineId, sessionId, supported, online]);
+  return supported ? (records ?? NO_RECORDS) : NO_RECORDS;
 }
 
 function usePageVisible(): boolean {

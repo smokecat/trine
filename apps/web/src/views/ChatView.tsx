@@ -95,6 +95,7 @@ import { formatCost } from '@/lib/format.ts';
 import { waitingForOfTool } from '@/lib/waiting.ts';
 import { ExtHeadEntry, ExtPanelSheet } from '@/components/ext/ExtPanel.tsx';
 import { composerPickerLabel, ExtComposerPicker, useComposerExtensions } from '@/components/ext/ExtComposerPicker.tsx';
+import { useExtRecords } from '@/components/ext/use-ext.ts';
 
 type InfoCardState =
   | { kind: 'status'; rows: { label: string; value: string }[] }
@@ -141,6 +142,7 @@ export function ChatView(): React.JSX.Element {
   // 换了会话（例如扩展的「新会话接续」跳过来）：面板不跟过去
   useEffect(() => setExtOpen(false), [machineId, sessionId]);
   const composerExts = useComposerExtensions(machineId);
+  const extRecords = useExtRecords(machineId, sessionId);
   const [renameBusy, setRenameBusy] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   /** 正在确认回退的目标用户消息（RewindDialog 打开中） */
@@ -692,6 +694,8 @@ export function ChatView(): React.JSX.Element {
           // machine.info 还没到时不下「版本过旧」的结论（评审 m4）
           subagentHistory={machine?.info == null ? null : agentSupportsSubagentHistory(machine.info.agentVersion)}
           onRewind={canRewind ? openRewind : undefined}
+          records={extRecords}
+          recordsHideOlder={timeline.history?.hasMore === true}
           head={
             <HistoryHead
               state={historyHead}

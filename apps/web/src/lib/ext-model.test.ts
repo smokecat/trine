@@ -1,14 +1,18 @@
 import { describe, expect, test } from 'bun:test';
-import type { ExtPlan } from '@trine/core';
+import type { ExtPlan, ExtRecord } from '@trine/core';
 import {
   applyLocalEffects,
   ExtCatalogCache,
   extensionsFor,
   isNewer,
+  mergeRecords,
+  placeRecords,
   readKey,
+  recordText,
   responseKey,
   runTokenAction,
   supportsExtensions,
+  supportsExtRecords,
   type ExtActionDeps,
   type ExtActionPlanEvent,
   type ExtActionResult,
@@ -151,5 +155,49 @@ describe('目录与读取', () => {
     expect(isNewer(undefined, res)).toBe(true);
     expect(isNewer(res, { rev: 4 })).toBe(false);
     expect(isNewer(res, { rev: 6 })).toBe(true);
+  });
+});
+
+describe('时间线记录卡', () => {
+  const rec = (id: string, at: number, patch: Partial<ExtRecord> = {}): ExtRecord => ({
+    id,
+    at,
+    ext: 'tasks',
+    extName: 'Tasks',
+    kind: 'linked',
+    label: id,
+    ...patch,
+  });
+
+  test('supportsExtRecords 只认摘要里的 records: true', () => {
+    expect(supportsExtRecords(null)).toBe(false);
+    expect(supportsExtRecords({ extensions: { api: 1, rev: 'r', count: 0 } } as never)).toBe(false);
+    expect(supportsExtRecords({ extensions: { api: 1, rev: 'r', count: 0, records: true } } as never)).toBe(true);
+  });
+
+  test('mergeRecords：按 id 去重、按时间排序（推送先于拉取到达也不重复）', () => {
+    const live = mergeRecords(undefined, [rec('b', 20)]);
+    expect(mergeRecords(live, [rec('a', 10), rec('b', 20)]).map((r) => r.id)).toEqual(['a', 'b']);
+  });
+
+  test('placeRecords：排在第一条更晚的条目前；都更晚的放末尾；hideOlder 时藏掉早于首条的', () => {
+    const entries = [{ ts: 10 }, { ts: 20 }, { ts: 30 }];
+    const records = [rec('r0', 5), rec('r1', 15), rec('r2', 20), rec('r3', 40)];
+    const shown = placeRecords(entries, records, false);
+    expect([...shown.before.entries()].map(([i, rs]) => [i, rs.map((r) => r.id)])).toEqual([
+      [0, ['r0']],
+      [1, ['r1']],
+      [2, ['r2']],
+    ]);
+    expect(shown.tail.map((r) => r.id)).toEqual(['r3']);
+    expect(placeRecords(entries, records, true).before.get(0)).toBeUndefined();
+    expect(placeRecords([], records, true).tail).toHaveLength(4);
+  });
+
+  test('recordText：关联 / 取消关联 / 动作；未知种类按通用样式', () => {
+    expect(recordText(rec('x', 1, { label: 'Task A' }))).toBe('已关联 Task A');
+    expect(recordText(rec('x', 1, { kind: 'unlinked', label: 'Task A' }))).toBe('已取消关联 Task A');
+    expect(recordText(rec('x', 1, { kind: 'action', label: '归档', subject: 'Task A', message: '已归档' }))).toBe('归档 · Task A：已归档');
+    expect(recordText(rec('x', 1, { kind: 'future', label: '做了点什么' }))).toBe('做了点什么');
   });
 });

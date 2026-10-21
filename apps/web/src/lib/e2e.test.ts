@@ -1133,4 +1133,31 @@ describe('web lib · 扩展（ext.*）', () => {
     ]);
     await waitFor(() => client.sessions('mbp')[sid]?.links === undefined, '关联移除');
   });
+
+  test('⑱ 时间线记录卡：关联增删广播 ext.record，ext.records.request 拉回同样的记录', async () => {
+    await installExtension();
+    await pair();
+    await waitFor(() => client.machine('mbp')?.info?.extensions?.records === true, 'machine.info 声明支持记录卡');
+    const sid = await createSession();
+    const live: { targetSessionId: string; kind: string; label: string }[] = [];
+    client.on('event', (_m, event) => {
+      if (event.type === 'ext.record') live.push({ targetSessionId: event.targetSessionId, kind: event.record.kind, label: event.record.label });
+    });
+    for (const body of [
+      { type: 'session.links.update', targetSessionId: sid, ext: 'tasks', add: [{ ref: 'task-a', label: 'Task A' }] },
+      { type: 'session.links.update', targetSessionId: sid, ext: 'tasks', remove: ['task-a'] },
+    ]) {
+      await client.extRequest('mbp', body as never, ['session.links.update.response']);
+    }
+    await waitFor(() => live.length === 2, '两条记录广播');
+    expect(live).toEqual([
+      { targetSessionId: sid, kind: 'linked', label: 'Task A' },
+      { targetSessionId: sid, kind: 'unlinked', label: 'Task A' },
+    ]);
+    const res = await client.extRequest('mbp', { type: 'ext.records.request', targetSessionId: sid } as never, ['ext.records.response']);
+    expect(res.records.map((r) => [r.kind, r.label, r.extName])).toEqual([
+      ['linked', 'Task A', 'Tasks'],
+      ['unlinked', 'Task A', 'Tasks'],
+    ]);
+  });
 });

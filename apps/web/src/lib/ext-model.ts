@@ -14,6 +14,7 @@ import {
   type ExtLocalEffect,
   type ExtPlan,
   type ExtPoint,
+  type ExtRecord,
   type MachineInfo,
   type PermissionMode,
 } from '@trine/core';
@@ -21,6 +22,11 @@ import {
 export type ExtReadResponse = Extract<AgentToClientEvent, { type: 'ext.read.response' }>;
 export type ExtActionResult = Extract<AgentToClientEvent, { type: 'ext.action.result' }>;
 export type ExtActionPlanEvent = Extract<AgentToClientEvent, { type: 'ext.action.plan' }>;
+
+/** agent 支持时间线记录卡（agent ≥ 0.17.0 在摘要里带 records） */
+export function supportsExtRecords(info: MachineInfo | null | undefined): boolean {
+  return info?.extensions?.records === true;
+}
 
 /** agent 支持扩展：machine.info 带 extensions 摘要（不按版本号判断） */
 export function supportsExtensions(info: MachineInfo | null | undefined): boolean {
@@ -191,5 +197,56 @@ export function permissionModeLabel(mode: string): string {
       return 'plan（只规划）';
     default:
       return 'default（逐项确认）';
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 时间线记录卡（U8）
+// ---------------------------------------------------------------------------
+
+/** 合并记录（拉取的与实时推送的可能交错到达）：按 id 去重、按时间正序 */
+export function mergeRecords(current: readonly ExtRecord[] | undefined, incoming: readonly ExtRecord[]): ExtRecord[] {
+  const byId = new Map<string, ExtRecord>();
+  for (const r of current ?? []) byId.set(r.id, r);
+  for (const r of incoming) byId.set(r.id, r);
+  return [...byId.values()].sort((a, b) => a.at - b.at);
+}
+
+export interface RecordPlacement {
+  /** 条目下标 → 排在它前面的记录 */
+  before: Map<number, ExtRecord[]>;
+  /** 比全部条目都晚的记录 */
+  tail: ExtRecord[];
+}
+
+/**
+ * 按时间把记录插进时间线：每条记录排在第一条比它晚的条目前面。
+ * hideOlder：更早的历史还没加载时，早于已加载最早条目的记录先不显示（等翻到那里再出现）。
+ */
+export function placeRecords(entries: readonly { ts: number }[], records: readonly ExtRecord[], hideOlder: boolean): RecordPlacement {
+  const before = new Map<number, ExtRecord[]>();
+  const tail: ExtRecord[] = [];
+  const first = entries[0]?.ts;
+  let i = 0;
+  for (const record of records) {
+    if (hideOlder && first !== undefined && record.at < first) continue;
+    while (i < entries.length && entries[i]!.ts <= record.at) i++;
+    if (i >= entries.length) tail.push(record);
+    else before.set(i, [...(before.get(i) ?? []), record]);
+  }
+  return { before, tail };
+}
+
+/** 记录卡的文字（宿主文案；扩展给的 label / subject / message 都当纯文本） */
+export function recordText(record: ExtRecord): string {
+  switch (record.kind) {
+    case 'linked':
+      return `已关联 ${record.label}`;
+    case 'unlinked':
+      return `已取消关联 ${record.label}`;
+    default: {
+      const head = record.subject === undefined ? record.label : `${record.label} · ${record.subject}`;
+      return record.message === undefined ? head : `${head}：${record.message}`;
+    }
   }
 }

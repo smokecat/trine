@@ -757,6 +757,9 @@ export function applyEvent(tl: Timeline, event: AgentToClientEvent): Timeline {
     case 'ext.action.result':
     case 'ext.config.response':
     case 'session.links.update.response':
+    // 时间线记录卡单独存（components/ext/use-ext.ts），渲染时才按时间插进时间线
+    case 'ext.record':
+    case 'ext.records.response':
       return tl;
   }
 }

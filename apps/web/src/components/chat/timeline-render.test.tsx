@@ -135,6 +135,44 @@ describe('Timeline 重渲染计数（N4）', () => {
   });
 });
 
+describe('Timeline · 扩展记录卡', () => {
+  test('按时间插在条目之间，末尾的排在最后；hideOlder 时早于首条的不画', () => {
+    const entries: TimelineEntry[] = [
+      { kind: 'assistant', id: 'a-1', text: '一', done: true, thinking: false, seq: 1, ts: T0 },
+      { kind: 'assistant', id: 'a-2', text: '二', done: true, thinking: false, seq: 2, ts: T0 + 10 },
+    ];
+    const rec = (id: string, at: number) => ({ id, at, ext: 'tasks', extName: 'Tasks', kind: 'linked', label: `任务 ${id}` });
+    const records = [rec('old', T0 - 5), rec('mid', T0 + 5), rec('end', T0 + 20)];
+    host = document.createElement('div');
+    document.body.appendChild(host);
+    root = createRoot(host);
+    const draw = (hideOlder: boolean) =>
+      act(() => {
+        root?.render(
+          <Timeline
+            entries={entries}
+            syncing={undefined}
+            deviceId="web-1"
+            now={T0}
+            runningToolId={null}
+            runningElapsedMs={0}
+            handlers={handlers}
+            records={records}
+            recordsHideOlder={hideOlder}
+          />,
+        );
+      });
+    draw(false);
+    const order = () =>
+      Array.from(host!.querySelectorAll('[data-testid="timeline"] > li'))
+        .map((li) => (li.getAttribute('data-testid') === 'entry-ext-record' ? li.textContent : li.textContent?.includes('一') ? 'a-1' : li.textContent?.includes('二') ? 'a-2' : null))
+        .filter((x) => x !== null);
+    expect(order()).toEqual(['Tasks · 已关联 任务 old', 'a-1', 'Tasks · 已关联 任务 mid', 'a-2', 'Tasks · 已关联 任务 end']);
+    draw(true);
+    expect(order()).toEqual(['a-1', 'Tasks · 已关联 任务 mid', 'a-2', 'Tasks · 已关联 任务 end']);
+  });
+});
+
 describe('Timeline · 自发轮标记', () => {
   test('run.state running 带 detail → 一行「⟳ …，Claude 继续」；不带 detail 的 running 不画', () => {
     const entries: TimelineEntry[] = [

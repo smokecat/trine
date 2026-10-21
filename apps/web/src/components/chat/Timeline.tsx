@@ -16,6 +16,8 @@
  */
 import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { ArrowDownIcon } from 'lucide-react';
+import type { ExtRecord } from '@trine/core';
+import { placeRecords, recordText } from '@/lib/ext-model.ts';
 import { rewindTargetId, type TimelineEntry, type ToolEntry, type UserEntry } from '@/lib/reducer.ts';
 import { formatDayLabel } from '@/lib/format.ts';
 import { timeMarkers } from '@/lib/time-markers.ts';
@@ -105,6 +107,8 @@ export function Timeline({
   planOptions = true,
   subagentHistory = false,
   onRewind,
+  records,
+  recordsHideOlder = false,
 }: {
   entries: TimelineEntry[];
   syncing: 'normal' | 'backfill' | undefined;
@@ -139,12 +143,20 @@ export function Timeline({
    * 版本过旧），用户消息上不出入口。引用要稳定，否则会打穿 Entry 的 memo。
    */
   onRewind?: ((entry: UserEntry) => void) | undefined;
+  /** 扩展的时间线记录卡（单独存，这里按时间插进条目之间） */
+  records?: readonly ExtRecord[];
+  /** 更早的历史还没加载：早于最早条目的记录先不显示 */
+  recordsHideOlder?: boolean;
 }): React.JSX.Element {
   const scrollRef = useRef<HTMLOListElement>(null);
   const [following, setFollowing] = useState(true);
   // 只有有子 agent 权限卡时才需要（多数时间线一张都没有，省掉整树遍历）
   // 日期分隔 / 长间隔的时间标记（只依赖 entries，tick 不会重算）
   const markers = useMemo(() => timeMarkers(entries), [entries]);
+  const placed = useMemo(
+    () => (records === undefined || records.length === 0 ? undefined : placeRecords(entries, records, recordsHideOlder)),
+    [entries, records, recordsHideOlder],
+  );
   const labels = useMemo(
     () => (entries.some((e) => e.kind === 'permission' && e.parentToolUseId !== undefined) ? toolLabels(entries) : new Map<string, string>()),
     [entries],
@@ -230,6 +242,7 @@ export function Timeline({
                   day={marker.kind === 'day' ? formatDayLabel(marker.at, now) : undefined}
                 />
               )}
+              {placed?.before.get(i)?.map((r) => <ExtRecordNote key={`rec:${r.id}`} record={r} />)}
               <Entry
                 entry={entry}
                 deviceId={deviceId}
@@ -256,6 +269,7 @@ export function Timeline({
             </Fragment>
           );
         })}
+        {placed?.tail.map((r) => <ExtRecordNote key={`rec:${r.id}`} record={r} />)}
         {extra}
       </ol>
       {!following && (
@@ -275,6 +289,17 @@ export function Timeline({
     </div>
   );
 }
+
+/** 扩展的时间线记录卡（如「任务 · 已关联 plugin-architecture」）：宿主文案，扩展给的文字当纯文本 */
+const ExtRecordNote = memo(function ExtRecordNote({ record }: { record: ExtRecord }): React.JSX.Element {
+  return (
+    <SystemNote testId="entry-ext-record">
+      <span title={new Date(record.at).toLocaleString()}>
+        <span className="text-text-2">{record.extName}</span> · {recordText(record)}
+      </span>
+    </SystemNote>
+  );
+});
 
 /** 这条目是否需要每秒的 tick（决定它要不要跟着计时器重渲染） */
 function needsTick(entry: TimelineEntry): boolean {
