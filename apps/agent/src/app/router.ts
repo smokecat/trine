@@ -1309,6 +1309,11 @@ export class Router {
   async #handleExt(event: ClientToAgentEvent, sender: Recipient): Promise<void> {
     const service = this.#extensions;
     const deviceId = sender.deviceId;
+    // 手动关联只要有 links store，不依赖扩展服务
+    if (event.type === 'session.links.update') {
+      await this.#updateLinks(event, deviceId);
+      return;
+    }
     if (service === undefined) {
       this.#log(`[router] 不支持扩展，忽略 ${event.type}`);
       return;
@@ -1334,9 +1339,6 @@ export class Router {
         return;
       case 'ext.config.set':
         await service.setConfig(deviceId, event);
-        return;
-      case 'session.links.update':
-        await this.#updateLinks(event, deviceId);
         return;
       default:
         return;

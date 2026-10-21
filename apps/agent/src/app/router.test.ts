@@ -46,6 +46,9 @@ import {
   SELF_WRITE_MATCH_MS,
 } from './session-mutations.ts';
 import { AgentState } from './state.ts';
+import { SessionLinksStore } from '../ext/links-store.ts';
+import { ExtensionRegistry } from '../ext/registry.ts';
+import { ExtensionService } from '../ext/service.ts';
 
 /** 假会话：只实现 router / manager 会碰到的成员 */
 class FakeSession {
@@ -229,6 +232,8 @@ async function makeHarness(options: {
   probeCommands?: (cwd: string) => Promise<SdkSlashCommand[]>;
   /** 附件存储；省略 = 不启用附件 */
   attachments?: AttachmentStore;
+  /** 会话关联（扩展）；省略 = 不支持 */
+  links?: SessionLinksStore;
 } = {}) {
   const probeCalls: string[] = [];
   const historyCalls: { sessionId: string; dir: string | undefined }[] = [];
@@ -260,6 +265,7 @@ async function makeHarness(options: {
     renameSessionFn: transcripts.renameSession,
     deleteSessionFn: transcripts.deleteSession,
     flags,
+    ...(options.links === undefined ? {} : { sessionLinks: (sid: string) => options.links!.of(sid) }),
     onRunEnd: (sid) => router.onRunEnd(sid),
     createSession: (args) => {
       const fake = new FakeSession(args);
@@ -324,6 +330,7 @@ async function makeHarness(options: {
       return options.subagentTranscripts?.[`${sessionId}/${toolUseId}`] ?? [];
     },
     ...(options.attachments === undefined ? {} : { attachments: options.attachments }),
+    ...(options.links === undefined ? {} : { links: options.links, machineId: 'mbp-id' }),
     ...(options.probeCommands === undefined
       ? {}
       : {
@@ -2436,5 +2443,89 @@ describe('Router · 附件', () => {
     );
     await h.router.idle();
     expect(h.byType('attachment.fetch.response').at(-1)).toMatchObject({ ok: false, error: { code: 'not_found' } });
+  });
+});
+
+describe('Router · 扩展', () => {
+  async function extHarness() {
+    const links = await SessionLinksStore.load(join(dir, 'session-links.json'));
+    const h = await makeHarness({ links });
+    return { ...h, links };
+  }
+
+  test('session.links.update：手动关联写入并随 session.updated 广播；不存在的会话 not_found', async () => {
+    const h = await extHarness();
+    h.state.rememberSession('s1', params);
+    await h.router.handle(
+      { type: 'session.create', ...c2a(), reqId: 'c', ...params },
+      phone,
+    );
+    const sid = (h.byType('session.create.response')[0] as { session: { sessionId: string } }).session.sessionId;
+    await h.router.handle(
+      { type: 'session.links.update', ...c2a(), reqId: 'l1', targetSessionId: sid, ext: 'tasks', add: [{ ref: 'a', label: 'A' }] },
+      phone,
+    );
+    await h.router.idle();
+    expect(h.byType('session.links.update.response').at(-1)).toMatchObject({ reqId: 'l1', ok: true });
+    const updated = h.byType('session.updated').at(-1) as { session: { links?: unknown } };
+    expect(updated.session.links).toEqual([{ ext: 'tasks', ref: 'a', label: 'A', at: expect.any(Number) }]);
+    // 定向回请求设备
+    expect(h.events.find((e) => e.event.type === 'session.links.update.response')!.to).toBe('phone');
+
+    await h.router.handle(
+      { type: 'session.links.update', ...c2a(), reqId: 'l2', targetSessionId: 'nope', ext: 'tasks', add: [{ ref: 'a', label: 'A' }] },
+      phone,
+    );
+    await h.router.idle();
+    expect(h.byType('session.links.update.response').at(-1)).toMatchObject({ reqId: 'l2', ok: false, error: { code: 'not_found' } });
+  });
+
+  test('删除会话时清掉关联', async () => {
+    const h = await extHarness();
+    await h.links.update('gone', 'tasks', [{ ref: 'a', label: 'A' }], [], 1);
+    h.links.forget('gone');
+    expect(h.links.of('gone')).toBeUndefined();
+  });
+
+  test('extHost.createSession：建会话、写标题与关联、发首条消息；sendPrompt 走会话链', async () => {
+    const h = await extHarness();
+    const host = h.router.extHost();
+    const created = await host.createSession({
+      cwd: '/repo',
+      model: 'opus',
+      permissionMode: 'default',
+      title: '接续 task-a',
+      ext: 'tasks',
+      links: [{ ref: 'task-a', label: 'Task A' }],
+      prompt: '继续 task-a 任务',
+    });
+    await h.router.idle();
+    expect(h.created).toHaveLength(1);
+    expect(h.created[0]!.args).toMatchObject({ sessionId: created.sessionId, cwd: '/repo', model: 'opus', permissionMode: 'default' });
+    expect(h.created[0]!.sent).toEqual([{ clientMsgId: created.clientMsgId, text: '继续 task-a 任务' }]);
+    expect(h.links.of(created.sessionId)).toMatchObject([{ ext: 'tasks', ref: 'task-a' }]);
+    expect(h.flags.pendingTitle(created.sessionId)).toBe('接续 task-a');
+    const updated = h.byType('session.updated').find(
+      (e) => (e as { session: { sessionId: string } }).session.sessionId === created.sessionId,
+    ) as { session: { links?: unknown; title: string } };
+    expect(updated.session).toMatchObject({ title: '接续 task-a', links: [{ ref: 'task-a' }] });
+
+    const sent = await host.sendPrompt(created.sessionId, '再来一条');
+    expect(sent.queued).toBe(false);
+    expect(h.created[0]!.sent.at(-1)).toEqual({ clientMsgId: sent.clientMsgId, text: '再来一条' });
+  });
+
+  test('扩展帧不占机器链；没有扩展服务时忽略', async () => {
+    const h = await extHarness();
+    await h.router.handle({ type: 'ext.catalog.request', ...c2a(), reqId: 'k' }, phone);
+    await h.router.idle();
+    expect(h.byType('ext.catalog.response')).toHaveLength(0);
+    const registry = await ExtensionRegistry.load(join(dir, 'extensions.json'));
+    h.router.attachExtensions(
+      new ExtensionService({ registry, links: h.links, host: h.router.extHost(), runner: { run: async () => ({ ok: true, output: {}, stderr: '', durationMs: 0 }) } }),
+    );
+    await h.router.handle({ type: 'ext.catalog.request', ...c2a(), reqId: 'k2' }, phone);
+    await h.router.idle();
+    expect(h.byType('ext.catalog.response').at(-1)).toMatchObject({ reqId: 'k2', items: [] });
   });
 });
