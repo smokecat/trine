@@ -20,6 +20,7 @@ import {
   type ControlEvent,
   type ControlRequest,
   type DeviceInfo,
+  type ExtListItem,
 } from './protocol.ts';
 
 /** daemon 暴露给控制通道的能力（生产由 AgentApp 适配，测试可替换） */
@@ -30,6 +31,13 @@ export interface ControlHost {
   startPairing(): PairingSession;
   confirmPairing(pairingToken: string, expected: PeerIdentity): Promise<boolean>;
   abortPairing(pairingToken: string, reason: string): void;
+  /** 扩展注册表；不给 = 不支持（测试） */
+  extensions?: {
+    list(): ExtListItem[];
+    add(path: string): Promise<ExtListItem>;
+    remove(id: string): Promise<boolean>;
+    reload(id?: string): Promise<ExtListItem[]>;
+  };
 }
 
 export interface ControlServerOptions {
@@ -224,6 +232,18 @@ export class ControlServer {
       case 'pair.answer':
         await this.#answer(conn, request.requestId, request.confirm);
         return;
+      case 'ext.list':
+      case 'ext.add':
+      case 'ext.remove':
+      case 'ext.reload': {
+        const ext = this.host.extensions;
+        if (ext === undefined) throw new Error('这个 agent 不支持扩展');
+        if (request.op === 'ext.list') this.#send(conn, { ev: 'ext.list', items: ext.list() });
+        else if (request.op === 'ext.add') this.#send(conn, { ev: 'ext.added', item: await ext.add(request.path) });
+        else if (request.op === 'ext.remove') this.#send(conn, { ev: 'ext.removed', id: request.id, removed: await ext.remove(request.id) });
+        else this.#send(conn, { ev: 'ext.reloaded', items: await ext.reload(request.id) });
+        return;
+      }
     }
   }
 

@@ -36,6 +36,11 @@ export const ControlRequestSchema = z.discriminatedUnion('op', [
    * 回答到达前若又来了新请求，旧 requestId 的确认会被拒。
    */
   z.object({ op: z.literal('pair.answer'), requestId: z.number().int().positive(), confirm: z.boolean() }),
+  /** 扩展（见 ext/registry.ts）：path 由子命令解析成绝对路径再发 */
+  z.object({ op: z.literal('ext.list') }),
+  z.object({ op: z.literal('ext.add'), path: z.string().min(1).max(4096) }),
+  z.object({ op: z.literal('ext.remove'), id: z.string().min(1).max(64) }),
+  z.object({ op: z.literal('ext.reload'), id: z.string().min(1).max(64).optional() }),
 ]);
 export type ControlRequest = z.infer<typeof ControlRequestSchema>;
 
@@ -44,6 +49,18 @@ export const DeviceInfoSchema = z.object({
   pairedAt: z.number(),
 });
 export type DeviceInfo = z.infer<typeof DeviceInfoSchema>;
+
+export const ExtListItemSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  version: z.string(),
+  dir: z.string(),
+  enabled: z.boolean(),
+  trust: z.string(),
+  status: z.string(),
+  lastError: z.string().optional(),
+});
+export type ExtListItem = z.infer<typeof ExtListItemSchema>;
 
 export const ControlEventSchema = z.discriminatedUnion('ev', [
   z.object({
@@ -62,6 +79,10 @@ export const ControlEventSchema = z.discriminatedUnion('ev', [
   /** 用户拒绝、对端放弃或 SAS 不符：这一轮配对码已作废 */
   z.object({ ev: z.literal('pair.aborted'), reason: z.string() }),
   z.object({ ev: z.literal('pair.expired') }),
+  z.object({ ev: z.literal('ext.list'), items: z.array(ExtListItemSchema) }),
+  z.object({ ev: z.literal('ext.added'), item: ExtListItemSchema }),
+  z.object({ ev: z.literal('ext.removed'), id: z.string(), removed: z.boolean() }),
+  z.object({ ev: z.literal('ext.reloaded'), items: z.array(ExtListItemSchema) }),
   /** 请求出错；`fatal` 时 daemon 随后关闭连接 */
   z.object({ ev: z.literal('error'), message: z.string(), fatal: z.boolean().optional() }),
 ]);

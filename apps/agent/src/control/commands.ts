@@ -15,13 +15,15 @@ import { agentPaths } from '../app/config.ts';
 import { RecipientBookStore } from '../net/recipients.ts';
 import { formatPairingPrompt, renderPairingPayload } from '../net/qr.ts';
 import { ControlClient } from './client.ts';
+import { printExtList, runExtLocal, runExtOffline, type ExtSubcommand } from '../ext/commands.ts';
 import { CONTROL_SOCKET, type ControlEvent, type DeviceInfo } from './protocol.ts';
 
 export type Subcommand =
   | { name: 'pair' }
   | { name: 'status' }
   | { name: 'devices.list' }
-  | { name: 'devices.revoke'; device: string };
+  | { name: 'devices.revoke'; device: string }
+  | ExtSubcommand;
 
 export interface CommandIO {
   print(line: string): void;
@@ -45,6 +47,11 @@ export async function runSubcommand(command: Subcommand, home: string, io: Comma
   if (command.name === 'pair' && !io.interactive) {
     io.print('pair 需要在交互式终端里运行：配对必须由人比对两端的校验码后确认。');
     return 2;
+  }
+
+  // validate / test 不需要 agent：直接看目录、直接起扩展进程
+  if (command.name === 'ext.validate' || command.name === 'ext.test') {
+    return runExtLocal(command, agentPaths(home).extensions, (line) => io.print(line));
   }
 
   const client = await ControlClient.connect(controlSocketPath(home));
@@ -101,6 +108,32 @@ async function runOnline(command: Subcommand, client: ControlClient, io: Command
     }
     case 'pair':
       return runPair(client, io);
+    case 'ext.list': {
+      const event = await client.request({ op: 'ext.list' });
+      if (event?.ev !== 'ext.list') return unexpected(event, io);
+      printExtList(event.items, (l) => io.print(l));
+      return 0;
+    }
+    case 'ext.add': {
+      const event = await client.request({ op: 'ext.add', path: command.path });
+      if (event?.ev !== 'ext.added') return unexpected(event, io);
+      io.print(`已注册扩展 ${event.item.id}（${event.item.name} ${event.item.version}），已生效。`);
+      return 0;
+    }
+    case 'ext.remove': {
+      const event = await client.request({ op: 'ext.remove', id: command.id });
+      if (event?.ev !== 'ext.removed') return unexpected(event, io);
+      io.print(event.removed ? `已移除扩展 ${command.id}。` : `没有扩展 ${command.id}。`);
+      return event.removed ? 0 : 1;
+    }
+    case 'ext.reload': {
+      const event = await client.request({ op: 'ext.reload', ...(command.id === undefined ? {} : { id: command.id }) });
+      if (event?.ev !== 'ext.reloaded') return unexpected(event, io);
+      printExtList(event.items, (l) => io.print(l));
+      return 0;
+    }
+    default:
+      return 2;
   }
 }
 
@@ -250,6 +283,9 @@ async function runOffline(command: Subcommand, home: string, io: CommandIO): Pro
     throw err;
   }
   try {
+    if (command.name.startsWith('ext.')) {
+      return await runExtOffline(command as ExtSubcommand, agentPaths(home).extensions, (line) => io.print(line));
+    }
     await sodiumReady(); // 名册落盘的临时文件名用到 randomToken
     const book = await RecipientBookStore.load(agentPaths(home).recipients);
     const devices = book.list().map((r) => ({ deviceId: r.deviceId, pairedAt: r.pairedAt }));
@@ -257,6 +293,7 @@ async function runOffline(command: Subcommand, home: string, io: CommandIO): Pro
       printDevices(devices, io);
       return 0;
     }
+    if (command.name !== 'devices.revoke') return 2;
     const deviceId = resolveDevice(devices, command.device, io);
     if (deviceId === null) return 1;
     const removed = await book.remove(deviceId);

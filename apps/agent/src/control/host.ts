@@ -1,6 +1,7 @@
 /** AgentApp → ControlHost 适配（控制通道只依赖这层窄接口，便于单测） */
 import type { AgentApp } from '../app/app.ts';
 import type { PairingSession } from '../net/pairing.ts';
+import { toListItem } from '../ext/commands.ts';
 import { ControlServer, type ControlHost } from './server.ts';
 
 export function agentControlHost(app: AgentApp): ControlHost {
@@ -19,6 +20,15 @@ export function agentControlHost(app: AgentApp): ControlHost {
     confirmPairing: (token, expected) => app.confirmPairing(token, expected),
     abortPairing: (token, reason) => {
       app.node.abortPairing(token, reason);
+    },
+    extensions: {
+      list: () => app.extensionRegistry.list().map(toListItem),
+      add: async (path) => toListItem(await app.extensionRegistry.add(path)),
+      remove: (id) => app.extensionRegistry.remove(id),
+      reload: async (id) => {
+        await app.extensionRegistry.reload(id);
+        return app.extensionRegistry.list().map(toListItem);
+      },
     },
   };
 }

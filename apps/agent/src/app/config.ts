@@ -7,7 +7,7 @@
  */
 import { assertEnrollmentUrl, httpBase } from '@trine/core/net';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import type { Subcommand } from '../control/commands.ts';
 
 export interface AgentConfig {
@@ -70,6 +70,7 @@ export function agentPaths(home: string): {
 
 export const USAGE = `用法：trine-agent [--enroll] [--pair] [--server URL] [--home DIR] [--name NAME] [--claude-bin PATH]
       trine-agent <pair | devices [list] | devices revoke DEVICE | status> [--home DIR]
+      trine-agent ext <list | add DIR | remove ID | reload [ID] | validate DIR | test ID OP [...]> [--home DIR]
 
   --enroll        未注册时从隐藏终端输入（或 stdin 一行）读取短期邀请，不保存
   --pair          启动后打出配对二维码，等 client 扫码并在终端确认 SAS
@@ -85,6 +86,13 @@ export const USAGE = `用法：trine-agent [--enroll] [--pair] [--server URL] [-
   devices [list]  列出已配对设备
   devices revoke DEVICE  移除一台已配对设备（完整 deviceId 或唯一前缀）
   status          查看运行中的 agent
+  ext list        列出已注册的扩展（扩展契约见 docs/EXTENSIONS.md）
+  ext add DIR     注册扩展目录（装扩展 = 信任它的代码，以本用户身份运行）
+  ext remove ID   移除扩展（它写下的会话关联保留）
+  ext reload [ID] 扩展升级后重读 manifest
+  ext validate DIR  只校验 manifest 与入口，不运行
+  ext test ID OP [--point P] [--cwd DIR] [--session ID] [--args JSON] [--allow-write]
+                  用合成上下文跑一次扩展（OP：view / badge / pick / action；action 需 --allow-write）
 
 env：TRINE_DEFAULT_MODEL  TRINE_MAX_SESSIONS  TRINE_IDLE_TIMEOUT_MS`;
 
@@ -106,12 +114,25 @@ export function parseSubcommand(
   if (first === undefined || first.startsWith('--')) return null;
 
   const positional: string[] = [];
+  const extFlags: Record<string, string> = {};
+  let allowWrite = false;
   let home: string | undefined;
+  const isExtTest = first === 'ext' && argv[1] === 'test';
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
     if (arg === '--home' || arg.startsWith('--home=')) {
       home = arg === '--home' ? argv[++i] : arg.slice('--home='.length);
       if (home === undefined || home === '') throw new ConfigError('--home 需要一个值');
+      continue;
+    }
+    if (isExtTest && arg === '--allow-write') {
+      allowWrite = true;
+      continue;
+    }
+    if (isExtTest && ['--point', '--cwd', '--session', '--args'].includes(arg)) {
+      const value = argv[++i];
+      if (value === undefined) throw new ConfigError(`${arg} 需要一个值`);
+      extFlags[arg.slice(2)] = value;
       continue;
     }
     if (arg.startsWith('--')) throw new ConfigError(`子命令不认识的开关：${arg}\n\n${USAGE}`);
@@ -126,6 +147,26 @@ export function parseSubcommand(
     command = { name: 'devices.list' };
   } else if (name === 'devices' && rest[0] === 'revoke' && rest.length === 2) {
     command = { name: 'devices.revoke', device: rest[1]! };
+  } else if (name === 'ext') {
+    const [verb, ...args] = rest;
+    if (verb === 'list' && args.length === 0) command = { name: 'ext.list' };
+    // 路径在这里解析成绝对路径：控制通道那头的 agent 不知道本终端的 cwd
+    else if (verb === 'add' && args.length === 1) command = { name: 'ext.add', path: resolve(args[0]!) };
+    else if (verb === 'remove' && args.length === 1) command = { name: 'ext.remove', id: args[0]! };
+    else if (verb === 'reload' && args.length <= 1) command = args[0] === undefined ? { name: 'ext.reload' } : { name: 'ext.reload', id: args[0] };
+    else if (verb === 'validate' && args.length === 1) command = { name: 'ext.validate', path: resolve(args[0]!) };
+    else if (verb === 'test' && args.length === 2) {
+      command = {
+        name: 'ext.test',
+        id: args[0]!,
+        op: args[1]!,
+        allowWrite,
+        ...(extFlags.point === undefined ? {} : { point: extFlags.point }),
+        ...(extFlags.cwd === undefined ? {} : { cwd: resolve(extFlags.cwd) }),
+        ...(extFlags.session === undefined ? {} : { session: extFlags.session }),
+        ...(extFlags.args === undefined ? {} : { args: extFlags.args }),
+      };
+    }
   }
   if (command === undefined) {
     throw new ConfigError(`不认识的子命令：${positional.join(' ')}\n\n${USAGE}`);
