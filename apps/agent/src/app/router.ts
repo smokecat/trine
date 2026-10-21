@@ -116,7 +116,9 @@ import {
   type SessionSeed,
 } from '../bridge/manager.ts';
 import type { ClaudeSession } from '../bridge/session.ts';
-import type { EventBody } from '../bridge/types.ts';
+import type { EventBody, EventBodyOf } from '../bridge/types.ts';
+import { LinkLimitError, type SessionLinksStore } from '../ext/links-store.ts';
+import type { ExtensionService, ExtHost } from '../ext/service.ts';
 import type { Recipient } from '../net/recipients.ts';
 import type { MachineStatsWatcher } from './machine-stats.ts';
 import type { CwdStore } from './cwd-store.ts';
@@ -158,6 +160,26 @@ const MACHINE_LEVEL_TYPES = new Set<ClientToAgentEvent['type']>([
   'cwd.remove',
   'cwd.setDefault',
   'cwd.pin',
+  'ext.catalog.request',
+  'ext.read',
+  'ext.action.prepare',
+  'ext.action.commit',
+  'ext.action.cancel',
+  'ext.action.status',
+  'ext.config.set',
+  'session.links.update',
+]);
+
+/** 扩展帧：机器级，但不占机器链（扩展进程可能跑好几秒），见 ext/service.ts */
+const EXT_TYPES = new Set<ClientToAgentEvent['type']>([
+  'ext.catalog.request',
+  'ext.read',
+  'ext.action.prepare',
+  'ext.action.commit',
+  'ext.action.cancel',
+  'ext.action.status',
+  'ext.config.set',
+  'session.links.update',
 ]);
 
 /**
@@ -244,6 +266,10 @@ export interface RouterDeps {
   commandsProbe?: { commands(cwd: string): Promise<SdkSlashCommand[]> };
   /** 附件（下载落盘 / 历史还原 / 按需重新上传）；缺省 = 带附件的消息一律拒收 */
   attachments?: AttachmentStore;
+  /** 会话关联（扩展）；缺省 = 不支持扩展 */
+  links?: SessionLinksStore;
+  /** 本机 machineId（扩展上下文用） */
+  machineId?: string;
 }
 
 type SessionEvent = Extract<ClientToAgentEvent, { sessionId?: string }>;
@@ -287,6 +313,8 @@ export class Router {
   readonly #inputPrep = new Map<string, Promise<void>>();
   /** 已准备好、等命令链 send 的附件内容：key = `${sessionId}\n${clientMsgId}` */
   readonly #prepared = new Map<string, PreparedInput>();
+  /** 扩展服务：app 在构造后接上（它要用 extHost()） */
+  #extensions: ExtensionService | undefined = undefined;
 
   constructor(deps: RouterDeps) {
     this.#deps = deps;
@@ -333,6 +361,11 @@ export class Router {
    * （测试与 resumeAt 用；网络回调直接忽略返回值即可，异常已在链内兜住）。
    */
   handle(event: ClientToAgentEvent, sender: Recipient): Promise<void> {
+    if (EXT_TYPES.has(event.type)) {
+      const task = this.#handleExt(event, sender);
+      this.#runBackground(task);
+      return task.catch(() => {});
+    }
     if (MACHINE_LEVEL_TYPES.has(event.type)) {
       return this.#enqueue(MACHINE_CHAIN, () => this.#handleMachine(event, sender));
     }
@@ -415,6 +448,7 @@ export class Router {
    * 落盘，input.send 那一刻补写多半还找不到文件。
    */
   onRunEnd(sessionId: string): void {
+    this.#extensions?.onRunEnd(sessionId);
     if (this.#deps.flags.pendingTitle(sessionId) === undefined) return;
     void this.#enqueue(sessionId, () => this.#mutations.flushPendingTitle(sessionId));
   }
@@ -659,6 +693,7 @@ export class Router {
         case 'session.delete':
           outcome = await this.#mutations.delete(sessionId);
           if (outcome.ok) {
+            this.#deps.links?.forget(sessionId);
             await this.#deps.attachments?.removeSession(sessionId).catch((err: unknown) => {
               this.#log(`[router] 清理会话附件失败 session=${sessionId}: ${String(err)}`);
             });
@@ -1157,17 +1192,9 @@ export class Router {
     const { manager, cwdStore } = this.#deps;
     switch (event.type) {
       case 'session.create': {
-        const sessionId = randomUUID();
-        const params: SessionParams = {
-          cwd: event.cwd,
-          model: event.model,
-          permissionMode: event.permissionMode,
-          // 还没发过消息、SDK 侧无转录：之后若要重开必须以新建方式
-          started: false,
-        };
+        let sessionId: string;
         try {
-          await manager.makeRoom();
-          manager.acquire({ sessionId, cwd: params.cwd, model: params.model, permissionMode: params.permissionMode });
+          sessionId = await this.#createSession(event.cwd, event.model, event.permissionMode);
         } catch (err) {
           if (err instanceof ConcurrencyLimitError) {
             this.#emitMachine({ type: 'error.fatal', kind: 'config', message: err.message });
@@ -1175,7 +1202,6 @@ export class Router {
           }
           throw err;
         }
-        this.#deps.state.rememberSession(sessionId, params);
         const meta = manager.metaOf(sessionId);
         if (meta === undefined) throw new Error('acquire 成功却没有 meta（不该发生）');
         // 机器级：与 bridge 自发的 session.created 各占一个机器级 seq，发起端按 sessionId 去重
@@ -1254,6 +1280,177 @@ export class Router {
       default:
         this.#log(`[router] 未处理的机器级事件 type=${event.type}`);
     }
+  }
+
+  /** 新建会话（session.create 与扩展的 session.create 效果共用）；满额抛 ConcurrencyLimitError */
+  async #createSession(cwd: string, model: string, permissionMode: PermissionMode): Promise<string> {
+    const sessionId = randomUUID();
+    const params: SessionParams = {
+      cwd,
+      model,
+      permissionMode,
+      // 还没发过消息、SDK 侧无转录：之后若要重开必须以新建方式
+      started: false,
+    };
+    await this.#deps.manager.makeRoom();
+    this.#deps.manager.acquire({ sessionId, cwd, model, permissionMode });
+    this.#deps.state.rememberSession(sessionId, params);
+    return sessionId;
+  }
+
+  // -------------------------------------------------------------------------
+  // 扩展（ext/service.ts；不占命令链，提交动作经 extHost 进链）
+  // -------------------------------------------------------------------------
+
+  attachExtensions(service: ExtensionService): void {
+    this.#extensions = service;
+  }
+
+  async #handleExt(event: ClientToAgentEvent, sender: Recipient): Promise<void> {
+    const service = this.#extensions;
+    const deviceId = sender.deviceId;
+    if (service === undefined) {
+      this.#log(`[router] 不支持扩展，忽略 ${event.type}`);
+      return;
+    }
+    switch (event.type) {
+      case 'ext.catalog.request':
+        service.catalog(deviceId, event.reqId);
+        return;
+      case 'ext.read':
+        await service.read(deviceId, event);
+        return;
+      case 'ext.action.prepare':
+        await service.prepare(deviceId, event);
+        return;
+      case 'ext.action.commit':
+        await service.commit(deviceId, event);
+        return;
+      case 'ext.action.cancel':
+        service.cancel(deviceId, event.planId);
+        return;
+      case 'ext.action.status':
+        service.status(deviceId, event);
+        return;
+      case 'ext.config.set':
+        await service.setConfig(deviceId, event);
+        return;
+      case 'session.links.update':
+        await this.#updateLinks(event, deviceId);
+        return;
+      default:
+        return;
+    }
+  }
+
+  /** 宿主界面上的手动关联：用户本人的操作，不受扩展权限约束（见协议注释） */
+  async #updateLinks(event: Extract<ClientToAgentEvent, { type: 'session.links.update' }>, deviceId: string): Promise<void> {
+    const reply = (body: Omit<EventBodyOf<'session.links.update.response'>, 'type' | 'reqId'>): void => {
+      this.#deps.emitter.emit({ type: 'session.links.update.response', reqId: event.reqId, ...body }, null, { to: deviceId });
+    };
+    const links = this.#deps.links;
+    const sid = event.targetSessionId;
+    if (links === undefined) {
+      reply({ ok: false, error: { code: 'unsupported', message: '这台 agent 不支持会话关联' } });
+      return;
+    }
+    // 挂到会话链上：与同会话的删除串行（删了的会话不该再被关联上）
+    await this.#enqueue(sid, async () => {
+      if (this.#deps.flags.isDeleted(sid)) {
+        reply({ ok: false, error: { code: 'not_found', message: '会话已删除' } });
+        return;
+      }
+      const known =
+        this.#deps.manager.has(sid) ||
+        this.#deps.manager.metaOf(sid) !== undefined ||
+        this.#deps.state.sessionParams(sid) !== undefined ||
+        (await this.#deps.manager.sessionInfo(sid).catch(() => undefined)) !== undefined;
+      if (!known) {
+        reply({ ok: false, error: { code: 'not_found', message: '找不到会话' } });
+        return;
+      }
+      try {
+        const changed = await links.update(sid, event.ext, event.add ?? [], event.remove ?? [], this.#now());
+        if (changed) {
+          this.#extensions?.onLinksChanged(event.ext);
+          await this.#broadcastSession(sid);
+        }
+        reply({ ok: true });
+      } catch (err) {
+        reply({
+          ok: false,
+          error: err instanceof LinkLimitError ? { code: 'denied', message: err.message } : { code: 'io', message: String(err).slice(0, 300) },
+        });
+      }
+    });
+  }
+
+  async #broadcastSession(sessionId: string): Promise<void> {
+    const meta = await this.#deps.manager.snapshot(sessionId).catch(() => undefined);
+    if (meta !== undefined) this.#deps.emitter.emit({ type: 'session.updated', session: meta }, null);
+  }
+
+  /** 扩展服务用的宿主接口 */
+  extHost(): ExtHost {
+    const deps = this.#deps;
+    return {
+      machine: () => ({ id: deps.machineId ?? '', name: deps.machineInfo().name }),
+      sessionMeta: (sid) => deps.manager.snapshot(sid).catch(() => undefined),
+      cachedMeta: (sid) => deps.manager.metaOf(sid),
+      isDeleted: (sid) => deps.flags.isDeleted(sid),
+      broadcastSession: (sid) => this.#broadcastSession(sid),
+      emitTo: (deviceId, body) => {
+        deps.emitter.emit(body, null, { to: deviceId });
+      },
+      createSession: async (args) => {
+        // 建会话占机器链（与 session.create 串行，名额判断才可靠）
+        let sessionId = '';
+        let failure: unknown;
+        await this.#enqueue(MACHINE_CHAIN, async () => {
+          try {
+            sessionId = await this.#createSession(args.cwd, args.model, args.permissionMode);
+            if (args.title !== undefined && args.title.trim() !== '') {
+              await deps.flags.setPendingTitle(sessionId, args.title.trim().slice(0, 200), this.#now()).catch(() => {});
+            }
+            if (args.links.length > 0) await deps.links?.update(sessionId, args.ext, args.links, [], this.#now());
+            await this.#broadcastSession(sessionId);
+          } catch (err) {
+            failure = err;
+          }
+        });
+        if (failure !== undefined) throw failure;
+        // 会话已建好：首条消息发送失败也保留会话（用户可在新会话里重发），不重新创建
+        const sent = await this.#sendPrompt(sessionId, args.prompt).catch((err: unknown) => {
+          this.#log(`[router] 扩展新建会话的首条消息发送失败 session=${sessionId}: ${String(err)}`);
+          return { clientMsgId: '' };
+        });
+        return { sessionId, clientMsgId: sent.clientMsgId };
+      },
+      sendPrompt: (sid, text) => this.#sendPrompt(sid, text),
+    };
+  }
+
+  /** 代发一条消息：挂会话链，走与 input.send 相同的路径 */
+  async #sendPrompt(sessionId: string, text: string): Promise<{ clientMsgId: string; queued: boolean }> {
+    const clientMsgId = randomUUID();
+    let result: { clientMsgId: string; queued: boolean } | undefined;
+    let failure: unknown;
+    await this.#enqueue(sessionId, async () => {
+      try {
+        if (this.#deps.flags.isDeleted(sessionId)) throw new Error('会话已删除');
+        const session = await this.resolveSession(sessionId);
+        if (session === undefined) throw new Error('无法打开这个会话（会话不存在，或活跃会话已达上限）');
+        const queued = session.state === 'running' || session.state === 'waiting_permission';
+        session.send(clientMsgId, text);
+        this.#deps.state.updateSession(sessionId, { started: true });
+        if (this.#deps.flags.pendingTitle(sessionId) !== undefined) await this.#mutations.flushPendingTitle(sessionId);
+        result = { clientMsgId, queued };
+      } catch (err) {
+        failure = err;
+      }
+    });
+    if (result === undefined) throw failure instanceof Error ? failure : new Error(String(failure));
+    return result;
   }
 
   /** 跑 claude update 并回机器级应答（广播：别的设备按 reqId 对不上会忽略） */

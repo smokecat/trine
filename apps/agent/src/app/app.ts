@@ -34,6 +34,10 @@ import { SessionManager, type CreateSessionArgs } from '../bridge/manager.ts';
 import type { ClaudeSession } from '../bridge/session.ts';
 import { createHeadlessProbe, type HeadlessProbe } from '../bridge/session-origin.ts';
 import type { EventBody, OutboundEvent } from '../bridge/types.ts';
+import { SessionLinksStore } from '../ext/links-store.ts';
+import { ExtensionRegistry } from '../ext/registry.ts';
+import { ExtensionRunner } from '../ext/runner.ts';
+import { ExtensionService } from '../ext/service.ts';
 import { writeIdentity } from '../net/identity.ts';
 import { AgentNode } from '../net/node.ts';
 import type { PairingSession, PeerIdentity } from '../net/pairing.ts';
@@ -97,6 +101,8 @@ export interface AgentAppDeps {
   spawnFn?: SpawnFn;
   /** `claude update` 超时（测试）；默认 5 分钟 */
   claudeUpdateTimeoutMs?: number;
+  /** 扩展进程执行（测试注入假 runner）；默认真起子进程 */
+  extRunner?: Pick<ExtensionRunner, 'run'>;
   /** 首次生成身份时指定 machineId（测试） */
   machineId?: string;
   now?: () => number;
@@ -118,6 +124,9 @@ export class AgentApp {
   #commandsProbe!: CommandsProbe;
   #planUsage!: PlanUsageTracker;
   #machineStats!: MachineStatsWatcher;
+  #extRegistry!: ExtensionRegistry;
+  #extLinks!: SessionLinksStore;
+  #extensions!: ExtensionService;
 
   private constructor(
     readonly node: AgentNode,
@@ -156,6 +165,7 @@ export class AgentApp {
     const capabilities = new CapabilitiesCache();
     // 会话标记要在 manager 之前就位：manager 的每个 meta 出口都经它 decorate
     const flags = await SessionFlagsStore.load(paths.sessions, { log });
+    const links = await SessionLinksStore.load(paths.sessionLinks, { log, now });
 
     const emitter = new EventEmitter({
       now,
@@ -186,6 +196,7 @@ export class AgentApp {
       ...(deps.createSession === undefined ? {} : { createSession: deps.createSession }),
       ...(claude.path === undefined ? {} : { claudeExecutable: claude.path }),
       flags,
+      sessionLinks: (sessionId) => links.of(sessionId),
       // state 晚于 manager 加载；只在列会话时查，那时早已就位
       rememberedParams: (sessionId) => state?.sessionParams(sessionId),
       // router 晚于 manager 构造；回调只在会话跑完一轮时触发，那时早已就位
@@ -292,7 +303,20 @@ export class AgentApp {
       ...(deps.getSessionMessagesFn === undefined ? {} : { getSessionMessagesFn: deps.getSessionMessagesFn }),
       commandsProbe,
       attachments,
+      links,
+      machineId: node.machineId,
     });
+
+    const extRegistry = await ExtensionRegistry.load(paths.extensions, { log, now });
+    const extensions = new ExtensionService({
+      registry: extRegistry,
+      runner: deps.extRunner ?? new ExtensionRunner({ now }),
+      links,
+      host: router.extHost(),
+      now,
+      log,
+    });
+    router.attachExtensions(extensions);
 
     app = new AgentApp(
       node,
@@ -309,6 +333,14 @@ export class AgentApp {
     );
     app.#commandsProbe = commandsProbe;
     app.#machineStats = machineStats;
+    app.#extRegistry = extRegistry;
+    app.#extLinks = links;
+    app.#extensions = extensions;
+    // 目录变了：作废该扩展的 token / plan / 缓存，广播 machine.info（client 按 rev 重拉目录）
+    extRegistry.onChange = (ext) => {
+      extensions.invalidate(ext);
+      app.#emitMachine({ type: 'machine.info', info: app.machineInfo() });
+    };
     app.#planUsage = new PlanUsageTracker({
       liveUsage: () => manager.planUsage(),
       onChange: () => app.#emitMachine({ type: 'machine.info', info: app.machineInfo() }),
@@ -384,12 +416,15 @@ export class AgentApp {
     this.#commandsProbe.dispose();
     this.#planUsage.dispose();
     this.#machineStats.dispose();
+    this.#extensions.dispose();
     if (this.#flagsSweepTimer !== undefined) {
       clearInterval(this.#flagsSweepTimer);
       this.#flagsSweepTimer = undefined;
     }
     await this.state.flush();
     await this.flags.flush();
+    await this.#extLinks.flush();
+    await this.#extRegistry.flush();
     await this.node.disconnect();
   }
 
@@ -429,7 +464,10 @@ export class AgentApp {
    */
   async revokeDevice(deviceId: string): Promise<boolean> {
     const removed = await this.node.recipients.remove(deviceId);
-    if (removed) this.log(`[app] 已移除配对设备 ${deviceId}`);
+    if (removed) {
+      this.#extensions.forgetDevice(deviceId);
+      this.log(`[app] 已移除配对设备 ${deviceId}`);
+    }
     return removed;
   }
 
@@ -440,6 +478,7 @@ export class AgentApp {
       activeSessionCount: this.manager.activeCount,
       maxSessions: this.manager.maxConcurrent,
       rateLimits: this.#planUsage.current,
+      extensions: this.#extRegistry?.summary(),
     });
   }
 
@@ -519,6 +558,11 @@ export class AgentApp {
    * onVersion 刷新 claudeVersion 并广播 machine.info，router 再回应答——client
    * 收到应答时机器卡已是新版本。运行中的会话不重启（见 ClaudeUpdater）。
    */
+  /** 本机扩展注册表（控制通道的 ext 子命令用） */
+  get extensionRegistry(): ExtensionRegistry {
+    return this.#extRegistry;
+  }
+
   #updateClaude(): Promise<ClaudeUpdateOutcome> {
     return this.#updater.run();
   }

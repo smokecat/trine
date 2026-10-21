@@ -6,7 +6,7 @@
  * 跑完后再探测一次：它只用于展示，探测失败不该影响启动；每次广播都去 spawn 一遍也没必要。
  */
 import { release } from 'node:os';
-import type { MachineInfo, RateLimits } from '@trine/core';
+import type { MachineExtensionsSummary, MachineInfo, RateLimits } from '@trine/core';
 
 /**
  * 与 apps/agent/package.json 的 version 对齐（手工同步；没有构建步骤可注入）。
@@ -40,7 +40,9 @@ import type { MachineInfo, RateLimits } from '@trine/core';
 //   按设备订阅定时推送）
 // - 0.15.0 起排队中的消息出队开始执行时才回显 user.message（此前入队即回显）；撤回成功、
 //   停止任务或会话关闭丢弃排队消息时发 input.cancelled（旧 web 会丢掉这帧——先部署 web 再重启 agent）
-export const AGENT_VERSION = '0.15.0';
+// - 0.16.0 起支持扩展：ext.* 帧、session.links.update、MachineInfo 带 extensions、
+//   SessionMeta 带 links（web 按 machine.info.extensions 有无判断，不按版本号）
+export const AGENT_VERSION = '0.16.0';
 
 export function buildMachineInfo(input: {
   name: string;
@@ -48,6 +50,7 @@ export function buildMachineInfo(input: {
   activeSessionCount: number;
   maxSessions: number;
   rateLimits?: RateLimits | undefined;
+  extensions?: MachineExtensionsSummary | undefined;
 }): MachineInfo {
   return {
     name: input.name,
@@ -58,5 +61,6 @@ export function buildMachineInfo(input: {
     activeSessionCount: input.activeSessionCount,
     maxSessions: input.maxSessions,
     ...(input.rateLimits === undefined ? {} : { rateLimits: input.rateLimits }),
+    ...(input.extensions === undefined ? {} : { extensions: input.extensions }),
   };
 }

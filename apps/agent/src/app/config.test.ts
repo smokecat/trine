@@ -72,6 +72,8 @@ describe('loadAgentConfig', () => {
       cwd: '/h/cwd.json',
       sessions: '/h/sessions.json',
       uploads: '/h/uploads',
+      extensions: '/h/extensions.json',
+      sessionLinks: '/h/session-links.json',
     });
   });
 });

@@ -3,6 +3,9 @@
  * 用 zod 定义并导出推断类型，protocol 层直接复用这些 schema。
  */
 import { z } from 'zod';
+import { MachineExtensionsSummarySchema, SessionLinkSchema } from './ext.ts';
+
+export * from './ext.ts';
 
 /** epoch 毫秒时间戳 */
 export const TimestampSchema = z.number().int().nonnegative();
@@ -117,6 +120,11 @@ export const SessionMetaSchema = z.object({
    * 与 archived 同源；省略 = 未置顶。列表里置顶会话排在所属组 / 平铺列表的最前，越晚置顶越靠上。
    */
   pinnedAt: TimestampSchema.optional(),
+  /**
+   * 扩展写下的会话关联（extensions 新增，可选；agent ≥ 0.16.0）。存在 agent 的
+   * session-links.json；省略 = 没有关联 / 旧 agent。
+   */
+  links: z.array(SessionLinkSchema).max(64).optional(),
 });
 export type SessionMeta = z.infer<typeof SessionMetaSchema>;
 
@@ -324,6 +332,11 @@ export const MachineInfoSchema = z.object({
   maxSessions: z.number().int().positive().optional(),
   /** 订阅限额用量（usage-display 新增，可选；agent ≥ 0.12.0）。省略 = 还没拿到 / 账号没有订阅限额 / 旧 agent */
   rateLimits: RateLimitsSchema.optional(),
+  /**
+   * 扩展摘要（extensions 新增，可选；agent ≥ 0.16.0）。缺失 = agent 不支持扩展，client 隐藏全部
+   * 扩展入口；完整目录按 rev 另拉 `ext.catalog.request`。
+   */
+  extensions: MachineExtensionsSummarySchema.optional(),
 });
 export type MachineInfo = z.infer<typeof MachineInfoSchema>;
 

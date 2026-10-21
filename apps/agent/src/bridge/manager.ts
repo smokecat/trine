@@ -22,7 +22,7 @@
  * 且不忙的那个（`makeRoom`）：与空闲回收同一语义，只是不等超时。客户端没有
  * 「结束会话」的入口，单靠拒绝只会让用户干等 15 分钟回收。全都在忙才拒绝。
  */
-import type { PermissionMode, SessionMeta, SessionState } from '@trine/core';
+import type { PermissionMode, SessionLink, SessionMeta, SessionState } from '@trine/core';
 import {
   deleteSession,
   getSessionInfo,
@@ -107,6 +107,8 @@ export interface SessionManagerOptions {
   uploadsDir?: (sessionId: string) => string;
   /** 会话标记；不给则不合并 archived / pendingTitle、不过滤墓碑 */
   flags?: SessionFlags;
+  /** 会话关联（扩展，ext/links-store.ts）：decorate 时并进 meta.links */
+  sessionLinks?: (sessionId: string) => SessionLink[] | undefined;
   /**
    * 本地记住的会话参数（app 接 state.json）。listSessions 不带模型 / 权限模式，
    * 内存缓存又随重启清空——不查这里，重启后列表里的会话全显示成「默认模型 /
@@ -201,6 +203,7 @@ export class SessionManager {
   readonly #claudeExecutable: string | undefined;
   readonly #uploadsDir: ((sessionId: string) => string) | undefined;
   readonly #flags: SessionFlags | undefined;
+  readonly #sessionLinks: ((sessionId: string) => SessionLink[] | undefined) | undefined;
   readonly #rememberedParams: SessionManagerOptions['rememberedParams'];
   readonly #onRunEnd: ((sessionId: string) => void) | undefined;
   readonly #onPermissionModeChange: ((sessionId: string, mode: PermissionMode) => void) | undefined;
@@ -228,6 +231,7 @@ export class SessionManager {
     this.#renameSession = options.renameSessionFn ?? renameSession;
     this.#deleteSession = options.deleteSessionFn ?? deleteSession;
     this.#flags = options.flags;
+    this.#sessionLinks = options.sessionLinks;
     this.#rememberedParams = options.rememberedParams;
     this.#claudeExecutable = options.claudeExecutable;
     this.#uploadsDir = options.uploadsDir;
@@ -535,10 +539,13 @@ export class SessionManager {
       pinnedAt: _pinnedAt,
       headless: _headless,
       live: _live,
+      links: _links,
       ...stripped
     } = meta;
+    const links = this.#sessionLinks?.(meta.sessionId);
     const rest: SessionMeta = {
       ...stripped,
+      ...(links === undefined ? {} : { links }),
       ...(this.#headless.has(meta.sessionId) ? { headless: true } : {}),
       ...(this.#sessions.has(meta.sessionId) ? { live: true } : {}),
     };

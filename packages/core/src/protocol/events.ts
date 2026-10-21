@@ -40,6 +40,17 @@ import {
   AttachmentRefSchema,
   BgTaskSchema,
   ContextUsageSchema,
+  EXT_LIMITS,
+  ExtBadgeSchema,
+  ExtErrorSchema,
+  ExtIdSchema,
+  ExtLinkRefSchema,
+  ExtLocalEffectSchema,
+  ExtPlanSchema,
+  ExtPointSchema,
+  ExtPolicySchema,
+  ExtWirePickItemSchema,
+  ExtWireViewSchema,
   HistoryItemSchema,
   MachineInfoSchema,
   MachineStatsSchema,
@@ -1111,6 +1122,201 @@ export const MachineStatsEventSchema = z.object({
 });
 
 // ---------------------------------------------------------------------------
+// §3.4 扩展（extensions，agent 0.16.0 起；契约见 docs/EXTENSIONS.md）
+// ---------------------------------------------------------------------------
+//
+// 全部是**机器级**帧：扩展不属于任何会话的时间线（client 会把带 sessionId 的帧送进时间线），
+// 目标会话放在密文内的 targetSessionId。应答与推送只定向发给请求设备。
+//
+// 安全底线：agent 不会因为读取 / 刷新 / 推送执行任何效果。需要 agent 执行的动作在视图里只是
+// 一个一次性 token（只对签发设备有效、10 分钟过期、agent 重启即失效），点击后经
+// prepare →（需要确认时）plan → commit 执行；relay 留存的旧帧在重连后迟到也只会因 token
+// 过期被拒，不会在用户离开后突然执行。
+//
+// 互操作：machine.info.extensions 缺失 = agent 不支持，client 不发这些帧。
+
+/** 读取订阅（租约）上限 */
+export const EXT_WATCH_MAX_TTL_MS = 10 * 60_000;
+
+/** client → agent：取扩展目录 */
+export const ExtCatalogRequestSchema = z.object({
+  type: z.literal('ext.catalog.request'),
+  ...c2aBase,
+  reqId: ReqIdSchema,
+});
+
+/**
+ * agent → 请求设备：扩展目录。items 逐条由 client 用 ExtCatalogItemSchema 宽松解析
+ * （parseExtCatalog）：将来某条带了新能力 / 新贡献点，只禁用那一条，不拒整帧。
+ */
+export const ExtCatalogResponseSchema = z.object({
+  type: z.literal('ext.catalog.response'),
+  ...a2cBase,
+  reqId: ReqIdSchema,
+  rev: z.string().min(1).max(64),
+  items: z.array(z.unknown()).max(64),
+});
+
+export const ExtReadOpSchema = z.enum(['view', 'badge', 'pick']);
+
+/** client → agent：读一次扩展视图；带 watch 时之后有变化就推（ttlMs 0 = 退订） */
+export const ExtReadSchema = z.object({
+  type: z.literal('ext.read'),
+  ...c2aBase,
+  reqId: ReqIdSchema,
+  ext: ExtIdSchema,
+  op: ExtReadOpSchema,
+  point: ExtPointSchema,
+  targetSessionId: z.string().min(1).optional(),
+  /** 没有会话时（工作区面板）的上下文目录；有会话时以会话 cwd 为准 */
+  cwd: z.string().min(1).max(4096).optional(),
+  args: z.object({ query: z.string().max(200).optional() }).optional(),
+  /** 界面语言（如 zh-CN），原样传给扩展 */
+  locale: z.string().max(35).optional(),
+  watch: z.object({ ttlMs: z.number().int().min(0).max(EXT_WATCH_MAX_TTL_MS) }).optional(),
+  /** force：绕过缓存（手动刷新） */
+  force: z.boolean().optional(),
+});
+
+/** agent → 请求设备：读取结果（带 reqId = 应答；订阅期间的推送不带） */
+export const ExtReadResponseSchema = z.object({
+  type: z.literal('ext.read.response'),
+  ...a2cBase,
+  reqId: ReqIdSchema.optional(),
+  ext: ExtIdSchema,
+  op: ExtReadOpSchema,
+  point: ExtPointSchema,
+  targetSessionId: z.string().min(1).optional(),
+  cwd: z.string().optional(),
+  /** 单调递增：client 丢弃比已显示内容旧的结果 */
+  rev: z.number().int().nonnegative(),
+  ok: z.boolean(),
+  view: ExtWireViewSchema.optional(),
+  badge: ExtBadgeSchema.nullable().optional(),
+  items: z.array(ExtWirePickItemSchema).max(EXT_LIMITS.pickItems).optional(),
+  error: ExtErrorSchema.optional(),
+});
+
+/** 新会话默认值：session.create 效果用发起设备的设置，扩展不能指定 */
+const NewSessionDefaultsSchema = z.object({ model: z.string().min(1), permissionMode: PermissionModeSchema });
+
+/** client → agent：用户点了一个带 token 的动作 */
+export const ExtActionPrepareSchema = z.object({
+  type: z.literal('ext.action.prepare'),
+  ...c2aBase,
+  reqId: ReqIdSchema,
+  /** client 生成；同一 invocationId 只执行一次，重复到达返回已有结果 */
+  invocationId: z.string().min(1).max(64),
+  token: z.string().min(1).max(128),
+  newSession: NewSessionDefaultsSchema.optional(),
+});
+
+/** agent → 请求设备：需要用户确认的执行计划（确认的就是这里的内容，commit 不会重新计算） */
+export const ExtActionPlanSchema = z.object({
+  type: z.literal('ext.action.plan'),
+  ...a2cBase,
+  reqId: ReqIdSchema,
+  invocationId: z.string().min(1),
+  planId: z.string().min(1).max(64),
+  plan: ExtPlanSchema,
+  expiresAt: TimestampSchema,
+});
+
+/** client → agent：确认执行 */
+export const ExtActionCommitSchema = z.object({
+  type: z.literal('ext.action.commit'),
+  ...c2aBase,
+  reqId: ReqIdSchema,
+  invocationId: z.string().min(1).max(64),
+  planId: z.string().min(1).max(64),
+});
+
+/** client → agent：放弃确认（不应答） */
+export const ExtActionCancelSchema = z.object({
+  type: z.literal('ext.action.cancel'),
+  ...c2aBase,
+  planId: z.string().min(1).max(64),
+});
+
+/** client → agent：查询一次执行的结果（应答超时后用） */
+export const ExtActionStatusSchema = z.object({
+  type: z.literal('ext.action.status'),
+  ...c2aBase,
+  reqId: ReqIdSchema,
+  invocationId: z.string().min(1).max(64),
+});
+
+/** agent → 请求设备：执行结果 */
+export const ExtActionResultSchema = z.object({
+  type: z.literal('ext.action.result'),
+  ...a2cBase,
+  reqId: ReqIdSchema,
+  invocationId: z.string().min(1),
+  ok: z.boolean(),
+  error: ExtErrorSchema.optional(),
+  /** 扩展给的结果说明（纯文本） */
+  message: z.string().max(500).optional(),
+  /** session.create 建出的会话 */
+  createdSessionId: z.string().min(1).optional(),
+  /** invoke 返回的本地效果，由发起设备执行 */
+  local: z.array(ExtLocalEffectSchema).max(EXT_LIMITS.effectsPerAction).optional(),
+  /** invoke 返回的新视图（只给发起设备）；viewRev 同 ext.read.response.rev */
+  view: ExtWireViewSchema.optional(),
+  viewRev: z.number().int().nonnegative().optional(),
+  /**
+   * agent 代发的消息（prompt.send）。queued = 会话正忙、已排队：发起设备据此补一条本地排队条目
+   * （排队回执只对有本地条目的设备生效），撤回 / 停止恢复文字照常工作。
+   */
+  sent: z
+    .object({ targetSessionId: z.string().min(1), clientMsgId: z.string().min(1), text: z.string(), queued: z.boolean() })
+    .optional(),
+  /** ext.action.status 的应答：还在执行 / 等待确认（此时带 plan）时 ok 为 false 且无 error */
+  state: z.enum(['running', 'awaiting_confirmation', 'done']).optional(),
+  pending: z.object({ planId: z.string().min(1), plan: ExtPlanSchema, expiresAt: TimestampSchema }).optional(),
+});
+
+/** client → agent：启用 / 停用扩展、改权限（本机器、全部设备生效） */
+export const ExtConfigSetSchema = z.object({
+  type: z.literal('ext.config.set'),
+  ...c2aBase,
+  reqId: ReqIdSchema,
+  ext: ExtIdSchema,
+  enabled: z.boolean().optional(),
+  policy: ExtPolicySchema.optional(),
+});
+
+export const ExtConfigResponseSchema = z.object({
+  type: z.literal('ext.config.response'),
+  ...a2cBase,
+  reqId: ReqIdSchema,
+  ok: z.boolean(),
+  error: ExtErrorSchema.optional(),
+});
+
+/**
+ * client → agent：宿主界面上的「关联…」（关联选择器、面板里的关联开关）。按 (ext, ref) 增删，
+ * 不做整体覆盖，多设备同时改不会互相吞掉。结果随 session.updated 广播。
+ * 这是用户本人在 trine 界面上的操作，不受扩展权限约束（扩展动作产生的 links.* 才按 links.write 判定）。
+ */
+export const SessionLinksUpdateSchema = z.object({
+  type: z.literal('session.links.update'),
+  ...c2aBase,
+  reqId: ReqIdSchema,
+  targetSessionId: z.string().min(1),
+  ext: ExtIdSchema,
+  add: z.array(ExtLinkRefSchema).max(EXT_LIMITS.linksPerUpdate).optional(),
+  remove: z.array(z.string().min(1).max(EXT_LIMITS.ref)).max(EXT_LIMITS.linksPerUpdate).optional(),
+});
+
+export const SessionLinksUpdateResponseSchema = z.object({
+  type: z.literal('session.links.update.response'),
+  ...a2cBase,
+  reqId: ReqIdSchema,
+  ok: z.boolean(),
+  error: ExtErrorSchema.optional(),
+});
+
+// ---------------------------------------------------------------------------
 // §6.2 工作目录管理（决策 7：agent 端持久化，每机器一份）
 // ---------------------------------------------------------------------------
 
@@ -1237,6 +1443,12 @@ export const AgentToClientEventSchema = z.discriminatedUnion('type', [
   MachineClaudeUpdateResponseSchema,
   MachineUsageResponseSchema,
   MachineStatsEventSchema,
+  ExtCatalogResponseSchema,
+  ExtReadResponseSchema,
+  ExtActionPlanSchema,
+  ExtActionResultSchema,
+  ExtConfigResponseSchema,
+  SessionLinksUpdateResponseSchema,
   CwdListResponseSchema,
   CwdUpdatedSchema,
   ErrorTransientSchema,
@@ -1275,6 +1487,14 @@ export const ClientToAgentEventSchema = z.discriminatedUnion('type', [
   MachineClaudeUpdateRequestSchema,
   MachineUsageRequestSchema,
   MachineStatsRequestSchema,
+  ExtCatalogRequestSchema,
+  ExtReadSchema,
+  ExtActionPrepareSchema,
+  ExtActionCommitSchema,
+  ExtActionCancelSchema,
+  ExtActionStatusSchema,
+  ExtConfigSetSchema,
+  SessionLinksUpdateSchema,
   CwdListRequestSchema,
   CwdAddSchema,
   CwdRemoveSchema,
