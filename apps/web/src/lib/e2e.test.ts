@@ -1011,3 +1011,126 @@ describe('web lib · 附件 e2e', () => {
     expect(userEntry(sid, id)?.attachments).toEqual([ref]);
   });
 });
+
+describe('web lib · 扩展（ext.*）', () => {
+  /** 合成扩展：view 给两条动作（新会话接续 / 接续到本会话），pick 给一个可关联项 */
+  async function installExtension(): Promise<void> {
+    const dir = join(home, 'ext-tasks');
+    await Bun.write(
+      join(dir, 'trine-extension.json'),
+      JSON.stringify({
+        apiVersion: 1,
+        id: 'tasks',
+        name: 'Tasks',
+        version: '1.0.0',
+        entry: ['bin/run'],
+        contributes: { sessionPanel: { title: '任务' }, linkPicker: { title: '关联任务' } },
+        capabilities: ['prompt.send', 'session.create', 'links.write'],
+      }),
+    );
+    const view = {
+      view: {
+        sections: [
+          {
+            id: 'active',
+            items: [
+              {
+                id: 'task-a',
+                title: 'Task A',
+                link: { ref: 'task-a', label: 'Task A' },
+                actions: [
+                  { id: 'new', label: '新会话接续', effects: [{ type: 'session.create', prompt: 'resume task-a', links: [{ ref: 'task-a', label: 'Task A' }] }] },
+                  { id: 'here', label: '接续到本会话', effects: [{ type: 'prompt.send', text: 'continue task-a' }] },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    };
+    await Bun.write(
+      join(dir, 'bin', 'run'),
+      `#!/bin/sh\ncat >/dev/null\ncase "$1" in\n  view) echo '${JSON.stringify(view)}' ;;\n  pick) echo '{"items":[{"id":"task-a","title":"Task A","link":{"ref":"task-a","label":"Task A"}}]}' ;;\n  *) echo '{"error":{"code":"unsupported","message":"no"}}' ;;\nesac\n`,
+    );
+    const { chmod } = await import('node:fs/promises');
+    await chmod(join(dir, 'bin', 'run'), 0o755);
+    await agent.app.extensionRegistry.add(dir);
+  }
+
+  const read = (sid: string) =>
+    client.extRequest('mbp', { type: 'ext.read', ext: 'tasks', op: 'view', point: 'sessionPanel', targetSessionId: sid } as never, ['ext.read.response']);
+
+  test('⑮ 目录 → 读取 → 全托管下「新会话接续」：agent 建会话、发首条消息、自动关联', async () => {
+    await installExtension();
+    await pair();
+    await waitFor(() => (client.machine('mbp')?.info?.extensions?.count ?? 0) === 1, 'machine.info 带扩展摘要');
+    const sid = await createSession();
+
+    const catalog = await client.extRequest('mbp', { type: 'ext.catalog.request' } as never, ['ext.catalog.response']);
+    expect(catalog.items).toHaveLength(1);
+    const cfg = await client.extRequest(
+      'mbp',
+      { type: 'ext.config.set', ext: 'tasks', policy: { trust: 'full', capabilities: {} } } as never,
+      ['ext.config.response'],
+    );
+    expect(cfg.ok).toBe(true);
+
+    const res = await read(sid);
+    expect(res.ok).toBe(true);
+    const action = res.view!.sections[0]!.items[0]!.actions!.find((a) => a.id === 'new')!;
+    expect(action.token).toBeString();
+    // 视图里看不到效果内容
+    expect(JSON.stringify(res.view)).not.toContain('resume task-a');
+
+    const result = await client.extRequest(
+      'mbp',
+      { type: 'ext.action.prepare', token: action.token, invocationId: 'inv-1', newSession: { model: 'test-model', permissionMode: 'default' } } as never,
+      ['ext.action.result', 'ext.action.plan'],
+    );
+    expect(result.type).toBe('ext.action.result');
+    const created = (result as { createdSessionId?: string }).createdSessionId!;
+    expect(created).toBeString();
+    await waitFor(() => client.sessions('mbp')[created]?.links?.[0]?.ref === 'task-a', '新会话带关联');
+    await waitFor(
+      () => client.timeline('mbp', created).entries.some((e) => e.kind === 'assistant' && e.done && e.text === 'echo: resume task-a'),
+      '新会话收到首条消息并回复',
+    );
+  });
+
+  test('⑯ 自定义权限：发送要确认，commit 后才执行；token 一次性', async () => {
+    await installExtension();
+    await pair();
+    await waitFor(() => (client.machine('mbp')?.info?.extensions?.count ?? 0) === 1, 'machine.info 带扩展摘要');
+    const sid = await createSession();
+    const res = await read(sid);
+    const token = res.view!.sections[0]!.items[0]!.actions!.find((a) => a.id === 'here')!.token!;
+    const plan = await client.extRequest('mbp', { type: 'ext.action.prepare', token, invocationId: 'inv-2' } as never, ['ext.action.plan', 'ext.action.result']);
+    expect(plan.type).toBe('ext.action.plan');
+    if (plan.type !== 'ext.action.plan') return;
+    expect(plan.plan.steps[0]).toMatchObject({ type: 'prompt.send', targetSessionId: sid, text: 'continue task-a' });
+    await settle();
+    expect(entries(sid).some((e) => e.kind === 'assistant' && e.text === 'echo: continue task-a')).toBe(false);
+    const done = await client.extRequest('mbp', { type: 'ext.action.commit', planId: plan.planId, invocationId: 'inv-2' } as never, ['ext.action.result']);
+    expect(done.ok).toBe(true);
+    await waitFor(() => entries(sid).some((e) => e.kind === 'assistant' && e.done && e.text === 'echo: continue task-a'), '确认后执行');
+    const again = await client.extRequest('mbp', { type: 'ext.action.prepare', token, invocationId: 'inv-3' } as never, ['ext.action.result', 'ext.action.plan']);
+    expect(again).toMatchObject({ type: 'ext.action.result', ok: false, error: { code: 'stale' } });
+  });
+
+  test('⑰ 手动关联：session.links.update 跨设备同步到 SessionMeta.links', async () => {
+    await installExtension();
+    await pair();
+    const sid = await createSession();
+    const res = await client.extRequest(
+      'mbp',
+      { type: 'session.links.update', targetSessionId: sid, ext: 'tasks', add: [{ ref: 'task-a', label: 'Task A' }] } as never,
+      ['session.links.update.response'],
+    );
+    expect(res.ok).toBe(true);
+    await waitFor(() => client.sessions('mbp')[sid]?.links?.length === 1, '关联写入');
+    await client.extRequest('mbp', { type: 'session.links.update', targetSessionId: sid, ext: 'tasks', remove: ['task-a'] } as never, [
+      'session.links.update.response',
+    ]);
+    await waitFor(() => client.sessions('mbp')[sid]?.links === undefined, '关联移除');
+  });
+});
