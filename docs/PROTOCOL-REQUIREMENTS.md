@@ -180,7 +180,7 @@ agent 侧所有产出 SessionMeta 的出口（list、session.created、session.u
 ## 3. 机器管理
 
 - `machine.status`† — 服务端可见（在线状态本身就是服务端知道的）：`{ machineId, online, lastSeenAt }`
-- `machine.info` — E2E 内容：`{ name, platform, osVersion, agentVersion, claudeVersion, activeSessionCount, maxSessions?, rateLimits?, extensions? }`（maxSessions 自 0.10.0，rateLimits 自 0.12.0，extensions 自 0.16.0，见 §3.1）（常用目录另见 §6）
+- `machine.info` — E2E 内容：`{ name, platform, osVersion, agentVersion, claudeVersion, activeSessionCount, maxSessions?, rateLimits?, extensions? }`（maxSessions 自 0.10.0，rateLimits 自 0.12.0，extensions 自 0.16.0、其中 records 自 0.17.0，见 §3.1）（常用目录另见 §6）
 - `rateLimits?: { fiveHour?, sevenDay?: { percent(0–100), resetsAt? }, updatedAt }`（usage-display）— 机器上登录账号的订阅限额用量，账号级、同机所有会话共用。来源：会话活动时 CLI 每次 API 请求发的 `rate_limit_event`（取其 `unifiedWindows`，类型定义里没有的字段；没有时退回顶层的单个窗口），值变了（或值不变但距上次广播超过 5 分钟）就广播一次 `machine.info`。API key / Bedrock / Vertex 等没有订阅限额的账号不带。agent 不落盘，重启后等下一次会话活动或手动刷新
 - `machine.usage.request { reqId }`（client→agent，机器级，agent ≥ 0.12.0）— 手动刷新限额用量：agent 借一个活跃会话的 query 调 SDK 的实验性 usage 接口；没有活跃子进程就临时起一个不发消息、不落转录的 claude（不占会话名额，30 秒超时），用完即关。只给手动刷新用，client 不要定时发。拿到后先广播 `machine.info`，再回 `machine.usage.response { reqId, ok, error?: { code: unavailable|failed, message } }`（`unavailable` = 账号没有订阅限额，agent 同时清掉已有的 rateLimits）。旧 agent 静默丢弃，client 按 agentVersion 探测
 - `machine.stats.request { reqId, watch?: { intervalMs, ttlMs } }`（client→agent，机器级，agent ≥ 0.14.0）— 机器资源数据。agent 立刻采样一次，以带 reqId 的 `machine.stats { reqId, stats }` **只回给请求设备**；带 `watch` 时再按 `intervalMs`（2 秒–10 分钟）给该设备定时推 `machine.stats { stats }`（不带 reqId），直到 `ttlMs`（≤ 30 分钟）到期。同一设备的新 watch 覆盖旧的，`ttlMs: 0` 立即退订。不做常驻广播：机器级流还承载 `session.updated` 等，relay 每条子流只留存有限帧，定时广播会挤掉断线补发窗口、给离线设备堆积无用帧。首次采样要两次读数算 CPU 与网速，多等约 1 秒；结果在 1.5 秒内复用
@@ -191,9 +191,9 @@ agent 侧所有产出 SessionMeta 的出口（list、session.created、session.u
 
 ### 3.1 扩展（agent ≥ 0.16.0）
 
-契约与作者指南见 [EXTENSIONS.md](EXTENSIONS.md)。下面是协议帧。全部是**机器级**帧（扩展不属于任何会话的时间线），目标会话放在密文内的 `targetSessionId`；应答与推送只定向发给请求设备。
+契约与作者指南见 [EXTENSIONS.md](EXTENSIONS.md)。下面是协议帧。全部是**机器级**帧（扩展不属于任何会话的时间线），目标会话放在密文内的 `targetSessionId`；应答与推送只定向发给请求设备（`ext.record` 例外，广播给全部设备）。
 
-- `machine.info.extensions?: { api, rev, count }` — 缺失 = agent 不支持扩展，client 隐藏全部扩展入口（按这个判断，不按版本号）。`rev` 变化时重拉目录
+- `machine.info.extensions?: { api, rev, count, records? }` — 缺失 = agent 不支持扩展，client 隐藏全部扩展入口（按这个判断，不按版本号）。`rev` 变化时重拉目录。`records: true`（agent ≥ 0.17.0）= 支持时间线记录卡
 - `ext.catalog.request { reqId }` → `ext.catalog.response { reqId, rev, items[] }` — `items` 由 client 逐条宽松解析，不认识的条目只禁用那一条：`{ id, name, version, description?, apiVersion, contributes, capabilities, enabled, policy: { trust: full|custom, capabilities }, status: ok|disabled|error, lastError? }`
 - `ext.read { reqId, ext, op: view|badge|pick, point, targetSessionId?, cwd?, args?: { query? }, locale?, watch?: { ttlMs }, force? }` → `ext.read.response { reqId?, ext, op, point, targetSessionId?, cwd?, rev, ok, view? | badge? | items?, error? }`
   - 带 `watch` 时建立订阅（同一设备、扩展、贡献点、目标覆盖旧的，`ttlMs` ≤ 10 分钟，`0` 退订）；之后有变化（动作完成、关联变化、会话一轮结束）就防抖 1 秒推送同类型帧（不带 reqId）。client 在面板可见、页面可见时续租
@@ -208,8 +208,11 @@ agent 侧所有产出 SessionMeta 的出口（list、session.created、session.u
 - `ext.action.result { reqId, invocationId, ok, error?, message?, createdSessionId?, local?, view?, viewRev?, sent?: { targetSessionId, clientMsgId, text, queued }, state?, pending? }` — `createdSessionId` 是新建的会话，只有发起设备跳转过去；`sent.queued` 时发起设备补一条本地排队条目（排队回执只对有本地条目的设备生效）
 - `ext.config.set { reqId, ext, enabled?, policy? }` → `ext.config.response { reqId, ok, error? }`；成功后 `machine.info.extensions.rev` 变化
 - `session.links.update { reqId, targetSessionId, ext, add?: [{ ref, label }], remove?: [ref] }` → `session.links.update.response { reqId, ok, error? }`；结果随 `session.updated` 广播（`SessionMeta.links`）。这是用户在 trine 界面上的手动关联，不受扩展权限约束
+- 贡献点 `newSession`（agent ≥ 0.17.0）：新建会话 sheet 用 `ext.read { op: pick, point: newSession, cwd }` 列候选项（没有 `targetSessionId`）；agent 只给候选项留 `prompt.insert`（作为 `local`），不签发 token。用户点「开始会话」后 client 依次发 `session.create` → `session.links.update`（候选项的 `link`）→ `input.send`（sheet 里可编辑的首条消息），都是现有帧
+- `ext.record { targetSessionId, record }`（agent ≥ 0.17.0，广播）— 某会话新增一条时间线记录卡。`record: { id, at, ext, extName, kind, label, subject?, message? }`；`kind` 是宽松字符串，目前有 `linked` / `unlinked`（关联增删，任何来源；`label` 是关联名）和 `action`（会话面板里扩展的 invoke 动作成功；`label` 是动作名、`subject` 是条目标题、`message` 是扩展给的说明）。记录由 agent 产生，存在 `~/.trine/session-ext-records.json`，每会话保留最近 50 条，永久删除会话时清掉；不进 Claude 转录和 `session.history`
+- `ext.records.request { reqId, targetSessionId }` → `ext.records.response { reqId, targetSessionId, records[] }`（按时间正序）— client 打开会话时拉一次，之后靠 `ext.record` 追加，按 `id` 去重；渲染时按 `at` 插进时间线
 - 错误码：`unsupported`、`disabled`、`denied`、`stale`、`not_found`、`busy`、`timeout`、`invalid_output`、`output_limit`、`io`、`unknown_outcome`、`extension_error`。扩展错误只显示在面板或 toast 里，不进 `error.fatal`
-- 互操作：新 client + 旧 agent 不显示扩展入口；旧 client + 新 agent 不发扩展帧，`SessionMeta.links` 被 strip。agent 回滚到旧版时 `extensions.json`、`session-links.json` 被忽略但保留
+- 互操作：新 client + 旧 agent 不显示扩展入口；旧 client + 新 agent 不发扩展帧，`SessionMeta.links` 被 strip，`ext.record` 被 schema 丢弃。新 client + 0.16.x agent：目录里没有 `newSession`、摘要里没有 `records`，不出现「从任务开始」、不拉记录卡。agent 回滚到旧版时 `extensions.json`、`session-links.json`、`session-ext-records.json` 被忽略但保留
 
 ## 4. 配对
 

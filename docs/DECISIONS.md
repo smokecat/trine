@@ -146,6 +146,10 @@ relay 的机器级补发窗口也不会被资源快照挤占。默认 1 分钟�
 旧版 agent 全量重写 sessions.json 时不会把它剥掉。能力判断看 `machine.info.extensions` 有无，不按版本号；完整目录按 rev
 另拉，避免频繁广播的 machine.info 变大。
 
+新建会话「从任务开始」（`newSession`）不走动作令牌：会话由用户在新建会话界面里自己建，预填的首条消息可以改，
+关联走宿主的手动关联，等同用户本人操作。时间线记录卡由 agent 在关联变化和扩展动作成功时自动产生，单独存放、单独拉取，
+不进 `session.history`：历史条目是判别联合，加新种类会让旧版网页整帧解析失败。
+
 多 agent（Codex、Gemini 等）不走这套机制：那是替换会话引擎，需要后端抽象层，与「给会话加功能」不是一回事；
 目前仍是非目标（REQUIREMENTS）。契约见 [EXTENSIONS.md](EXTENSIONS.md)。
 

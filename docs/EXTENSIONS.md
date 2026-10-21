@@ -59,7 +59,8 @@ trine-agent ext remove my-ext                # 它写下的会话关联保留
     "sessionPanel":   { "title": "任务", "icon": "list-checks" },
     "sessionBadge":   true,
     "linkPicker":     { "title": "关联任务", "multiple": true },
-    "composerAction": { "label": "任务" }
+    "composerAction": { "label": "任务" },
+    "newSession":     { "title": "从任务开始" }
   },
   "capabilities": ["prompt.insert", "prompt.send", "session.create", "links.write", "invoke"]
 }
@@ -108,6 +109,7 @@ agent 执行 `<entry...> <op>`，op 是 `view`、`badge`、`pick`、`action` 之
 
 - `session.links`、`linkedSessions` 里只有**本扩展**的关联。`linkedSessions` 是这台机器上带本扩展关联的会话
   （最多 200 个，不限目录），扩展可以据此显示「这个任务关联了哪些会话」。
+- `newSession` 的 `pick` 没有 `session`，`cwd` 是用户在新建会话 sheet 里选的目录。
 - `args`：`pick` 可能带 `{ "query": "…" }`；`action` 带 `{ "actionId", "itemId", "params", "invocationId" }`。
 
 各 op 的输出：
@@ -161,6 +163,7 @@ Effect   = { type: 'prompt.insert', text }                        // 插入输�
 | `linkPicker` | 会话「⋯」菜单与列表右键菜单的「关联…」，支持多选与批量 | `pick` |
 | `workspacePanel` | 会话列表按工作区分组时，组头「⋯」→「扩展面板…」：不进会话也能看、能开新会话（没有输入框，插入类动作改为复制） | `view` |
 | `composerAction` | 输入框的扩展按钮（桌面在工具栏 prompt 按钮旁，手机在「+」托盘里），在片段面板的位置列出候选项；只允许 `prompt.insert` 与 `links.add` | `pick` |
+| `newSession` | 新建会话 sheet 里的「从…开始」（agent 0.17.0 起）：上下文是 sheet 里选中的目录，没有会话。选一项后，它的 `prompt.insert` 文字预填为首条消息（用户可以改），`link` 在会话建好后自动关联。只允许 `prompt.insert`；既没有 `prompt.insert` 也没有 `link` 的项不可选 | `pick` |
 
 ## 动作的执行
 
@@ -194,8 +197,18 @@ Effect   = { type: 'prompt.insert', text }                        // 插入输�
 ## 会话关联
 
 会话可以挂多条关联 `{ ext, ref, label }`，存在 agent 的 `<home>/session-links.json`，随会话元数据同步到所有设备。
-来源：用户手动关联，或扩展的 `session.create` 效果（新会话创建时自动关联）。归档不清，永久删除会话时清掉；
-移除扩展时保留。
+来源：用户手动关联、扩展的 `links.*` 与 `session.create` 效果，或新建会话时从 `newSession` 候选项开始。
+归档不清，永久删除会话时清掉；移除扩展时保留。
+
+## 时间线记录
+
+扩展相关的操作会在会话时间线留一条记录（agent 0.17.0 起），所有设备都看得到，扩展不用为此做任何事：
+
+- 关联增删（不论来源）：「Tasks · 已关联 Task A」「Tasks · 已取消关联 Task A」；
+- 会话面板里 `invoke` 型动作成功：「Tasks · 归档 · Task A：已归档」，依次是动作名、条目标题、action 输出的 `message`。
+
+`prompt.send` 不另记（消息本身就在时间线里），工作区面板的动作没有会话、不记。记录存在 agent 的
+`<home>/session-ext-records.json`，每会话保留最近 50 条，永久删除会话时清掉；不写进 Claude 的会话转录。
 
 ## 最小示例
 

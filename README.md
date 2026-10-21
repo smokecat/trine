@@ -36,9 +36,12 @@ the agent runs on your own computer.
 - Extensions: programs on the agent machine can add a panel, a badge and action buttons to the
   session page and the composer (for example a project's task list, with "resume this task in a new
   session"), and sessions can be linked to their items; list rows show the links, and a workspace
-  group's menu opens the same panel without entering a session. The browser never runs extension code; it only renders the
+  group's menu opens the same panel without entering a session. A new session can start from an
+  extension item (prefilled first message, linked automatically), and link changes and extension
+  actions leave a note in the session timeline. The browser never runs extension code; it only renders the
   data the agent returns, and actions run on the agent after a click. Install with
-  `trine-agent ext add <dir>`; see [extensions](docs/EXTENSIONS.md). Requires agent 0.16.0 or later.
+  `trine-agent ext add <dir>`; see [extensions](docs/EXTENSIONS.md). Requires agent 0.16.0 or later
+  (0.17.0 for starting from an item and timeline notes).
 - Hides temporary sessions by default (working directory under a system temp directory, or
   non-interactive runs such as `claude -p`); a list filter shows them again.
 - Relays tool approval requests and interactive questions to your browser.
