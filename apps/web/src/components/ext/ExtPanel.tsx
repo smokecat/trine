@@ -114,7 +114,8 @@ export function ExtPanelSheet({
           <div className="flex flex-wrap gap-1.5 px-4 pb-2">
             {panels.map((p) => (
               <Button key={p.id} size="sm" variant={p.id === ext?.id ? 'default' : 'outline'} className="h-7" onClick={() => setActive(p.id)}>
-                {p.contributes[point]?.title ?? p.name}
+                {/* 标签用扩展名：多个扩展的面板标题常常一样（都叫「任务」） */}
+                {p.name}
               </Button>
             ))}
           </div>
