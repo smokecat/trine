@@ -75,7 +75,18 @@ export function ExtComposerPicker({
         )}
       </div>
       <div className="px-3 pb-1.5">
-        <Input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索" className="h-7 text-[12.5px]" />
+        <Input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') {
+              e.preventDefault();
+              onClose();
+            }
+          }}
+          placeholder="搜索"
+          className="h-7 text-[12.5px]"
+        />
       </div>
       <ul className="min-h-0 overflow-y-auto px-1.5 pb-1.5">
         {read.response === undefined && read.failure === undefined && <li className="text-text-3 px-2.5 py-2 text-[12.5px]">加载中…</li>}
