@@ -137,6 +137,8 @@ export function ChatView(): React.JSX.Element {
   const [renameOpen, setRenameOpen] = useState(false);
   const [extOpen, setExtOpen] = useState(false);
   const [insertRequest, setInsertRequest] = useState<{ id: number; text: string } | undefined>(undefined);
+  // 换了会话（例如扩展的「新会话接续」跳过来）：面板不跟过去
+  useEffect(() => setExtOpen(false), [machineId, sessionId]);
   const [renameBusy, setRenameBusy] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   /** 正在确认回退的目标用户消息（RewindDialog 打开中） */
