@@ -22,6 +22,7 @@ import {
   type DeviceInfo,
   type ExtListItem,
 } from './protocol.ts';
+import type { RestartNotice, RestartOutcome } from '../app/restart.ts';
 
 /** daemon 暴露给控制通道的能力（生产由 AgentApp 适配，测试可替换） */
 export interface ControlHost {
@@ -37,6 +38,13 @@ export interface ControlHost {
     add(path: string): Promise<ExtListItem>;
     remove(id: string): Promise<boolean>;
     reload(id?: string): Promise<ExtListItem[]>;
+  };
+  /** 重启 agent；不给 = 不支持（测试） */
+  restart?: {
+    request(req: { now: boolean; notice?: RestartNotice }): Promise<RestartOutcome>;
+    cancel(): RestartOutcome;
+    /** 排空进度（restart.result 附带给命令行看） */
+    pending(): { busySessions: number; deadline?: number } | undefined;
   };
 }
 
@@ -242,6 +250,47 @@ export class ControlServer {
         else if (request.op === 'ext.add') this.#send(conn, { ev: 'ext.added', item: await ext.add(request.path) });
         else if (request.op === 'ext.remove') this.#send(conn, { ev: 'ext.removed', id: request.id, removed: await ext.remove(request.id) });
         else this.#send(conn, { ev: 'ext.reloaded', items: await ext.reload(request.id) });
+        return;
+      }
+      case 'restart':
+      case 'restart.cancel': {
+        const restart = this.host.restart;
+        if (restart === undefined) throw new Error('这个 agent 不支持重启');
+        const outcome =
+          request.op === 'restart.cancel'
+            ? restart.cancel()
+            : await restart.request({
+                now: request.now,
+                ...(request.sessionId === undefined
+                  ? {}
+                  : {
+                      notice: {
+                        sessionId: request.sessionId,
+                        ...(request.note === undefined ? {} : { note: request.note }),
+                        ...(request.continuePrompt === undefined ? {} : { continuePrompt: request.continuePrompt }),
+                      },
+                    }),
+              });
+        const pending = restart.pending();
+        this.#send(
+          conn,
+          outcome.ok
+            ? {
+                ev: 'restart.result',
+                ok: true,
+                phase: outcome.phase,
+                ...(outcome.toVersion === undefined ? {} : { toVersion: outcome.toVersion }),
+                ...(pending === undefined ? {} : { busySessions: pending.busySessions }),
+                ...(pending?.deadline === undefined ? {} : { deadline: pending.deadline }),
+              }
+            : {
+                ev: 'restart.result',
+                ok: false,
+                code: outcome.code,
+                message: outcome.message,
+                ...(outcome.output === undefined ? {} : { output: outcome.output }),
+              },
+        );
         return;
       }
     }

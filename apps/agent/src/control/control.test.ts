@@ -5,6 +5,7 @@ import { connect } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { acquireInstanceLock } from '../app/instance-lock.ts';
+import type { RestartNotice, RestartOutcome } from '../app/restart.ts';
 import { agentPaths } from '../app/config.ts';
 import type { PairingSession, PeerIdentity } from '../net/pairing.ts';
 import { RecipientBookStore } from '../net/recipients.ts';
@@ -40,6 +41,16 @@ class FakeHost implements ControlHost {
   confirmed: { token: string; expected: PeerIdentity }[] = [];
   ttlMs = 5 * 60_000;
   confirmError: Error | null = null;
+  restartRequests: { now: boolean; notice?: RestartNotice }[] = [];
+  restartOutcome: RestartOutcome = { ok: true, phase: 'draining', toVersion: '0.19.0' };
+  restart = {
+    request: async (req: { now: boolean; notice?: RestartNotice }): Promise<RestartOutcome> => {
+      this.restartRequests.push(req);
+      return this.restartOutcome;
+    },
+    cancel: (): RestartOutcome => ({ ok: true, phase: 'cancelled' }),
+    pending: () => ({ busySessions: 1, deadline: Date.UTC(2026, 9, 21, 4, 30) }),
+  };
 
   status() {
     return { machineId: 'm-test', name: 'test-box', online: true, devices: this.devices.length };
@@ -175,6 +186,49 @@ describe('控制通道：查询与设备管理（agent 在运行）', () => {
     writeFileSync(path, 'not a socket');
     const s = new ControlServer(new FakeHost());
     await expect(s.listen(path)).rejects.toThrow(/不是 socket/);
+  });
+});
+
+describe('控制通道：重启', () => {
+  test('restart：带上发起会话与续跑提示，报告排期', async () => {
+    const host = new FakeHost();
+    await startServer(host);
+    const io = new ScriptIO([]);
+    expect(await run({ name: 'restart', now: false, sessionId: 's1', continuePrompt: '核实' }, io)).toBe(0);
+    expect(host.restartRequests).toEqual([{ now: false, notice: { sessionId: 's1', continuePrompt: '核实' } }]);
+    expect(io.output).toContain('新版本 0.19.0');
+    expect(io.output).toContain('当前 1 个在忙');
+    expect(io.output).toContain('本轮结束后才会重启');
+  });
+
+  test('预检失败：退出码 1，打印输出尾部', async () => {
+    const host = new FakeHost();
+    host.restartOutcome = { ok: false, code: 'check_failed', message: 'bun install 失败', output: 'lockfile mismatch' };
+    await startServer(host);
+    const io = new ScriptIO([]);
+    expect(await run({ name: 'restart', now: true }, io)).toBe(1);
+    expect(host.restartRequests).toEqual([{ now: true }]);
+    expect(io.output).toContain('没有重启：bun install 失败');
+    expect(io.output).toContain('lockfile mismatch');
+  });
+
+  test('restart cancel', async () => {
+    await startServer(new FakeHost());
+    const io = new ScriptIO([]);
+    expect(await run({ name: 'restart.cancel' }, io)).toBe(0);
+    expect(io.output).toContain('已取消重启');
+  });
+
+  test('agent 没在运行：提示无需重启', async () => {
+    const io = new ScriptIO([]);
+    expect(await run({ name: 'restart', now: false }, io)).toBe(1);
+    expect(io.output).toContain('没有在运行');
+  });
+
+  test('selfcheck 不连 agent，打印版本', async () => {
+    const io = new ScriptIO([]);
+    expect(await run({ name: 'selfcheck' }, io)).toBe(0);
+    expect(io.output).toMatch(/^trine-agent selfcheck ok \d+\.\d+\.\d+/);
   });
 });
 

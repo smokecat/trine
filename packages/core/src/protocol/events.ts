@@ -1085,6 +1085,60 @@ export const MachineUsageResponseSchema = z.object({
     .optional(),
 });
 
+// --- §3.2a 重启 agent（agent-restart，agent 0.18.0 起） ---
+//
+// 语义：`schedule` 先预检（依赖与工作区代码能否加载），通过后进入排空：等全部会话
+// 不在跑、没有排队消息和后台任务，再退出由 supervisor 拉起；`now` 预检通过后不等，立即
+// 重启（进行中的轮次会被打断）；`cancel` 取消还没执行的重启。应答在预检结束（或取消）后
+// 发；进度与结果另以 `machine.info.restart` 广播，重启后的新进程会再发一份 machine.info。
+//
+// 互操作：旧 agent 不认识本 type → client 只能等超时；client 按 machine.info.restart 有无探测。
+
+/** `machine.agent.restart.response.error.output` 的长度上限（预检输出尾部） */
+export const AGENT_RESTART_OUTPUT_MAX = 4096;
+
+/** client → agent：重启 agent（机器级帧） */
+export const MachineAgentRestartRequestSchema = z.object({
+  type: z.literal('machine.agent.restart.request'),
+  ...c2aBase,
+  reqId: ReqIdSchema,
+  action: z.enum(['schedule', 'now', 'cancel']),
+});
+
+/**
+ * 重启失败原因：
+ * - `unavailable`  agent 不是由 supervisor 拉起的，退出后没人拉起
+ * - `busy`         已有一次预检在进行中
+ * - `check_failed` 预检没通过（依赖装不上 / 工作区代码加载失败），没有重启
+ * - `not_pending`  cancel 时没有待执行的重启
+ * - `failed`       其他错误
+ */
+export const AgentRestartErrorCodeSchema = z.enum(['unavailable', 'busy', 'check_failed', 'not_pending', 'failed']);
+export type AgentRestartErrorCode = z.infer<typeof AgentRestartErrorCodeSchema>;
+
+/** agent → client：`machine.agent.restart.request` 的应答（机器级，reqId 关联） */
+export const MachineAgentRestartResponseSchema = z.object({
+  type: z.literal('machine.agent.restart.response'),
+  ...a2cBase,
+  reqId: ReqIdSchema,
+  ok: z.boolean(),
+  /**
+   * ok 时：`draining` 已排期、等会话空闲；`restarting` 马上退出；`cancelled` 已取消
+   */
+  phase: z.enum(['draining', 'restarting', 'cancelled']).optional(),
+  /** 预检里新代码报的 agent 版本（schedule / now 成功时） */
+  toVersion: z.string().max(64).optional(),
+  /** ok 为 false 时必带 */
+  error: z
+    .object({
+      code: AgentRestartErrorCodeSchema,
+      message: z.string().max(500),
+      /** 预检输出的尾部（check_failed） */
+      output: z.string().max(AGENT_RESTART_OUTPUT_MAX).optional(),
+    })
+    .optional(),
+});
+
 // --- §3.3 机器资源数据（machine-stats，agent 0.14.0 起） ---
 //
 // 按需订阅，不常驻广播：机器级流还承载 session.updated 等，relay 每条子流只留存有限帧，
@@ -1473,6 +1527,7 @@ export const AgentToClientEventSchema = z.discriminatedUnion('type', [
   MachineInfoEventSchema,
   MachineClaudeUpdateResponseSchema,
   MachineUsageResponseSchema,
+  MachineAgentRestartResponseSchema,
   MachineStatsEventSchema,
   ExtCatalogResponseSchema,
   ExtReadResponseSchema,
@@ -1519,6 +1574,7 @@ export const ClientToAgentEventSchema = z.discriminatedUnion('type', [
   MachineUnpairSchema,
   MachineClaudeUpdateRequestSchema,
   MachineUsageRequestSchema,
+  MachineAgentRestartRequestSchema,
   MachineStatsRequestSchema,
   ExtCatalogRequestSchema,
   ExtReadSchema,

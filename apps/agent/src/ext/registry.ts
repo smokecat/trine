@@ -38,6 +38,8 @@ export const MANIFEST_FILE = 'trine-extension.json';
 /** 最多注册多少个扩展（catalog 帧上限 64） */
 export const MAX_EXTENSIONS = 32;
 const MANIFEST_MAX_BYTES = 64 * 1024;
+/** trine 自己写时间线记录卡（如 agent 重启）时用的 ext 字段；扩展不能注册这个 id */
+export const RESERVED_EXT_ID = 'trine';
 
 const RegistryItemSchema = z.object({
   id: ExtIdSchema,
@@ -252,6 +254,9 @@ export class ExtensionRegistry {
   async add(dir: string): Promise<LoadedExtension> {
     const inspected = await inspectExtensionDir(dir, this.#which);
     const id = inspected.manifest.id;
+    if (id === RESERVED_EXT_ID) {
+      throw new ManifestError(`扩展 id「${RESERVED_EXT_ID}」保留给 trine 自己的时间线记录，请换一个`);
+    }
     const existing = this.#items.find((i) => i.id === id);
     if (existing === undefined && this.#items.length >= MAX_EXTENSIONS) {
       throw new ManifestError(`最多注册 ${MAX_EXTENSIONS} 个扩展`);

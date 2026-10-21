@@ -6,7 +6,7 @@
  * 跑完后再探测一次：它只用于展示，探测失败不该影响启动；每次广播都去 spawn 一遍也没必要。
  */
 import { release } from 'node:os';
-import type { MachineExtensionsSummary, MachineInfo, RateLimits } from '@trine/core';
+import type { MachineExtensionsSummary, MachineInfo, MachineRestartInfo, RateLimits } from '@trine/core';
 
 /**
  * 与 apps/agent/package.json 的 version 对齐（手工同步；没有构建步骤可注入）。
@@ -44,7 +44,10 @@ import type { MachineExtensionsSummary, MachineInfo, RateLimits } from '@trine/c
 //   SessionMeta 带 links（web 按 machine.info.extensions 有无判断，不按版本号）
 // - 0.17.0 起扩展贡献点 newSession（新建会话「从任务开始」）、时间线记录卡（ext.record 广播、
 //   ext.records.request；web 按 machine.info.extensions.records 判断）
-export const AGENT_VERSION = '0.17.0';
+// - 0.18.0 起支持自重启：machine.agent.restart.request、MachineInfo 带 restart（运行版本 /
+//   工作区版本 / 进行中的重启；web 按 machine.info.restart 有无判断）；`restart` / `selfcheck`
+//   子命令；会话子进程带 TRINE_HOME / TRINE_SESSION_ID
+export const AGENT_VERSION = '0.18.0';
 
 export function buildMachineInfo(input: {
   name: string;
@@ -53,6 +56,7 @@ export function buildMachineInfo(input: {
   maxSessions: number;
   rateLimits?: RateLimits | undefined;
   extensions?: MachineExtensionsSummary | undefined;
+  restart?: MachineRestartInfo | undefined;
 }): MachineInfo {
   return {
     name: input.name,
@@ -64,5 +68,6 @@ export function buildMachineInfo(input: {
     maxSessions: input.maxSessions,
     ...(input.rateLimits === undefined ? {} : { rateLimits: input.rateLimits }),
     ...(input.extensions === undefined ? {} : { extensions: input.extensions }),
+    ...(input.restart === undefined ? {} : { restart: input.restart }),
   };
 }

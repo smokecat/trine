@@ -48,11 +48,11 @@ export interface SpawnedProcess {
 /** 起子进程；起不来（ENOENT 等）直接抛 */
 export type SpawnFn = (
   cmd: string[],
-  options: { env: Record<string, string | undefined> },
+  options: { env: Record<string, string | undefined>; cwd?: string },
 ) => SpawnedProcess;
 
-export const defaultSpawn: SpawnFn = (cmd, { env }) =>
-  Bun.spawn(cmd, { stdout: 'pipe', stderr: 'pipe', stdin: 'ignore', env });
+export const defaultSpawn: SpawnFn = (cmd, { env, cwd }) =>
+  Bun.spawn(cmd, { stdout: 'pipe', stderr: 'pipe', stdin: 'ignore', env, ...(cwd === undefined ? {} : { cwd }) });
 
 // ---------------------------------------------------------------------------
 // 解析
@@ -294,75 +294,102 @@ export class ClaudeUpdater {
     return v === 'unknown' ? fallback : v;
   }
 
-  async #exec(
-    executable: string,
-  ): Promise<
-    | { kind: 'exit'; code: number; raw: string; rawTruncated: boolean }
-    | { kind: 'timeout'; raw: string; rawTruncated: boolean }
-    | { kind: 'spawn_error'; message: string; raw: string; rawTruncated: boolean }
-  > {
-    let proc: SpawnedProcess;
-    try {
-      proc = this.#spawn([executable, 'update'], { env: this.#opts.env ?? process.env });
-    } catch (err) {
-      return { kind: 'spawn_error', message: (err as Error).message, raw: '', rawTruncated: false };
-    }
-    this.#current = proc;
-
-    // stdout + stderr 按到达顺序拼进同一个尾部缓冲
-    let raw = '';
-    let rawTruncated = false;
-    const append = (chunk: string): void => {
-      raw += chunk;
-      if (raw.length > RAW_TAIL_KEEP) {
-        raw = raw.slice(raw.length - RAW_TAIL_KEEP);
-        rawTruncated = true;
-      }
-    };
-    const readers: { cancel(): Promise<void> }[] = [];
-    const pump = async (stream: ReadableStream<Uint8Array>): Promise<void> => {
-      const reader = stream.getReader();
-      readers.push(reader);
-      const decoder = new TextDecoder();
-      try {
-        for (;;) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          append(decoder.decode(value, { stream: true }));
-        }
-        append(decoder.decode());
-      } catch {
-        // 被 cancel 或管道异常：已读到的保留
-      }
-    };
-    const drained = Promise.all([pump(proc.stdout), pump(proc.stderr)]);
-
-    let timedOut = false;
-    let killTimer: ReturnType<typeof setTimeout> | undefined;
-    const timer = setTimeout(() => {
-      timedOut = true;
-      proc.kill('SIGTERM');
-      killTimer = setTimeout(() => proc.kill('SIGKILL'), KILL_GRACE_MS);
-    }, this.#timeoutMs);
-
-    let code: number;
-    try {
-      code = await proc.exited;
-    } finally {
-      clearTimeout(timer);
-      if (killTimer !== undefined) clearTimeout(killTimer);
-    }
-
-    let graceTimer: ReturnType<typeof setTimeout> | undefined;
-    await Promise.race([
-      drained,
-      new Promise<void>((resolve) => {
-        graceTimer = setTimeout(resolve, DRAIN_GRACE_MS);
-      }),
-    ]);
-    clearTimeout(graceTimer);
-    for (const reader of readers) void reader.cancel().catch(() => {});
-
-    return timedOut ? { kind: 'timeout', raw, rawTruncated } : { kind: 'exit', code, raw, rawTruncated };
+  async #exec(executable: string): Promise<CapturedRun> {
+    return runCaptured(this.#spawn, [executable, 'update'], {
+      env: this.#opts.env ?? process.env,
+      timeoutMs: this.#timeoutMs,
+      onSpawn: (proc) => {
+        this.#current = proc;
+      },
+    });
   }
+}
+
+// ---------------------------------------------------------------------------
+// 跑子进程并收集输出尾部（claude update、agent 重启预检共用）
+// ---------------------------------------------------------------------------
+
+export type CapturedRun =
+  | { kind: 'exit'; code: number; raw: string; rawTruncated: boolean }
+  | { kind: 'timeout'; raw: string; rawTruncated: boolean }
+  | { kind: 'spawn_error'; message: string; raw: string; rawTruncated: boolean };
+
+/**
+ * 起子进程，stdout + stderr 按到达顺序拼进同一个尾部缓冲（至多 RAW_TAIL_KEEP），
+ * 超时 SIGTERM、再等 KILL_GRACE_MS 不退就 SIGKILL。不抛：起不来以 spawn_error 表达。
+ */
+export async function runCaptured(
+  spawn: SpawnFn,
+  cmd: string[],
+  options: {
+    env: Record<string, string | undefined>;
+    cwd?: string;
+    timeoutMs: number;
+    /** 拿到子进程句柄（调用方要能在退出时杀掉它） */
+    onSpawn?: (proc: SpawnedProcess) => void;
+  },
+): Promise<CapturedRun> {
+  let proc: SpawnedProcess;
+  try {
+    proc = spawn(cmd, { env: options.env, ...(options.cwd === undefined ? {} : { cwd: options.cwd }) });
+  } catch (err) {
+    return { kind: 'spawn_error', message: (err as Error).message, raw: '', rawTruncated: false };
+  }
+  options.onSpawn?.(proc);
+
+  let raw = '';
+  let rawTruncated = false;
+  const append = (chunk: string): void => {
+    raw += chunk;
+    if (raw.length > RAW_TAIL_KEEP) {
+      raw = raw.slice(raw.length - RAW_TAIL_KEEP);
+      rawTruncated = true;
+    }
+  };
+  const readers: { cancel(): Promise<void> }[] = [];
+  const pump = async (stream: ReadableStream<Uint8Array>): Promise<void> => {
+    const reader = stream.getReader();
+    readers.push(reader);
+    const decoder = new TextDecoder();
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        append(decoder.decode(value, { stream: true }));
+      }
+      append(decoder.decode());
+    } catch {
+      // 被 cancel 或管道异常：已读到的保留
+    }
+  };
+  const drained = Promise.all([pump(proc.stdout), pump(proc.stderr)]);
+
+  let timedOut = false;
+  let killTimer: ReturnType<typeof setTimeout> | undefined;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    proc.kill('SIGTERM');
+    killTimer = setTimeout(() => proc.kill('SIGKILL'), KILL_GRACE_MS);
+  }, options.timeoutMs);
+
+  let code: number;
+  try {
+    code = await proc.exited;
+  } finally {
+    clearTimeout(timer);
+    if (killTimer !== undefined) clearTimeout(killTimer);
+  }
+
+  // 孙进程可能还占着管道：等一小会儿就不等了
+  let graceTimer: ReturnType<typeof setTimeout> | undefined;
+  await Promise.race([
+    drained,
+    new Promise<void>((resolve) => {
+      graceTimer = setTimeout(resolve, DRAIN_GRACE_MS);
+    }),
+  ]);
+  clearTimeout(graceTimer);
+  for (const reader of readers) void reader.cancel().catch(() => {});
+
+  return timedOut ? { kind: 'timeout', raw, rawTruncated } : { kind: 'exit', code, raw, rawTruncated };
 }

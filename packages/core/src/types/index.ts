@@ -320,6 +320,36 @@ export const MachineStatsSchema = z.object({
 });
 export type MachineStats = z.infer<typeof MachineStatsSchema>;
 
+/**
+ * agent 自重启（agent-restart，agent ≥ 0.18.0）：运行版本与进行中的重启。
+ *
+ * 重启 = 预检 → 等全部会话空闲（排空）→ agent 自行退出、由 supervisor 拉起。会话的 claude
+ * 子进程随 agent 一起结束，之后发消息按 resume 接上；所以要排空，不打断进行中的轮次。
+ */
+export const MachineRestartInfoSchema = z.object({
+  /** 能否远程重启：agent 由 supervisor（systemd 等）拉起时才行 */
+  available: z.boolean(),
+  /** available 为 false 的原因（给人看） */
+  unavailableReason: z.string().max(300).optional(),
+  /** 运行中的代码版本（启动时工作区的 git HEAD，短 sha）；读不到不给 */
+  revision: z.string().max(64).optional(),
+  /** 工作区当前的 git HEAD（短 sha）；与 revision 不同 = 有更新还没生效 */
+  workspaceRevision: z.string().max(64).optional(),
+  /** 进行中的重启；没有就省略 */
+  pending: z
+    .object({
+      /** checking：在跑预检；draining：预检通过，等会话空闲 */
+      phase: z.enum(['checking', 'draining']),
+      requestedAt: TimestampSchema,
+      /** 排空的截止时刻：到点仍有会话在忙就取消这次重启 */
+      deadline: TimestampSchema.optional(),
+      /** 还在忙的会话数（排空时） */
+      busySessions: z.number().int().nonnegative(),
+    })
+    .optional(),
+});
+export type MachineRestartInfo = z.infer<typeof MachineRestartInfoSchema>;
+
 /** 机器信息（E2E 密文内） */
 export const MachineInfoSchema = z.object({
   name: z.string(),
@@ -337,6 +367,8 @@ export const MachineInfoSchema = z.object({
    * 扩展入口；完整目录按 rev 另拉 `ext.catalog.request`。
    */
   extensions: MachineExtensionsSummarySchema.optional(),
+  /** agent 自重启（agent-restart 新增，可选；agent ≥ 0.18.0）。缺失 = 不支持，client 隐藏重启入口 */
+  restart: MachineRestartInfoSchema.optional(),
 });
 export type MachineInfo = z.infer<typeof MachineInfoSchema>;
 

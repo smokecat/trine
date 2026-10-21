@@ -16,6 +16,7 @@
 - 显示每台机器的 CPU、内存、磁盘、网络和 claude 子进程占用（列表顶部、机器卡、机器详情页），只在页面可见时刷新，间隔可在设置里调（默认 1 分钟），也可手动刷新。
 - 会话和工作区可以置顶，最近置顶的在最上面；按工作区分组时，组的位置固定（新工作区在上），不随会话状态跳动。
 - 扩展：agent 机器上的程序可以给会话页和输入框加面板、徽章和操作按钮（例如项目的任务列表，「在新会话里接续这个任务」），会话可以关联到它的条目；列表行上显示关联，工作区分组的菜单不进会话也能打开同一个面板。新建会话时可以从扩展的条目开始（预填首条消息并自动关联），关联变化和扩展的操作会在会话时间线留一条记录。浏览器不执行扩展的任何代码，只渲染 agent 返回的数据，操作在点击后由 agent 执行。用 `trine-agent ext add <目录>` 安装，见[扩展](docs/EXTENSIONS.md)。需要 agent 0.16.0 及以上（从条目开始、时间线记录需要 0.17.0）。
+- 更新 agent 的工作区后可以安全重启：在机器详情页操作，或运行 `trine-agent restart`（在 trine 会话里也可以）。先预检新代码，等没有会话在忙再退出，由服务管理器拉起。用其他方式重启 agent 会结束所有运行中的会话，包括执行命令的那个。需要 agent ≥ 0.18.0，且由 systemd 等服务管理器托管，见[安全重启 agent](docs/AGENT-ENROLLMENT.zh-CN.md#安全重启-agent升级后换上新代码)。
 - 默认隐藏临时会话（工作目录在系统临时目录下，或 `claude -p` 等非交互运行），列表筛选里可以重新显示。
 - 配对码/二维码与人工校验码确认，浏览器到 agent 的应用消息端到端加密。
 - 可选 Bark 通知，仅包含通用事件类型和机器标识/别名。
@@ -66,7 +67,7 @@ TRINE_DEFAULT_MODEL=sonnet bun run dev:agent --   --server http://localhost:5173
 
 ## 配置、开发与文档
 
-- agent：`--server` / `TRINE_SERVER` 必填；`--home` / `TRINE_HOME` 指定状态目录，默认 `~/.trine`；`--claude-bin` 选择 CLI；`TRINE_DEFAULT_MODEL` 指定兜底模型（默认 `opus[1m]`）。`TRINE_MAX_SESSIONS`（默认 10）与 `TRINE_IDLE_TIMEOUT_MS`（默认 15 分钟）控制活跃会话（有 Claude Code 子进程的会话）：名额满时先回收最久未活动的空闲会话的子进程（转录保留，下次发消息自动恢复），全都在忙才拒绝；归档会话也会顺带回收它的空闲子进程。Web 列表把这类会话标为「驻留」，并显示机器的「子进程 n/上限」。
+- agent：`--server` / `TRINE_SERVER` 必填；`--home` / `TRINE_HOME` 指定状态目录，默认 `~/.trine`；`--claude-bin` 选择 CLI；`TRINE_DEFAULT_MODEL` 指定兜底模型（默认 `opus[1m]`）；`TRINE_SUPERVISED=1` 声明由 systemd 以外的服务管理器托管（允许从 trine 重启）。`TRINE_MAX_SESSIONS`（默认 10）与 `TRINE_IDLE_TIMEOUT_MS`（默认 15 分钟）控制活跃会话（有 Claude Code 子进程的会话）：名额满时先回收最久未活动的空闲会话的子进程（转录保留，下次发消息自动恢复），全都在忙才拒绝；归档会话也会顺带回收它的空闲子进程。Web 列表把这类会话标为「驻留」，并显示机器的「子进程 n/上限」。
 - 模型：可以填 Claude Code 的家族别名（`fable`、`opus`、`sonnet`、`haiku`，以及 `opus[1m]` 这类带后缀的写法），由 Claude Code 解析到该家族最新版本；也可以填具体模型 ID。Web 端的预置模型只有别名。
 - 新会话默认值：新建会话时预选的模型和权限模式在「设置 → 新会话默认值」里改，初值是 `opus[1m]` 和 `bypassPermissions`；会话建好后各自记住自己的模型和权限。不希望新会话跳过工具审批的话，请把默认权限改掉。
 - 发送键：手机、平板等触屏设备上，键盘回车总是换行，点发送按钮发送；电脑键盘在「设置 → 发送键」里二选一：Enter 发送、Shift+Enter 换行（默认），或 Cmd/Ctrl+Enter 发送、Enter 换行。两种模式下 Cmd/Ctrl+Enter 都能发送。

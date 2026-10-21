@@ -124,6 +124,7 @@ import type { Recipient } from '../net/recipients.ts';
 import type { MachineStatsWatcher } from './machine-stats.ts';
 import type { CwdStore } from './cwd-store.ts';
 import type { ClaudeUpdateOutcome } from './claude-cli.ts';
+import type { RestartOutcome } from './restart.ts';
 import type { PlanUsageRefreshOutcome } from './plan-usage.ts';
 import type { SessionFlagsStore } from './session-flags.ts';
 import { executeRewind, previewRewind, type RewindDeps } from './rewind.ts';
@@ -155,6 +156,7 @@ const MACHINE_LEVEL_TYPES = new Set<ClientToAgentEvent['type']>([
   'machine.unpair',
   'machine.claude.update.request',
   'machine.usage.request',
+  'machine.agent.restart.request',
   'machine.stats.request',
   'cwd.list.request',
   'cwd.add',
@@ -248,6 +250,11 @@ export interface RouterDeps {
    * machine.info）。不抛——失败以 outcome 表达。不给 = 不支持（测试）。
    */
   refreshUsage?: () => Promise<PlanUsageRefreshOutcome>;
+  /**
+   * 重启 agent（machine.agent.restart.request，见 restart.ts）。不给 = 不支持（测试）。
+   * schedule/now 在预检结束后才 resolve；cancel 同步
+   */
+  restartAgent?: (action: 'schedule' | 'now' | 'cancel') => Promise<RestartOutcome>;
   /** 资源数据（machine.stats.request，见 machine-stats.ts）。不给 = 不支持（测试） */
   machineStats?: Pick<MachineStatsWatcher, 'request'>;
   /** listSessions 查不到模型时的兜底 */
@@ -346,6 +353,14 @@ export class Router {
       clearTimer: (handle) => this.#clearTimeout(handle),
       onChain: (sid, task) => void this.#enqueue(sid, task),
     });
+  }
+
+  /**
+   * 还在处理中的入站命令数：命令链上没跑完的、附件还在准备的、会话还在 resume 的。
+   * agent 重启的排空要等它们归零——它们还没进 manager，busyCount 看不到（见 restart.ts）
+   */
+  get inFlight(): number {
+    return this.#chains.size + this.#inputPrep.size + this.#resolving.size;
   }
 
   /** 删除后复查定时器数（测试用） */
@@ -1265,6 +1280,13 @@ export class Router {
         void task.finally(() => this.#background.delete(task));
         return;
       }
+      case 'machine.agent.restart.request': {
+        // 不 await：预检要跑 bun install，别堵机器级链
+        const task = this.#runAgentRestart(event.reqId, event.action);
+        this.#background.add(task);
+        void task.finally(() => this.#background.delete(task));
+        return;
+      }
       case 'machine.stats.request': {
         const watcher = this.#deps.machineStats;
         if (watcher === undefined) {
@@ -1520,6 +1542,40 @@ export class Router {
       ...(outcome.outputTruncated ? { outputTruncated: true } : {}),
       ...(outcome.error === undefined ? {} : { error: outcome.error }),
     });
+  }
+
+  /** 重启 agent 并回机器级应答（进度另随 machine.info.restart 广播） */
+  async #runAgentRestart(reqId: string, action: 'schedule' | 'now' | 'cancel'): Promise<void> {
+    let outcome: RestartOutcome;
+    try {
+      outcome = this.#deps.restartAgent === undefined
+        ? { ok: false, code: 'unavailable', message: '这个 agent 不支持重启' }
+        : await this.#deps.restartAgent(action);
+    } catch (err) {
+      outcome = { ok: false, code: 'failed', message: `agent 重启出错：${(err as Error).message}`.slice(0, 300) };
+    }
+    this.#emitMachine({
+      type: 'machine.agent.restart.response',
+      reqId,
+      ok: outcome.ok,
+      ...(outcome.ok
+        ? { phase: outcome.phase, ...(outcome.toVersion === undefined ? {} : { toVersion: outcome.toVersion }) }
+        : {
+            error: {
+              code: outcome.code,
+              message: outcome.message.slice(0, 500),
+              ...(outcome.output === undefined ? {} : { output: outcome.output }),
+            },
+          }),
+    });
+  }
+
+  /**
+   * 以用户消息的身份往会话里发一条（agent 重启后的续跑提示）：排在该会话的命令链上，
+   * 与 input.send 同一条路径；会话不在内存里就 resume。
+   */
+  sendAsUser(sessionId: string, text: string): Promise<{ clientMsgId: string; queued: boolean }> {
+    return this.#onChain(sessionId, () => this.#sendNow(sessionId, text));
   }
 
   /** 刷新订阅限额用量并回机器级应答（新数据已随 machine.info 广播） */

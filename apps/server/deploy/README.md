@@ -164,6 +164,61 @@ bun run dev:agent -- devices revoke DEVICE_ID_OR_UNIQUE_PREFIX --home ~/.trine
 (or edits `recipients.json` when the agent is stopped). The agent stops encrypting
 events for it and drops its messages; the relay's device record is unchanged.
 
+### Run the agent as a service and restart it safely
+
+Sessions run as child processes of the agent, so stopping or restarting the agent ends
+every Claude Code process it started, including the one running the restart command.
+Restart the agent from trine instead (agent 0.18.0 or later):
+
+```bash
+bun run dev:agent -- restart --home ~/.trine                        # restart once all sessions are idle
+bun run dev:agent -- restart --continue "Check the agent status" # from inside a trine session
+bun run dev:agent -- restart --now --home ~/.trine                  # do not wait for sessions
+bun run dev:agent -- restart cancel --home ~/.trine
+```
+
+The machine page in the web app has the same controls and shows the running revision next
+to the checkout's current `HEAD`. A restart first checks the checkout
+(`bun install --frozen-lockfile`, then loads all agent code with `trine-agent selfcheck`) and
+does nothing if that fails. It then waits until no session is replying, has queued messages
+or runs background tasks, and cancels itself after 15 minutes if some session stays busy.
+Finally the agent exits with code 75 and the service manager starts the new code; sessions
+resume their conversation on the next message. The agent does not run `git`: update the
+checkout first.
+
+Run inside a trine session, the command returns immediately and the restart happens after
+the current reply ends. Afterwards the session gets a timeline note, and with `--continue`
+the text is sent to it as a new message so Claude can check the result. Sessions get
+`TRINE_HOME` and `TRINE_SESSION_ID` in their environment for this.
+
+The agent only offers restarts when a service manager will start it again: systemd sets
+`INVOCATION_ID`; for other managers set `TRINE_SUPERVISED=1`. An example systemd user unit
+(`~/.config/systemd/user/trine-agent.service`):
+
+```ini
+[Unit]
+Description=trine agent
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/trine/apps/agent
+ExecStart=%h/.bun/bin/bun run src/cli.ts --server https://trine.example.com --home %h/.trine
+# Exit code 75 (restart) and crashes are restarted
+Restart=on-failure
+RestartSec=2
+# Stop the claude child processes with the agent; one process per identity
+KillMode=control-group
+TimeoutStopSec=20
+
+[Install]
+WantedBy=default.target
+```
+
+systemd does not load your shell profile: add `Environment=PATH=...` and any other variables
+your sessions need.
+
 ## 5. Add machines, revoke invitations and recover
 
 For each new agent, repeat only the **issue invitation + start with `--enroll`**

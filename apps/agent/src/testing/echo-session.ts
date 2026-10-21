@@ -18,7 +18,7 @@ import type { CreateSessionArgs } from '../bridge/manager.ts';
 import type { PendingPermissionSnapshot, PermissionVerdict } from '../bridge/permission.ts';
 import type { ClaudeSession } from '../bridge/session.ts';
 import type { EventBody } from '../bridge/types.ts';
-import { AgentApp } from '../app/app.ts';
+import { AgentApp, type AgentAppDeps } from '../app/app.ts';
 import type { SpawnFn } from '../app/claude-cli.ts';
 import type { AgentConfig } from '../app/config.ts';
 import { FakeTranscripts } from './fake-transcripts.ts';
@@ -227,6 +227,11 @@ export interface StartEchoAgentOptions {
    * 测试绝不能起真 claude。
    */
   commandsQueryFn?: typeof query;
+  /**
+   * agent 自重启的注入（见 AgentAppDeps.restart）。默认：没有 supervisor（不可用）、
+   * 不读 git、预检直接失败——测试绝不能真跑 bun install 或退出进程。
+   */
+  restart?: AgentAppDeps['restart'];
 }
 
 export interface EchoAgent {
@@ -280,6 +285,11 @@ export async function startEchoAgent(
       ((() => ({ supportedCommands: async () => [], close: () => {} })) as unknown as typeof query),
     createSession: (args) =>
       new EchoSession(args, args.emit, undefined, recording) as unknown as ClaudeSession,
+    restart: options.restart ?? {
+      env: {},
+      repoRoot: null,
+      precheck: async () => ({ ok: false, message: '测试里不跑预检', output: '' }),
+    },
   });
 
   if (options.autoStart !== false) await app.start();

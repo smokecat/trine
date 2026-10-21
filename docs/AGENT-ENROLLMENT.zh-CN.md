@@ -63,6 +63,31 @@ Ctrl-C 退出会同时作废未完成的配对。比对期间若又收到新的�
 能访问它的人可以发起配对和移除设备，权限与能读取 `identity.json` 私钥相同。
 只用 `--pair` 前台启动 agent 的旧方式仍然可用。
 
+## 安全重启 agent（升级后换上新代码）
+
+会话是 agent 的子进程：停止或重启 agent 会结束它拉起的全部 Claude Code 进程，包括正在执行重启命令的那个会话。
+所以改用 trine 自己的重启（agent ≥ 0.18.0）：
+
+```bash
+bun run dev:agent -- restart --home ~/.trine                     # 等全部会话空闲后重启
+bun run dev:agent -- restart --continue "核实 agent 状态"          # 在 trine 会话里运行
+bun run dev:agent -- restart --now --home ~/.trine               # 不等会话空闲
+bun run dev:agent -- restart cancel --home ~/.trine
+```
+
+网页的机器详情页有同样的按钮，并显示运行中的版本与工作区当前 `HEAD`（不同说明有更新还没生效）。
+重启先预检工作区（`bun install --frozen-lockfile`，再用 `trine-agent selfcheck` 加载全部代码），不通过就不重启；
+然后等到没有会话在回复、没有排队消息和后台任务，15 分钟内等不到就自动取消；最后 agent 以退出码 75 退出，
+由服务管理器拉起新代码。会话的对话上下文不受影响，下次发消息时接上。agent 不执行 git：先把工作区更新好。
+
+在 trine 会话里运行时命令立即返回，本轮回复结束后才重启；重启后该会话的时间线里会有一条记录，
+带 `--continue` 的内容会作为一条新消息发进去，让 Claude 接着核实。会话子进程的环境里有 `TRINE_HOME` 与
+`TRINE_SESSION_ID`，命令据此找到 agent 和发起的会话。
+
+只有退出后会被拉起时才能重启：systemd 会设 `INVOCATION_ID`；其他服务管理器请设 `TRINE_SUPERVISED=1`。
+systemd 用户服务的示例见[部署指南](../apps/server/deploy/README.md#run-the-agent-as-a-service-and-restart-it-safely)，
+要点是 `Restart=on-failure`（退出码 75 会被拉起）与 `KillMode=control-group`。
+
 ## 管理已配对浏览器
 
 ```bash

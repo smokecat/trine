@@ -42,6 +42,12 @@ the agent runs on your own computer.
   data the agent returns, and actions run on the agent after a click. Install with
   `trine-agent ext add <dir>`; see [extensions](docs/EXTENSIONS.md). Requires agent 0.16.0 or later
   (0.17.0 for starting from an item and timeline notes).
+- Restarts the agent safely after you update its checkout, from the machine page or with
+  `trine-agent restart` (also from inside a trine session): it checks the new code first, waits
+  until no session is busy, then exits for the service manager to start it again. Restarting
+  the agent any other way ends every running session, including the one that ran the command.
+  Requires agent 0.18.0 or later run by systemd or another service manager; see
+  [restarting the agent](apps/server/deploy/README.md#run-the-agent-as-a-service-and-restart-it-safely).
 - Hides temporary sessions by default (working directory under a system temp directory, or
   non-interactive runs such as `claude -p`); a list filter shows them again.
 - Relays tool approval requests and interactive questions to your browser.
@@ -134,7 +140,8 @@ comments are primarily in Chinese.
 
 The agent requires `--server` or `TRINE_SERVER`. Its default state directory is
 `~/.trine`; `--home`/`TRINE_HOME` overrides it. `TRINE_DEFAULT_MODEL` selects the
-fallback model (default `opus[1m]`). `TRINE_MAX_SESSIONS` (default 10) and `TRINE_IDLE_TIMEOUT_MS` (default 15 minutes) control
+fallback model (default `opus[1m]`). `TRINE_SUPERVISED=1` tells the agent that a service manager other than systemd restarts it,
+which enables restarts from trine. `TRINE_MAX_SESSIONS` (default 10) and `TRINE_IDLE_TIMEOUT_MS` (default 15 minutes) control
 active sessions, i.e. sessions with a running Claude Code child process. When the limit is reached,
 the agent first shuts down the child process of the least recently active idle session (its
 transcript stays and it resumes on the next message); archiving a session also releases its idle child

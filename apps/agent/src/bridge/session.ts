@@ -205,6 +205,8 @@ export interface ClaudeSessionOptions {
   rewindPoint?: RewindPoint;
   /** 额外可读目录（本会话的附件上传目录）：Read 这些路径不弹权限请求 */
   additionalDirectories?: string[];
+  /** 子进程额外的环境变量（叠在 process.env 上） */
+  env?: Record<string, string>;
   /** 截断点已生效（新分支上有了第一条回复），调用方据此清掉持久化的截断点 */
   onRewindApplied?: () => void;
   /** CLI 报来新的订阅限额用量（rate_limit_event，账号级），供 app 汇总广播 */
@@ -286,6 +288,8 @@ export class ClaudeSession {
   readonly #onMeta: ((meta: SessionRuntimeMeta) => void) | undefined;
   readonly #log: (line: string) => void;
   readonly #claudeExecutable: string | undefined;
+  /** 叠在 process.env 上的额外环境变量（TRINE_SESSION_ID 等，见 app.ts） */
+  readonly #env: Record<string, string> | undefined;
   readonly #additionalDirectories: string[];
 
   readonly #queue: InputQueue;
@@ -383,6 +387,7 @@ export class ClaudeSession {
     this.#log = options.log ?? ((line) => console.error(line));
     this.#claudeExecutable = options.pathToClaudeCodeExecutable;
     this.#additionalDirectories = options.additionalDirectories ?? [];
+    this.#env = options.env;
     this.#resumeRequested = options.resume ?? false;
     this.#pendingRewind = options.rewindPoint;
     this.#onRewindApplied = options.onRewindApplied;
@@ -1032,6 +1037,8 @@ export class ClaudeSession {
         ? {}
         : { pathToClaudeCodeExecutable: this.#claudeExecutable }),
       ...(this.#additionalDirectories.length === 0 ? {} : { additionalDirectories: this.#additionalDirectories }),
+      // SDK 的 env 是整体替换，不是叠加：要带上 agent 自己的 env
+      ...(this.#env === undefined ? {} : { env: { ...process.env, ...this.#env } }),
       // —— 会话参数 ——
       cwd: this.#cwd,
       model: this.#model,

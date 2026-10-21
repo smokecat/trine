@@ -105,6 +105,8 @@ export interface SessionManagerOptions {
   claudeExecutable?: string;
   /** 会话的附件上传目录（会建好），加进 SDK additionalDirectories；不给 = 不加 */
   uploadsDir?: (sessionId: string) => string;
+  /** 给会话子进程额外设的环境变量（叠在 agent 自己的 env 上）；不给 = 原样继承 */
+  sessionEnv?: (sessionId: string) => Record<string, string>;
   /** 会话标记；不给则不合并 archived / pendingTitle、不过滤墓碑 */
   flags?: SessionFlags;
   /** 会话关联（扩展，ext/links-store.ts）：decorate 时并进 meta.links */
@@ -162,6 +164,8 @@ export interface CreateSessionArgs {
   onRewindApplied?: () => void;
   /** 额外可读目录（附件上传目录） */
   additionalDirectories?: string[];
+  /** 额外环境变量（叠在 process.env 上） */
+  env?: Record<string, string>;
   onRateLimits?: (patch: RateLimitPatch) => void;
 }
 
@@ -202,6 +206,7 @@ export class SessionManager {
   readonly #createSession: (options: CreateSessionArgs) => ClaudeSession;
   readonly #claudeExecutable: string | undefined;
   readonly #uploadsDir: ((sessionId: string) => string) | undefined;
+  readonly #sessionEnv: ((sessionId: string) => Record<string, string>) | undefined;
   readonly #flags: SessionFlags | undefined;
   readonly #sessionLinks: ((sessionId: string) => SessionLink[] | undefined) | undefined;
   readonly #rememberedParams: SessionManagerOptions['rememberedParams'];
@@ -235,6 +240,7 @@ export class SessionManager {
     this.#rememberedParams = options.rememberedParams;
     this.#claudeExecutable = options.claudeExecutable;
     this.#uploadsDir = options.uploadsDir;
+    this.#sessionEnv = options.sessionEnv;
     this.#onRunEnd = options.onRunEnd;
     this.#onPermissionModeChange = options.onPermissionModeChange;
     this.#onRewindApplied = options.onRewindApplied;
@@ -248,6 +254,13 @@ export class SessionManager {
   /** 当前活跃（持有实例的）会话数 */
   get activeCount(): number {
     return this.#sessions.size;
+  }
+
+  /** 在忙的会话数：跑着轮次、有排队消息或有后台任务（agent 重启要等它们归零） */
+  get busyCount(): number {
+    let busy = 0;
+    for (const session of this.#sessions.values()) if (isBusy(session)) busy++;
+    return busy;
   }
 
   /** 活跃会话上限 */
@@ -320,6 +333,7 @@ export class SessionManager {
       onRewindApplied: () => this.#onRewindApplied?.(args.sessionId),
       ...(this.#onRateLimits === undefined ? {} : { onRateLimits: this.#onRateLimits }),
       ...(this.#uploadsDir === undefined ? {} : { additionalDirectories: [this.#uploadsDir(args.sessionId)] }),
+      ...(this.#sessionEnv === undefined ? {} : { env: this.#sessionEnv(args.sessionId) }),
     });
 
     this.#sessions.set(args.sessionId, session);

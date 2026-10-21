@@ -30,6 +30,11 @@ export function agentControlHost(app: AgentApp): ControlHost {
         return app.extensionRegistry.list().map(toListItem);
       },
     },
+    restart: {
+      request: ({ now, notice }) => app.restartAgent({ mode: now ? 'now' : 'when_idle', notice }),
+      cancel: () => app.cancelRestart(),
+      pending: () => app.machineInfo().restart?.pending,
+    },
   };
 }
 

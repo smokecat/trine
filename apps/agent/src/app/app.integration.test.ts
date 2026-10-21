@@ -16,7 +16,8 @@ import { createInvitation } from '../../../server/src/auth/invitations.ts';
  * SDK 相关逻辑在 bridge 层自己的测试里。
  */
 import { afterEach, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
-import { mkdtemp, rm, stat } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { sodiumReady } from '@trine/core/crypto';
@@ -26,7 +27,7 @@ import { startServer, type TrineServer } from '../../../server/src/server.ts';
 import { startEchoAgent } from '../testing/echo-session.ts';
 import { FakeTranscripts } from '../testing/fake-transcripts.ts';
 import { MockClient } from '../testing/mock-client.ts';
-import type { AgentApp } from './app.ts';
+import type { AgentApp, AgentAppDeps } from './app.ts';
 import type { SpawnedProcess, SpawnFn } from './claude-cli.ts';
 import { agentPaths } from './config.ts';
 
@@ -74,7 +75,7 @@ afterEach(async () => {
 
 /** 起一个假会话 agent（不自动接入——多数用例要自己控制 start 的时机） */
 async function createApp(
-  extra: { whichFn?: (cmd: string) => string | null; spawnFn?: SpawnFn } = {},
+  extra: { whichFn?: (cmd: string) => string | null; spawnFn?: SpawnFn; restart?: AgentAppDeps['restart'] } = {},
 ): Promise<AgentApp> {
   const { app: created } = await startEchoAgent({
     ...extra,
@@ -729,7 +730,109 @@ describe('agent 接线 · 端到端', () => {
       ['/home/u/.local/bin/claude', 'update'],
       ['/home/u/.local/bin/claude', '--version'],
     ]);
-    expect(app.machineInfo()).toMatchObject({ agentVersion: '0.17.0', claudeVersion: '2.1.282 (Claude Code)' });
+    expect(app.machineInfo()).toMatchObject({ agentVersion: '0.18.0', claudeVersion: '2.1.282 (Claude Code)' });
+    client.close();
+  });
+
+  test('i. 网页重启 agent：预检通过、会话都空闲 → 先回应答再退出，machine.info 带重启信息', async () => {
+    await app.stop();
+    app = await createApp({
+      restart: { env: { TRINE_SUPERVISED: '1' }, repoRoot: null, precheck: async () => ({ ok: true, version: '0.99.0' }) },
+    });
+    let restarted = 0;
+    app.onRestart = () => {
+      restarted++;
+    };
+    const client = await pairAndConnect();
+    expect(app.machineInfo().restart).toEqual({ available: true });
+
+    send(client, { type: 'machine.agent.restart.request', reqId: 'q-rs', action: 'schedule' });
+    await waitFor(() => restarted === 1, '退出');
+    const events = eventsOf(client);
+    expect(events.find((e) => e.type === 'machine.agent.restart.response')).toMatchObject({
+      reqId: 'q-rs',
+      ok: true,
+      phase: 'draining',
+      toVersion: '0.99.0',
+    });
+    // 预检中 / 排空中各广播过一次 machine.info
+    const phases = events.flatMap((e) => (e.type === 'machine.info' && e.info.restart?.pending ? [e.info.restart.pending.phase] : []));
+    expect(phases).toEqual(['checking', 'draining']);
+    const marker = JSON.parse(await readFile(agentPaths(home).restartMarker, 'utf8'));
+    expect(marker).toMatchObject({ v: 1, fromVersion: '0.18.0', notices: [] });
+    client.close();
+  });
+
+  test('i2. 没有 supervisor：拒绝重启', async () => {
+    const client = await pairAndConnect();
+    expect(app.machineInfo().restart?.available).toBe(false);
+    send(client, { type: 'machine.agent.restart.request', reqId: 'q-rs2', action: 'now' });
+    await waitFor(() => eventsOf(client).some((e) => e.type === 'machine.agent.restart.response'), '应答');
+    expect(eventsOf(client).find((e) => e.type === 'machine.agent.restart.response')).toMatchObject({
+      ok: false,
+      error: { code: 'unavailable' },
+    });
+    client.close();
+  });
+
+  test('i3. 会话里发起重启：本轮结束后才退出；新进程给该会话留记录并发续跑消息', async () => {
+    await app.stop();
+    app = await createApp({
+      restart: { env: { INVOCATION_ID: 'x' }, repoRoot: null, precheck: async () => ({ ok: true, version: '0.99.0' }) },
+    });
+    let restarted = 0;
+    app.onRestart = () => {
+      restarted++;
+    };
+    const client = await pairAndConnect();
+    const sid = await createSession(client);
+    await chat(client, sid, 'hi');
+
+    const outcome = await app.restartAgent({
+      mode: 'when_idle',
+      notice: { sessionId: sid, note: '升级', continuePrompt: '请核实 agent 状态' },
+    });
+    expect(outcome).toMatchObject({ ok: true, phase: 'draining' });
+    await waitFor(() => restarted === 1, '退出');
+
+    await restartAgent();
+    const continued = (e: AgentToClientEvent) =>
+      e.type === 'assistant.done' && e.sessionId === sid && e.text.startsWith('echo: [trine] agent 已重启');
+    await waitFor(() => eventsOf(client).some(continued), '续跑消息');
+    expect((eventsOf(client).find(continued) as { text: string }).text).toContain('请核实 agent 状态');
+    const record = eventsOf(client).find((e) => e.type === 'ext.record');
+    expect(record).toMatchObject({
+      targetSessionId: sid,
+      record: { ext: 'trine', kind: 'agent.restart', label: 'agent 已重启', message: '0.18.0 → 0.18.0（升级）' },
+    });
+    // 标记读完即删：再重启一次不会重复续跑
+    expect(existsSync(agentPaths(home).restartMarker)).toBe(false);
+    client.close();
+  });
+
+  test('i4. 已开始退出时到达的消息不处理、不记游标：重启后 relay 补发，由新进程处理', async () => {
+    await app.stop();
+    app = await createApp({
+      restart: { env: { TRINE_SUPERVISED: '1' }, repoRoot: null, precheck: async () => ({ ok: true, version: '0.99.0' }) },
+    });
+    let restarted = 0;
+    // 不真退出：模拟「标记已写、正在优雅退出」的窗口
+    app.onRestart = () => {
+      restarted++;
+    };
+    const client = await pairAndConnect();
+    const sid = await createSession(client);
+    await chat(client, sid, 'before');
+    await app.restartAgent({ mode: 'when_idle' });
+    await waitFor(() => restarted === 1, '开始退出');
+
+    send(client, { type: 'input.send', sessionId: sid, clientMsgId: 'c-late', text: 'late' });
+    await settle(150);
+    const late = (e: AgentToClientEvent) => e.type === 'assistant.done' && e.sessionId === sid && e.text === 'echo: late';
+    expect(eventsOf(client).some(late)).toBe(false);
+
+    await restartAgent();
+    await waitFor(() => eventsOf(client).some(late), '重启后补发并处理');
     client.close();
   });
 });

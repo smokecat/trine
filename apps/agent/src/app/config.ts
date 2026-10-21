@@ -54,6 +54,7 @@ export function agentPaths(home: string): {
   extensions: string;
   sessionLinks: string;
   sessionRecords: string;
+  restartMarker: string;
 } {
   return {
     identity: join(home, 'identity.json'),
@@ -67,12 +68,16 @@ export function agentPaths(home: string): {
     extensions: join(home, 'extensions.json'),
     sessionLinks: join(home, 'session-links.json'),
     sessionRecords: join(home, 'session-ext-records.json'),
+    /** 自重启时留给新进程的标记（见 app/restart.ts） */
+    restartMarker: join(home, 'restart.json'),
   };
 }
 
 export const USAGE = `用法：trine-agent [--enroll] [--pair] [--server URL] [--home DIR] [--name NAME] [--claude-bin PATH]
       trine-agent <pair | devices [list] | devices revoke DEVICE | status> [--home DIR]
       trine-agent ext <list | add DIR | remove ID | reload [ID] | validate DIR | test ID OP [...]> [--home DIR]
+      trine-agent restart [--now] [--note TEXT] [--continue PROMPT] [--session ID] [--home DIR]
+      trine-agent restart cancel [--home DIR]
 
   --enroll        未注册时从隐藏终端输入（或 stdin 一行）读取短期邀请，不保存
   --pair          启动后打出配对二维码，等 client 扫码并在终端确认 SAS
@@ -95,6 +100,14 @@ export const USAGE = `用法：trine-agent [--enroll] [--pair] [--server URL] [-
   ext validate DIR  只校验 manifest 与入口，不运行
   ext test ID OP [--point P] [--cwd DIR] [--session ID] [--args JSON] [--allow-write]
                   用合成上下文跑一次扩展（OP：view / badge / pick / action；action 需 --allow-write）
+  restart         预检工作区代码，等全部会话空闲后重启 agent（需由 systemd 等 supervisor 托管）。
+                  在 trine 会话里运行也安全：命令立即返回，本轮结束后才重启
+    --now           预检通过即重启，不等会话空闲（进行中的轮次会被打断）
+    --note TEXT     重启后在发起会话的时间线记录里附上的说明
+    --continue PROMPT  重启后把这段话作为一条消息发进发起会话（让 Claude 接着核实）
+    --session ID    发起会话（默认取会话里的 env TRINE_SESSION_ID）
+  restart cancel  取消还没执行的重启
+  selfcheck       加载全部代码后退出（重启预检用）
 
 env：TRINE_DEFAULT_MODEL  TRINE_MAX_SESSIONS  TRINE_IDLE_TIMEOUT_MS`;
 
@@ -120,6 +133,9 @@ export function parseSubcommand(
   let allowWrite = false;
   let home: string | undefined;
   const isExtTest = first === 'ext' && argv[1] === 'test';
+  const isRestart = first === 'restart';
+  const restartFlags: Record<string, string> = {};
+  let restartNow = false;
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
     if (arg === '--home' || arg.startsWith('--home=')) {
@@ -137,6 +153,16 @@ export function parseSubcommand(
       extFlags[arg.slice(2)] = value;
       continue;
     }
+    if (isRestart && arg === '--now') {
+      restartNow = true;
+      continue;
+    }
+    if (isRestart && ['--note', '--continue', '--session'].includes(arg)) {
+      const value = argv[++i];
+      if (value === undefined) throw new ConfigError(`${arg} 需要一个值`);
+      restartFlags[arg.slice(2)] = value;
+      continue;
+    }
     if (arg.startsWith('--')) throw new ConfigError(`子命令不认识的开关：${arg}\n\n${USAGE}`);
     positional.push(arg);
   }
@@ -145,6 +171,23 @@ export function parseSubcommand(
   let command: Subcommand | undefined;
   if (name === 'pair' && rest.length === 0) command = { name: 'pair' };
   else if (name === 'status' && rest.length === 0) command = { name: 'status' };
+  else if (name === 'selfcheck' && rest.length === 0) command = { name: 'selfcheck' };
+  else if (name === 'restart' && rest.length === 1 && rest[0] === 'cancel') {
+    if (restartNow || Object.keys(restartFlags).length > 0) throw new ConfigError('restart cancel 不带其他开关');
+    command = { name: 'restart.cancel' };
+  } else if (name === 'restart' && rest.length === 0) {
+    const sessionId = restartFlags.session ?? nonEmptyEnv(env['TRINE_SESSION_ID']);
+    command = {
+      name: 'restart',
+      now: restartNow,
+      ...(sessionId === undefined ? {} : { sessionId }),
+      ...(restartFlags.note === undefined ? {} : { note: restartFlags.note }),
+      ...(restartFlags.continue === undefined ? {} : { continuePrompt: restartFlags.continue }),
+    };
+    if ((command.note !== undefined || command.continuePrompt !== undefined) && sessionId === undefined) {
+      throw new ConfigError('--note / --continue 要发到某个会话：在 trine 会话里运行，或用 --session ID 指定');
+    }
+  }
   else if (name === 'devices' && (rest.length === 0 || (rest.length === 1 && rest[0] === 'list'))) {
     command = { name: 'devices.list' };
   } else if (name === 'devices' && rest[0] === 'revoke' && rest.length === 2) {
@@ -174,6 +217,10 @@ export function parseSubcommand(
     throw new ConfigError(`不认识的子命令：${positional.join(' ')}\n\n${USAGE}`);
   }
   return { command, home: home ?? env['TRINE_HOME'] ?? join(homedir(), '.trine') };
+}
+
+function nonEmptyEnv(value: string | undefined): string | undefined {
+  return value === undefined || value.trim() === '' ? undefined : value.trim();
 }
 
 export class ConfigError extends Error {

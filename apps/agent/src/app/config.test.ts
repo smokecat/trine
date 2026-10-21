@@ -75,6 +75,7 @@ describe('loadAgentConfig', () => {
       extensions: '/h/extensions.json',
       sessionLinks: '/h/session-links.json',
       sessionRecords: '/h/session-ext-records.json',
+      restartMarker: '/h/restart.json',
     });
   });
 });
@@ -112,6 +113,22 @@ describe('parseSubcommand', () => {
       name: 'devices.revoke',
       device: 'web-1',
     });
+  });
+
+  test('restart：开关、会话默认取 TRINE_SESSION_ID；cancel；selfcheck', () => {
+    const env = { TRINE_HOME: '/h', TRINE_SESSION_ID: 'sess-1' };
+    expect(parseSubcommand(['restart'], {})?.command).toEqual({ name: 'restart', now: false });
+    expect(parseSubcommand(['restart'], env)?.command).toEqual({ name: 'restart', now: false, sessionId: 'sess-1' });
+    expect(
+      parseSubcommand(['restart', '--now', '--note', '升级到 abc', '--continue', '查一下状态', '--session', 's2'], env)?.command,
+    ).toEqual({ name: 'restart', now: true, sessionId: 's2', note: '升级到 abc', continuePrompt: '查一下状态' });
+    expect(parseSubcommand(['restart', 'cancel'], env)?.command).toEqual({ name: 'restart.cancel' });
+    expect(parseSubcommand(['selfcheck'], {})?.command).toEqual({ name: 'selfcheck' });
+    // 续跑提示没有会话可发 / cancel 带开关 / 其他子命令不认 --now
+    expect(() => parseSubcommand(['restart', '--continue', 'x'], {})).toThrow(/--session/);
+    expect(() => parseSubcommand(['restart', 'cancel', '--now'], {})).toThrow(ConfigError);
+    expect(() => parseSubcommand(['restart', '--note'], {})).toThrow(/需要一个值/);
+    expect(() => parseSubcommand(['status', '--now'], {})).toThrow(/不认识的开关/);
   });
 
   test('--home 覆盖 TRINE_HOME，两种写法都收；默认 ~/.trine', () => {

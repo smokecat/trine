@@ -18,6 +18,7 @@
  * 一切外部依赖都可注入：假 ClaudeSession 工厂（不起真子进程）、假 listSessions、
  * 假 socket、假 fetch。集成测试用进程内真服务端 + 真 AgentNode + 假会话跑整条链。
  */
+import { join, resolve } from 'node:path';
 import type { AgentToClientEvent, MachineInfo, TransportFrame } from '@trine/core';
 import type {
   deleteSession,
@@ -56,7 +57,22 @@ import {
   type ClaudeUpdateOutcome,
   type SpawnFn,
 } from './claude-cli.ts';
-import { buildMachineInfo } from './machine-info.ts';
+import { AGENT_VERSION, buildMachineInfo } from './machine-info.ts';
+import {
+  findUp,
+  readGitHead,
+  restartAvailability,
+  RestartCoordinator,
+  runPrecheck,
+  takeRestartMarker,
+  writeRestartMarker,
+  type PrecheckResult,
+  type RestartMarker,
+  type RestartNotice,
+  type RestartOutcome,
+  type RestartRequest,
+} from './restart.ts';
+import { RESERVED_EXT_ID } from '../ext/registry.ts';
 import { Outbox, pushHintFor } from './outbox.ts';
 import { CapabilitiesCache, Router } from './router.ts';
 import { FLAGS_SWEEP_INTERVAL_MS, SessionFlagsStore } from './session-flags.ts';
@@ -106,6 +122,19 @@ export interface AgentAppDeps {
   extRunner?: Pick<ExtensionRunner, 'run'>;
   /** 首次生成身份时指定 machineId（测试） */
   machineId?: string;
+  /**
+   * agent 自重启（测试注入）：env 决定有没有 supervisor；precheck 替换真预检；
+   * repoRoot 是读 git HEAD 的工作区（null = 不读）
+   */
+  restart?: {
+    env?: Readonly<Record<string, string | undefined>>;
+    precheck?: () => Promise<PrecheckResult>;
+    repoRoot?: string | null;
+    setTimer?: (fn: () => void, ms: number) => unknown;
+    clearTimer?: (handle: unknown) => void;
+    pollMs?: number;
+    drainTimeoutMs?: number;
+  };
   now?: () => number;
   log?: (line: string) => void;
 }
@@ -115,6 +144,11 @@ export class AgentApp {
   onPairingRequest: ((session: PairingSession) => void) | undefined = undefined;
   /** client 放弃了一次本机发起的配对 */
   onPairingAborted: ((pairingToken: string) => void) | undefined = undefined;
+  /**
+   * 自重启：标记已写好，该退出了（cli 接上：优雅退出并以 RESTART_EXIT_CODE 结束进程）。
+   * 没接上时重启请求会失败并取消。
+   */
+  onRestart: (() => void) | undefined = undefined;
 
   #firstOpen = true;
   #stopped = false;
@@ -129,6 +163,13 @@ export class AgentApp {
   #extLinks!: SessionLinksStore;
   #extRecords!: SessionRecordsStore;
   #extensions!: ExtensionService;
+  #restart!: RestartCoordinator;
+  /** 读 git HEAD 的工作区；undefined = 不是 git 工作区 */
+  #repoRoot: string | undefined = undefined;
+  /** 启动时的 git HEAD（运行中的代码版本） */
+  #revision: string | undefined = undefined;
+  /** 上次重启留下的标记：首次接入服务端后处理 */
+  #restartMarker: RestartMarker | undefined = undefined;
 
   private constructor(
     readonly node: AgentNode,
@@ -190,6 +231,9 @@ export class AgentApp {
       emitter,
       now,
       uploadsDir: (sessionId) => attachments.sessionDir(sessionId),
+      // 会话里跑的 `trine-agent restart` 据此找到本 agent、认出发起的会话
+      // home 转成绝对路径：子进程的 cwd 是会话目录，相对路径会指到别处
+      sessionEnv: (sessionId) => ({ TRINE_HOME: resolve(config.home), TRINE_SESSION_ID: sessionId }),
       ...(config.maxSessions === undefined ? {} : { maxConcurrent: config.maxSessions }),
       ...(config.idleTimeoutMs === undefined ? {} : { idleTimeoutMs: config.idleTimeoutMs }),
       ...(deps.listSessionsFn === undefined ? {} : { listSessionsFn: deps.listSessionsFn }),
@@ -300,6 +344,7 @@ export class AgentApp {
       renameMachine: (name) => app.#rename(name, paths.identity),
       updateClaude: () => app.#updateClaude(),
       refreshUsage: () => app.#planUsage.refresh(),
+      restartAgent: async (action) => (action === 'cancel' ? app.cancelRestart() : app.restartAgent({ mode: action === 'now' ? 'now' : 'when_idle' })),
       machineStats,
       now,
       log,
@@ -371,8 +416,54 @@ export class AgentApp {
       ...(deps.claudeUpdateTimeoutMs === undefined ? {} : { timeoutMs: deps.claudeUpdateTimeoutMs }),
       log,
     });
+
+    // ---- 自重启（见 restart.ts）----
+    const restartDeps = deps.restart ?? {};
+    // import.meta.dir = apps/agent/src/app
+    const agentEntry = join(import.meta.dir, '..', 'cli.ts');
+    app.#repoRoot = restartDeps.repoRoot === null ? undefined : (restartDeps.repoRoot ?? findUp(import.meta.dir, '.git'));
+    app.#revision = app.#repoRoot === undefined ? undefined : readGitHead(app.#repoRoot);
+    app.#restartMarker = await takeRestartMarker(paths.restartMarker, now(), log);
+    const lockRoot = findUp(import.meta.dir, 'bun.lock');
+    let precheckProc: { kill(signal?: NodeJS.Signals): void } | undefined;
+    app.#restart = new RestartCoordinator({
+      availability: restartAvailability(restartDeps.env ?? process.env),
+      precheck:
+        restartDeps.precheck ??
+        (() =>
+          runPrecheck({
+            entry: agentEntry,
+            execPath: process.execPath,
+            repoRoot: lockRoot,
+            onSpawn: (proc) => {
+              precheckProc = proc;
+            },
+          }).finally(() => {
+            precheckProc = undefined;
+          })),
+      busySessions: () => manager.busyCount + router.inFlight,
+      exit: async (marker) => {
+        if (app.onRestart === undefined) throw new Error('这个 agent 进程不支持自重启');
+        await writeRestartMarker(paths.restartMarker, marker);
+        app.onRestart();
+      },
+      onChange: () => app.#emitMachine({ type: 'machine.info', info: app.machineInfo() }),
+      onCancelled: (notices, reason) => app.#noteRestart(notices, 'agent.restart.cancelled', '重启已取消', reason),
+      fromVersion: AGENT_VERSION,
+      fromRevision: app.#revision,
+      now,
+      ...(restartDeps.setTimer === undefined ? {} : { setTimer: restartDeps.setTimer }),
+      ...(restartDeps.clearTimer === undefined ? {} : { clearTimer: restartDeps.clearTimer }),
+      ...(restartDeps.pollMs === undefined ? {} : { pollMs: restartDeps.pollMs }),
+      ...(restartDeps.drainTimeoutMs === undefined ? {} : { drainTimeoutMs: restartDeps.drainTimeoutMs }),
+      log,
+    });
+    app.#killPrecheck = () => precheckProc?.kill('SIGTERM');
     return app;
   }
+
+  /** 退出时杀掉进行中的预检子进程 */
+  #killPrecheck: () => void = () => {};
 
   /** 接入服务端并常驻（返回不代表已连上——WsClient 自己重连） */
   async start(): Promise<void> {
@@ -428,6 +519,8 @@ export class AgentApp {
     this.#planUsage.dispose();
     this.#machineStats.dispose();
     this.#extensions.dispose();
+    this.#restart.dispose();
+    this.#killPrecheck();
     if (this.#flagsSweepTimer !== undefined) {
       clearInterval(this.#flagsSweepTimer);
       this.#flagsSweepTimer = undefined;
@@ -491,7 +584,74 @@ export class AgentApp {
       maxSessions: this.manager.maxConcurrent,
       rateLimits: this.#planUsage.current,
       extensions: this.#extRegistry === undefined ? undefined : { ...this.#extRegistry.summary(), records: true },
+      restart: this.#restart === undefined ? undefined : this.#restartInfo(),
     });
+  }
+
+  #restartInfo(): NonNullable<MachineInfo['restart']> {
+    const availability = this.#restart.availability;
+    const workspaceRevision = this.#repoRoot === undefined ? undefined : readGitHead(this.#repoRoot);
+    const pending = this.#restart.pending();
+    return {
+      available: availability.available,
+      ...(availability.reason === undefined ? {} : { unavailableReason: availability.reason.slice(0, 300) }),
+      ...(this.#revision === undefined ? {} : { revision: this.#revision }),
+      ...(workspaceRevision === undefined ? {} : { workspaceRevision }),
+      ...(pending === undefined ? {} : { pending }),
+    };
+  }
+
+  /**
+   * 重启 agent（网页的 machine.agent.restart.request 与控制通道的 restart 子命令共用）。
+   * 见 restart.ts：预检 → 排空 → 退出由 supervisor 拉起。
+   */
+  restartAgent(request: RestartRequest): Promise<RestartOutcome> {
+    return this.#restart.request(request);
+  }
+
+  cancelRestart(): RestartOutcome {
+    return this.#restart.cancel('用户取消');
+  }
+
+  /** 给这些会话各留一条时间线记录卡（已删除的会话跳过） */
+  #noteRestart(notices: readonly RestartNotice[], kind: string, label: string, message: string): void {
+    for (const notice of notices) {
+      if (this.flags.isDeleted(notice.sessionId)) continue;
+      const note = notice.note === undefined || notice.note === '' ? message : `${message}（${notice.note}）`;
+      try {
+        this.#extRecords.append(notice.sessionId, {
+          ext: RESERVED_EXT_ID,
+          extName: 'trine',
+          kind,
+          label,
+          message: note.slice(0, 500),
+        });
+      } catch (err) {
+        this.log(`[restart] 写时间线记录失败：${(err as Error).message}`);
+      }
+    }
+  }
+
+  /**
+   * 上次是自重启：给发起的会话留记录，带续跑提示的发一条消息进去（resume 接上原上下文）。
+   * 首次接入服务端后调，帧才发得出去。
+   */
+  async #afterRestart(marker: RestartMarker): Promise<void> {
+    const from = `${marker.fromVersion}${marker.fromRevision === undefined ? '' : ` (${marker.fromRevision})`}`;
+    const to = `${AGENT_VERSION}${this.#revision === undefined ? '' : ` (${this.#revision})`}`;
+    const summary = `${from} → ${to}`;
+    this.log(`[restart] 已从 ${summary} 重启`);
+    this.#noteRestart(marker.notices, 'agent.restart', 'agent 已重启', summary);
+    for (const notice of marker.notices) {
+      if (notice.continuePrompt === undefined || notice.continuePrompt.trim() === '') continue;
+      if (this.flags.isDeleted(notice.sessionId)) continue;
+      const text = `[trine] agent 已重启：${summary}。\n\n${notice.continuePrompt}`;
+      try {
+        await this.router.sendAsUser(notice.sessionId, text);
+      } catch (err) {
+        this.log(`[restart] 续跑消息发送失败 session=${notice.sessionId}：${(err as Error).message}`);
+      }
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -499,6 +659,12 @@ export class AgentApp {
   // -------------------------------------------------------------------------
 
   #onInbound(event: Parameters<Router['handle']>[0], sender: Recipient): void {
+    // 自重启已开始退出：不处理、也不记游标。游标停在这一帧之前落盘，重启后 relay 补发它，
+    // 而不是在这里开了头又被退出打断（见 restart.ts）
+    if (this.#restart?.exiting === true) {
+      this.log(`[restart] 正在重启，${event.type} 留给重启后的新进程处理`);
+      return;
+    }
     // 游标已在 node 内推进（accept 通过才会到这），这里把快照记下来等 debounce 落盘
     this.state.setInCursors(this.node.cursors.snapshot());
     void this.router.handle(event, sender);
@@ -550,6 +716,9 @@ export class AgentApp {
 
     if (this.#firstOpen) {
       this.#firstOpen = false;
+      const marker = this.#restartMarker;
+      this.#restartMarker = undefined;
+      if (marker !== undefined) void this.#afterRestart(marker);
       for (const sessionId of Object.keys(this.state.sessions)) {
         if (this.manager.has(sessionId)) continue;
         this.emitter.emit({ type: 'run.state', state: 'idle' }, sessionId);

@@ -2,13 +2,15 @@
  * @trine/agent 入口：常驻进程。
  *
  *   trine-agent [--pair] [--server URL] [--home DIR] [--name NAME] [--claude-bin PATH]
- *   trine-agent <pair | devices [list] | devices revoke ID | status> [--home DIR]
+ *   trine-agent <pair | devices [list] | devices revoke ID | status | restart [cancel] | selfcheck> [--home DIR]
  *   env: TRINE_SERVER TRINE_HOME TRINE_NAME TRINE_DEFAULT_MODEL
  *        TRINE_MAX_SESSIONS TRINE_IDLE_TIMEOUT_MS TRINE_CLAUDE_BIN
  *
  * 常驻进程持有 `<home>/agent.lock`（同一身份只许一个进程）并在
  * `<home>/control.sock` 上开控制通道；子命令经它操作运行中的进程，
  * 配对新浏览器不必停机（见 control/）。
+ *
+ * `restart`：预检 → 等会话空闲 → 以 RESTART_EXIT_CODE 退出由 supervisor 拉起（app/restart.ts）。
  *
  * 进程存活靠 WS 长连与 WsClient 的重连定时器；manager 的空闲回收定时器是
  * unref 的，不影响。SIGINT/SIGTERM → AgentApp.stop()，总上限 10s 兜底强退。
@@ -30,6 +32,7 @@ import type { ControlServer } from './control/server.ts';
 import type { PairingSession } from './net/pairing.ts';
 import { formatPairingPrompt, renderPairingPayload } from './net/qr.ts';
 import { logTime } from './log-time.ts';
+import { RESTART_EXIT_CODE } from './app/restart.ts';
 
 /** 优雅退出的总时限，超过就强退（可能留孤儿子进程，记遗留） */
 const SHUTDOWN_HARD_LIMIT_MS = 10_000;
@@ -95,10 +98,14 @@ async function main(): Promise<void> {
 
   // ---- 退出 ----
   let exiting = false;
-  const shutdown = (signal: string): void => {
+  const shutdown = (signal: string, exitCode = 0): void => {
     if (exiting) return;
     exiting = true;
-    log(`收到 ${signal}，正在退出（关会话 → 落盘 → 断连）`);
+    log(
+      exitCode === RESTART_EXIT_CODE
+        ? `自重启：正在退出（关会话 → 落盘 → 断连），退出码 ${exitCode} 交由 supervisor 拉起`
+        : `收到 ${signal}，正在退出（关会话 → 落盘 → 断连）`,
+    );
     const hard = setTimeout(() => {
       console.error(color.red(`退出超时 ${SHUTDOWN_HARD_LIMIT_MS}ms，强制结束（可能留有 claude 子进程）`));
       process.exit(1);
@@ -108,7 +115,7 @@ async function main(): Promise<void> {
       .then(() => {
         clearTimeout(hard);
         log('已退出');
-        process.exit(0);
+        process.exit(exitCode);
       })
       .catch((err: unknown) => {
         console.error(color.red(`退出出错：${err instanceof Error ? err.message : String(err)}`));
@@ -117,6 +124,8 @@ async function main(): Promise<void> {
   };
   process.on('SIGINT', () => shutdown('SIGINT'));
   process.on('SIGTERM', () => shutdown('SIGTERM'));
+  // 自重启（见 app/restart.ts）：标记已写好，按非零退出码退出，由 supervisor 拉起
+  app.onRestart = () => shutdown('restart', RESTART_EXIT_CODE);
   installProcessGuards(process, (line) => console.error(color.red(line)));
 
   // ---- 控制通道 + 配对 ----

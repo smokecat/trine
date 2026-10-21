@@ -17,12 +17,17 @@ import { formatPairingPrompt, renderPairingPayload } from '../net/qr.ts';
 import { ControlClient } from './client.ts';
 import { printExtList, runExtLocal, runExtOffline, type ExtSubcommand } from '../ext/commands.ts';
 import { CONTROL_SOCKET, type ControlEvent, type DeviceInfo } from './protocol.ts';
+import { AGENT_VERSION } from '../app/machine-info.ts';
+import { SELFCHECK_PREFIX } from '../app/restart.ts';
 
 export type Subcommand =
   | { name: 'pair' }
   | { name: 'status' }
   | { name: 'devices.list' }
   | { name: 'devices.revoke'; device: string }
+  | { name: 'selfcheck' }
+  | { name: 'restart'; now: boolean; sessionId?: string; note?: string; continuePrompt?: string }
+  | { name: 'restart.cancel' }
   | ExtSubcommand;
 
 export interface CommandIO {
@@ -47,6 +52,12 @@ export async function runSubcommand(command: Subcommand, home: string, io: Comma
   if (command.name === 'pair' && !io.interactive) {
     io.print('pair 需要在交互式终端里运行：配对必须由人比对两端的校验码后确认。');
     return 2;
+  }
+
+  // selfcheck：能跑到这里说明整个模块图都加载成功了（cli.ts 静态导入了全部代码）
+  if (command.name === 'selfcheck') {
+    io.print(`${SELFCHECK_PREFIX}${AGENT_VERSION}`);
+    return 0;
   }
 
   // validate / test 不需要 agent：直接看目录、直接起扩展进程
@@ -132,8 +143,57 @@ async function runOnline(command: Subcommand, client: ControlClient, io: Command
       printExtList(event.items, (l) => io.print(l));
       return 0;
     }
+    case 'restart':
+    case 'restart.cancel':
+      return runRestart(command, client, io);
     default:
       return 2;
+  }
+}
+
+async function runRestart(
+  command: Extract<Subcommand, { name: 'restart' | 'restart.cancel' }>,
+  client: ControlClient,
+  io: CommandIO,
+): Promise<number> {
+  if (command.name === 'restart') io.print('正在预检工作区代码（bun install --frozen-lockfile、加载检查）……');
+  const event = await client.request(
+    command.name === 'restart.cancel'
+      ? { op: 'restart.cancel' }
+      : {
+          op: 'restart',
+          now: command.now,
+          ...(command.sessionId === undefined ? {} : { sessionId: command.sessionId }),
+          ...(command.note === undefined ? {} : { note: command.note }),
+          ...(command.continuePrompt === undefined ? {} : { continuePrompt: command.continuePrompt }),
+        },
+  );
+  if (event?.ev !== 'restart.result') return unexpected(event, io);
+  if (!event.ok) {
+    io.print(`没有重启：${event.message ?? event.code ?? '未知原因'}`);
+    if (event.output !== undefined && event.output !== '') io.print(`\n预检输出（尾部）：\n${event.output}`);
+    return 1;
+  }
+  const version = event.toVersion === undefined ? '' : `（新版本 ${event.toVersion}）`;
+  switch (event.phase) {
+    case 'cancelled':
+      io.print('已取消重启。');
+      return 0;
+    case 'restarting':
+      io.print(`预检通过${version}，agent 马上重启。`);
+      return 0;
+    default: {
+      const busy = event.busySessions ?? 0;
+      const deadline = event.deadline === undefined ? '' : `；到 ${clock(event.deadline)} 仍有会话在忙就取消`;
+      io.print(
+        `预检通过${version}，已排期：等全部会话空闲后重启（当前 ${busy} 个在忙${deadline}）。\n` +
+          (command.name === 'restart' && command.sessionId !== undefined
+            ? '在 trine 会话里运行时：本轮结束后才会重启，重启后会在本会话留一条记录' +
+              (command.continuePrompt === undefined ? '。' : '，并把 --continue 的内容作为新消息发进来。')
+            : '取消：trine-agent restart cancel'),
+      );
+      return 0;
+    }
   }
 }
 
@@ -264,6 +324,10 @@ async function pairRound(client: ControlClient, io: CommandIO): Promise<RoundRes
 // ---------------------------------------------------------------------------
 
 async function runOffline(command: Subcommand, home: string, io: CommandIO): Promise<number> {
+  if (command.name === 'restart' || command.name === 'restart.cancel') {
+    io.print('agent 没有在运行，无需重启。启动它即可（例如 systemctl --user start trine-agent）。');
+    return 1;
+  }
   if (command.name === 'pair' || command.name === 'status') {
     io.print(
       'agent 没有在运行。先启动它（例如 systemctl --user start trine-agent），' +

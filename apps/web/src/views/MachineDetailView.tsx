@@ -18,8 +18,10 @@ import { Separator } from '@/components/ui/separator.tsx';
 import { AppHead } from '@/components/shell/AppHead.tsx';
 import { StatusDot } from '@/components/shell/StatusDot.tsx';
 import { ConfirmDialog } from '@/components/machines/ConfirmDialog.tsx';
+import { AgentRestartSection } from '@/components/machines/AgentRestartSection.tsx';
 import { ClaudeUpdateSection } from '@/components/machines/ClaudeUpdateSection.tsx';
 import { supportsClaudeUpdate } from '@/components/machines/claude-update.ts';
+import { supportsAgentRestart } from '@/components/machines/agent-restart.ts';
 import {
   machineHeartbeatLine,
   machinePlatformLine,
@@ -195,6 +197,18 @@ export function MachineDetailView(): React.JSX.Element {
               online={machine.online}
               claudeVersion={machine.info?.claudeVersion}
               update={() => client.updateClaude(machine.machineId)}
+            />
+          </>
+        )}
+
+        {client && supportsAgentRestart(machine.info) && machine.info?.restart && (
+          <>
+            <Separator />
+            <AgentRestartSection
+              machineName={machine.name}
+              online={machine.online}
+              restart={machine.info.restart}
+              request={(action) => client.restartAgent(machine.machineId, action)}
             />
           </>
         )}

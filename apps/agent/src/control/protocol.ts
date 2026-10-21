@@ -41,6 +41,18 @@ export const ControlRequestSchema = z.discriminatedUnion('op', [
   z.object({ op: z.literal('ext.add'), path: z.string().min(1).max(4096) }),
   z.object({ op: z.literal('ext.remove'), id: z.string().min(1).max(64) }),
   z.object({ op: z.literal('ext.reload'), id: z.string().min(1).max(64).optional() }),
+  /**
+   * 重启 agent（见 app/restart.ts）：预检结束后回 restart.result。sessionId 是发起会话，
+   * 重启后在它的时间线留记录、带 continuePrompt 的发一条消息进去
+   */
+  z.object({
+    op: z.literal('restart'),
+    now: z.boolean(),
+    sessionId: z.string().min(1).max(128).optional(),
+    note: z.string().max(300).optional(),
+    continuePrompt: z.string().max(4000).optional(),
+  }),
+  z.object({ op: z.literal('restart.cancel') }),
 ]);
 export type ControlRequest = z.infer<typeof ControlRequestSchema>;
 
@@ -83,6 +95,18 @@ export const ControlEventSchema = z.discriminatedUnion('ev', [
   z.object({ ev: z.literal('ext.added'), item: ExtListItemSchema }),
   z.object({ ev: z.literal('ext.removed'), id: z.string(), removed: z.boolean() }),
   z.object({ ev: z.literal('ext.reloaded'), items: z.array(ExtListItemSchema) }),
+  z.object({
+    ev: z.literal('restart.result'),
+    ok: z.boolean(),
+    phase: z.enum(['draining', 'restarting', 'cancelled']).optional(),
+    toVersion: z.string().optional(),
+    /** 排空时还在忙的会话数 */
+    busySessions: z.number().optional(),
+    deadline: z.number().optional(),
+    code: z.string().optional(),
+    message: z.string().optional(),
+    output: z.string().optional(),
+  }),
   /** 请求出错；`fatal` 时 daemon 随后关闭连接 */
   z.object({ ev: z.literal('error'), message: z.string(), fatal: z.boolean().optional() }),
 ]);
