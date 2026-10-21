@@ -46,6 +46,7 @@ import {
   FileIcon,
   ImageIcon,
   MessageSquareQuoteIcon,
+  BlocksIcon,
   PaperclipIcon,
   PlusIcon,
   SquareIcon,
@@ -101,6 +102,7 @@ export function Composer({
   pending,
   onEditLast,
   insertRequest,
+  extraPicker,
 }: {
   value: string;
   onChange: (text: string) => void;
@@ -127,6 +129,11 @@ export function Composer({
   onEditLast?: (() => boolean) | undefined;
   /** 外部要求插入一段文字（扩展的「插入」动作）：id 变化时按 prompt 片段的规则插在光标处 */
   insertRequest?: { id: number; text: string } | undefined;
+  /**
+   * 扩展的输入框入口（U9）：工具栏 / 「+」托盘里多一个按钮，点开在片段面板的位置渲染 render 的内容。
+   * 不给 = 没有这个入口
+   */
+  extraPicker?: { label: string; render: (close: () => void) => React.ReactNode } | undefined;
 }): React.JSX.Element {
   const rootRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -142,6 +149,7 @@ export function Composer({
   const [activeIndex, setActiveIndex] = useState(0);
   const [menuDismissed, setMenuDismissed] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [extOpen, setExtOpen] = useState(false);
   /** 移动端「+」托盘 */
   const [trayOpen, setTrayOpen] = useState(false);
   /** 失焦前的光标 / 选区：点工具栏按钮时 textarea 可能已失焦，插入片段要用它 */
@@ -163,15 +171,16 @@ export function Composer({
 
   // 片段面板 / 托盘：点输入区以外的地方收起
   useEffect(() => {
-    if (!pickerOpen && !trayOpen) return;
+    if (!pickerOpen && !trayOpen && !extOpen) return;
     const onDown = (e: PointerEvent): void => {
       if (rootRef.current?.contains(e.target as Node) === true) return;
       setPickerOpen(false);
       setTrayOpen(false);
+      setExtOpen(false);
     };
     document.addEventListener('pointerdown', onDown);
     return () => document.removeEventListener('pointerdown', onDown);
-  }, [pickerOpen, trayOpen]);
+  }, [pickerOpen, trayOpen, extOpen]);
 
   // 自增高：先归零再按 scrollHeight 设，否则删字时不会变矮
   useLayoutEffect(() => {
@@ -247,7 +256,14 @@ export function Composer({
 
   const togglePicker = (): void => {
     setTrayOpen(false);
+    setExtOpen(false);
     setPickerOpen((open) => !open);
+  };
+
+  const toggleExt = (): void => {
+    setTrayOpen(false);
+    setPickerOpen(false);
+    setExtOpen((open) => !open);
   };
 
   const chooseFiles = (input: HTMLInputElement | null): void => {
@@ -294,10 +310,11 @@ export function Composer({
       e.preventDefault();
       return;
     }
-    if (e.key === 'Escape' && (pickerOpen || trayOpen)) {
+    if (e.key === 'Escape' && (pickerOpen || trayOpen || extOpen)) {
       e.preventDefault();
       setPickerOpen(false);
       setTrayOpen(false);
+      setExtOpen(false);
       return;
     }
     // 不是发送键就什么都不做，textarea 自己插入换行
@@ -418,6 +435,24 @@ export function Composer({
   const panels = (
     <>
       {menuOpen && <SlashMenu groups={groups} activeIndex={activeIndex} onPick={pick} />}
+      {!menuOpen && extOpen && extraPicker !== undefined && (
+        <div
+          data-testid="composer-ext-picker"
+          role="dialog"
+          aria-label={extraPicker.label}
+          className={cn(
+            'border-border-strong bg-surface absolute inset-x-3 bottom-full z-30 mb-1.5',
+            'flex max-h-[46vh] flex-col rounded-[14px] border shadow-[var(--shadow-card)]',
+            desktop && 'inset-x-4',
+          )}
+          onPointerDown={(e) => {
+            // 搜索框要能拿到焦点；其余地方不抢走输入框的焦点（插入要用光标位置）
+            if (!(e.target instanceof HTMLInputElement)) e.preventDefault();
+          }}
+        >
+          {extraPicker.render(() => setExtOpen(false))}
+        </div>
+      )}
       {!menuOpen && pickerOpen && (
         <SnippetPicker
           className={desktop ? 'inset-x-4' : undefined}
@@ -496,6 +531,21 @@ export function Composer({
             >
               <MessageSquareQuoteIcon />
             </Button>
+            {extraPicker !== undefined && (
+              <Button
+                size="icon"
+                variant="ghost"
+                data-testid="composer-ext-toggle"
+                title={extraPicker.label}
+                aria-label={extraPicker.label}
+                aria-expanded={extOpen}
+                className={cn('text-text-2 size-8', extOpen && 'bg-surface-2 text-text')}
+                onPointerDown={(e) => e.preventDefault()}
+                onClick={toggleExt}
+              >
+                <BlocksIcon />
+              </Button>
+            )}
             {fileInputs}
             <span className="flex-1" />
             {keyHint !== null && (
@@ -561,6 +611,9 @@ export function Composer({
                 label="Prompt"
                 onClick={togglePicker}
               />
+              {extraPicker !== undefined && (
+                <TrayButton testId="composer-ext-toggle" icon={<BlocksIcon />} label={extraPicker.label} onClick={toggleExt} />
+              )}
             </div>
             {attachments?.disabledReason !== undefined && (
               <p className="text-text-3 px-3.5 pt-1.5 text-[11.5px]">{attachments.disabledReason}</p>
@@ -574,10 +627,11 @@ export function Composer({
             data-testid="composer-more"
             aria-label={trayOpen ? '收起' : '更多：图片、文件、prompt'}
             aria-expanded={trayOpen}
-            className={cn('text-text-2 size-[38px] shrink-0', (trayOpen || pickerOpen) && 'text-text')}
+            className={cn('text-text-2 size-[38px] shrink-0', (trayOpen || pickerOpen || extOpen) && 'text-text')}
             onPointerDown={(e) => e.preventDefault()}
             onClick={() => {
               setPickerOpen(false);
+              setExtOpen(false);
               setTrayOpen((open) => !open);
             }}
           >

@@ -34,8 +34,9 @@ the agent runs on your own computer.
 - Pins sessions and workspaces (most recently pinned first). When grouped by workspace, groups
   keep a fixed order (newest workspace first) instead of jumping around as sessions change state.
 - Extensions: programs on the agent machine can add a panel, a badge and action buttons to the
-  session page (for example a project's task list, with "resume this task in a new session"), and
-  sessions can be linked to their items. The browser never runs extension code; it only renders the
+  session page and the composer (for example a project's task list, with "resume this task in a new
+  session"), and sessions can be linked to their items; list rows show the links, and a workspace
+  group's menu opens the same panel without entering a session. The browser never runs extension code; it only renders the
   data the agent returns, and actions run on the agent after a click. Install with
   `trine-agent ext add <dir>`; see [extensions](docs/EXTENSIONS.md). Requires agent 0.16.0 or later.
 - Hides temporary sessions by default (working directory under a system temp directory, or

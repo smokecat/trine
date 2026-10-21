@@ -157,10 +157,10 @@ Effect   = { type: 'prompt.insert', text }                        // 插入输�
 | 贡献点 | 位置 | op |
 |---|---|---|
 | `sessionPanel` | 会话页头部的扩展按钮 → 面板（桌面右侧抽屉，手机底部 sheet） | `view` |
-| `sessionBadge` | 会话页头部按钮上的徽章（会话有本扩展的关联时） | `badge` |
+| `sessionBadge` | 会话页头部按钮上的徽章（会话有本扩展的关联时）；会话列表行上另显示关联名（不调用扩展） | `badge` |
 | `linkPicker` | 会话「⋯」菜单与列表右键菜单的「关联…」，支持多选与批量 | `pick` |
-| `workspacePanel` | 工作区面板（规划中） | `view` |
-| `composerAction` | 输入框「+」菜单（规划中）；只允许 `prompt.insert` 与 `links.add` | `pick` |
+| `workspacePanel` | 会话列表按工作区分组时，组头「⋯」→「扩展面板…」：不进会话也能看、能开新会话（没有输入框，插入类动作改为复制） | `view` |
+| `composerAction` | 输入框的扩展按钮（桌面在工具栏 prompt 按钮旁，手机在「+」托盘里），在片段面板的位置列出候选项；只允许 `prompt.insert` 与 `links.add` | `pick` |
 
 ## 动作的执行
 

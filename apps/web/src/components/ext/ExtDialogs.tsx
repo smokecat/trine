@@ -3,6 +3,7 @@
  * 菜单、面板等任何地方都能打开它们。
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { useLocation } from 'react-router';
 import { toast } from 'sonner';
 import type { ExtPlan, ExtPlanStep } from '@trine/core';
 import { Button } from '@/components/ui/button.tsx';
@@ -12,14 +13,26 @@ import { useClient, useTrine } from '@/app/runtime.ts';
 import { extensionsFor, permissionModeLabel } from '@/lib/ext-model.ts';
 import { cn } from '@/lib/utils.ts';
 import { ExtBadgeChip } from './ExtView.tsx';
-import { closeLinkPicker, settleConfirm, updateLinks, useExtCatalog, useExtRead, useExtUi, type LinkPickerRequest } from './use-ext.ts';
+import { ExtPanelSheet } from './ExtPanel.tsx';
+import { closeLinkPicker, closeWorkspacePanel, settleConfirm, updateLinks, useExtCatalog, useExtRead, useExtUi, type LinkPickerRequest } from './use-ext.ts';
 
 export function ExtDialogsHost(): React.JSX.Element {
   const ui = useExtUi();
+  // 工作区面板里点了「新会话接续」会跳到新会话：页面换了就收起面板
+  const location = useLocation();
+  useEffect(() => closeWorkspacePanel(), [location.pathname]);
   return (
     <>
       <PlanConfirmDialog plan={ui.confirm?.plan ?? null} />
       {ui.linkPicker !== null && <LinkPickerDialog request={ui.linkPicker} />}
+      {ui.workspacePanel !== null && (
+        <ExtPanelSheet
+          open
+          onOpenChange={(open) => !open && closeWorkspacePanel()}
+          machineId={ui.workspacePanel.machineId}
+          cwd={ui.workspacePanel.cwd}
+        />
+      )}
     </>
   );
 }

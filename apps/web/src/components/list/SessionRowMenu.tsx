@@ -78,6 +78,8 @@ export interface SessionRowActions {
   /** 打开扩展的关联选择器（一个或一批同机器的会话）；supportsLinks 判这台机器有没有扩展 */
   onLink?: (machineId: string, sessionIds: string[]) => void;
   supportsLinks?: (machineId: string) => boolean;
+  /** 打开工作区的扩展面板（不进会话也能看任务列表、开新会话）；supportsLinks 同样判这台机器有没有扩展 */
+  onOpenWorkspace?: (machineId: string, cwd: string) => void;
 }
 
 export interface RowTarget {

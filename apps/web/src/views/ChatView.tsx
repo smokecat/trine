@@ -94,6 +94,7 @@ import { timelineKey } from '@/lib/storage.ts';
 import { formatCost } from '@/lib/format.ts';
 import { waitingForOfTool } from '@/lib/waiting.ts';
 import { ExtHeadEntry, ExtPanelSheet } from '@/components/ext/ExtPanel.tsx';
+import { composerPickerLabel, ExtComposerPicker, useComposerExtensions } from '@/components/ext/ExtComposerPicker.tsx';
 
 type InfoCardState =
   | { kind: 'status'; rows: { label: string; value: string }[] }
@@ -139,6 +140,7 @@ export function ChatView(): React.JSX.Element {
   const [insertRequest, setInsertRequest] = useState<{ id: number; text: string } | undefined>(undefined);
   // 换了会话（例如扩展的「新会话接续」跳过来）：面板不跟过去
   useEffect(() => setExtOpen(false), [machineId, sessionId]);
+  const composerExts = useComposerExtensions(machineId);
   const [renameBusy, setRenameBusy] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   /** 正在确认回退的目标用户消息（RewindDialog 打开中） */
@@ -737,6 +739,22 @@ export function ChatView(): React.JSX.Element {
         sendKey={prefs.sendKey}
         pending={pendingEntries.length > 0 ? <PendingTray entries={pendingEntries} onAction={onPendingAction} /> : undefined}
         insertRequest={insertRequest}
+        extraPicker={
+          composerExts !== null && composerExts.length > 0
+            ? {
+                label: composerPickerLabel(composerExts),
+                render: (close) => (
+                  <ExtComposerPicker
+                    machineId={machineId}
+                    sessionId={sessionId}
+                    extensions={composerExts}
+                    onClose={close}
+                    onInsert={(text) => setInsertRequest((r) => ({ id: (r?.id ?? 0) + 1, text }))}
+                  />
+                ),
+              }
+            : undefined
+        }
         onEditLast={editLastPending}
         attachments={{
           drafts: attach.drafts,

@@ -213,12 +213,18 @@ export interface LinkPickerRequest {
   sessionIds: string[];
 }
 
+export interface WorkspacePanelRequest {
+  machineId: string;
+  cwd: string;
+}
+
 interface ExtUiState {
   confirm: ConfirmRequest | null;
   linkPicker: LinkPickerRequest | null;
+  workspacePanel: WorkspacePanelRequest | null;
 }
 
-let uiState: ExtUiState = { confirm: null, linkPicker: null };
+let uiState: ExtUiState = { confirm: null, linkPicker: null, workspacePanel: null };
 const uiListeners = new Set<() => void>();
 
 function setUi(patch: Partial<ExtUiState>): void {
@@ -254,6 +260,14 @@ export function openLinkPicker(request: LinkPickerRequest): void {
 
 export function closeLinkPicker(): void {
   setUi({ linkPicker: null });
+}
+
+export function openWorkspacePanel(request: WorkspacePanelRequest): void {
+  setUi({ workspacePanel: request });
+}
+
+export function closeWorkspacePanel(): void {
+  setUi({ workspacePanel: null });
 }
 
 // ---------------------------------------------------------------------------

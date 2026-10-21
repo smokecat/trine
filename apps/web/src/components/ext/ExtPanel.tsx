@@ -67,24 +67,33 @@ export function ExtHeadEntry({
   );
 }
 
+/**
+ * 扩展面板：会话面板（sessionId，U2）或工作区面板（cwd，U6：不进会话也能看任务列表、开新会话）。
+ */
 export function ExtPanelSheet({
   open,
   onOpenChange,
   machineId,
   sessionId,
+  cwd,
   meta,
   onInsert,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   machineId: string;
-  sessionId: string;
-  meta: SessionMeta | undefined;
-  onInsert: (text: string) => void;
+  /** 会话面板 */
+  sessionId?: string;
+  /** 工作区面板（没有 sessionId 时） */
+  cwd?: string;
+  meta?: SessionMeta | undefined;
+  /** 插入到输入框；工作区面板没有输入框，插入类动作退化为复制 */
+  onInsert?: (text: string) => void;
 }): React.JSX.Element {
   const desktop = useIsDesktop();
   const catalog = useExtCatalog(machineId);
-  const panels = useMemo(() => extensionsFor(catalog ?? [], 'sessionPanel'), [catalog]);
+  const point = sessionId === undefined ? 'workspacePanel' : 'sessionPanel';
+  const panels = useMemo(() => extensionsFor(catalog ?? [], point), [catalog, point]);
   const [active, setActive] = useState<string | undefined>(undefined);
   const ext = panels.find((p) => p.id === active) ?? panels[0];
   return (
@@ -95,26 +104,39 @@ export function ExtPanelSheet({
         className={cn('gap-0 overflow-y-auto', desktop ? 'w-[min(26rem,100vw)] sm:max-w-none' : 'max-h-[85dvh] rounded-t-2xl')}
       >
         <SheetHeader className="px-4 pt-4 pb-2">
-          <SheetTitle>{ext?.contributes.sessionPanel?.title ?? '扩展'}</SheetTitle>
+          <SheetTitle>{ext?.contributes[point]?.title ?? '扩展'}</SheetTitle>
           <SheetDescription className="text-text-3 text-[12px]">
             {ext === undefined ? '没有可用的扩展' : `${ext.name} ${ext.version}`}
+            {cwd !== undefined && <span className="block truncate font-mono">{cwd}</span>}
           </SheetDescription>
         </SheetHeader>
         {panels.length > 1 && (
           <div className="flex flex-wrap gap-1.5 px-4 pb-2">
             {panels.map((p) => (
               <Button key={p.id} size="sm" variant={p.id === ext?.id ? 'default' : 'outline'} className="h-7" onClick={() => setActive(p.id)}>
-                {p.contributes.sessionPanel?.title ?? p.name}
+                {p.contributes[point]?.title ?? p.name}
               </Button>
             ))}
           </div>
         )}
         <div className="px-4 pb-6">
           {open && ext !== undefined && (
-            <PanelBody key={ext.id} ext={ext} machineId={machineId} sessionId={sessionId} meta={meta} onInsert={(text) => {
-              onInsert(text);
-              onOpenChange(false);
-            }} />
+            <PanelBody
+              key={ext.id}
+              ext={ext}
+              machineId={machineId}
+              {...(sessionId === undefined ? {} : { sessionId })}
+              {...(cwd === undefined ? {} : { cwd })}
+              meta={meta}
+              {...(onInsert === undefined
+                ? {}
+                : {
+                    onInsert: (text: string) => {
+                      onInsert(text);
+                      onOpenChange(false);
+                    },
+                  })}
+            />
           )}
         </div>
       </SheetContent>
@@ -126,17 +148,24 @@ function PanelBody({
   ext,
   machineId,
   sessionId,
+  cwd,
   meta,
   onInsert,
 }: {
   ext: ExtCatalogItem;
   machineId: string;
-  sessionId: string;
+  sessionId?: string;
+  cwd?: string;
   meta: SessionMeta | undefined;
-  onInsert: (text: string) => void;
+  onInsert?: (text: string) => void;
 }): React.JSX.Element {
   const client = useClient();
-  const read = useExtRead({ machineId, ext: ext.id, op: 'view', point: 'sessionPanel', targetSessionId: sessionId }, { watch: true });
+  const read = useExtRead(
+    sessionId !== undefined
+      ? { machineId, ext: ext.id, op: 'view', point: 'sessionPanel', targetSessionId: sessionId }
+      : { machineId, ext: ext.id, op: 'view', point: 'workspacePanel', cwd: cwd ?? '' },
+    { watch: true },
+  );
   const sessions = useTrine((s) => s.sessions[machineId]) ?? EMPTY_SESSIONS;
   const run = useExtAction();
   const [busy, setBusy] = useState<string | null>(null);
@@ -150,12 +179,17 @@ function PanelBody({
     setBusy(id);
     void run(
       { ...(action.local === undefined ? {} : { local: action.local }), ...(action.token === undefined ? {} : { token: action.token }), label: action.label },
-      { machineId, sessionId, insert: onInsert, refresh: read.refresh },
+      {
+        machineId,
+        ...(sessionId === undefined ? {} : { sessionId }),
+        ...(onInsert === undefined ? {} : { insert: onInsert }),
+        refresh: read.refresh,
+      },
     ).finally(() => setBusy(null));
   };
 
   const onToggleLink = (item: ExtWireItem, linked: boolean): void => {
-    if (client === null || item.link === undefined) return;
+    if (client === null || item.link === undefined || sessionId === undefined) return;
     void updateLinks(client, machineId, sessionId, ext.id, linked ? { add: [item.link] } : { remove: [item.link.ref] }).catch((err: unknown) =>
       toast.error(`关联失败：${err instanceof Error ? err.message : String(err)}`),
     );
@@ -186,7 +220,7 @@ function PanelBody({
           machineId={machineId}
           sessions={sessions}
           linkedRefs={linkedRefs}
-          onToggleLink={onToggleLink}
+          {...(sessionId === undefined ? {} : { onToggleLink })}
           onAction={onAction}
           busyAction={busy}
         />

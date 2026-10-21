@@ -11,7 +11,7 @@
 import { useMemo } from 'react';
 import { toast } from 'sonner';
 import { useClient, useTrine } from '@/app/runtime.ts';
-import { openLinkPicker } from '@/components/ext/use-ext.ts';
+import { openLinkPicker, openWorkspacePanel } from '@/components/ext/use-ext.ts';
 import { copyText } from '@/lib/clipboard.ts';
 import { buildCopyCwd, buildSessionActions, supportedMachinesKey, supportsPin } from './session-actions.ts';
 import type { SessionRowActions } from './SessionRowMenu.tsx';
@@ -40,6 +40,7 @@ export function useSessionActions(machineId?: string): SessionRowActions {
       // 复制不经 agent：与能力探测无关，总是给
       onCopyCwd: buildCopyCwd(copyText, toast),
       onLink: (target: string, sessionIds: string[]) => openLinkPicker({ machineId: target, sessionIds }),
+      onOpenWorkspace: (target: string, cwd: string) => openWorkspacePanel({ machineId: target, cwd }),
       supportsLinks: (target: string) => linkKey.split(',').includes(target),
     }),
     [client, supportedKey, pinKey, linkKey, machineId],

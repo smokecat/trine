@@ -26,7 +26,7 @@
  * SessionList 的 `onLinkClick` 决定——它 preventDefault 就不导航。
  */
 import { NavLink } from 'react-router';
-import { CheckIcon, PinIcon } from 'lucide-react';
+import { BlocksIcon, CheckIcon, PinIcon } from 'lucide-react';
 import type { SessionMeta } from '@trine/core';
 import { StatePill } from '@/components/shell/StatusDot.tsx';
 import { formatCost, formatRelativeTime, truncate } from '@/lib/format.ts';
@@ -155,6 +155,17 @@ export function SessionRow({
             {showMachine ? `${machineName} · ` : ''}
             {shortCwd(meta.cwd)}
           </span>
+          {meta.links !== undefined && meta.links.length > 0 && (
+            <span
+              data-testid="session-row-links"
+              title={`关联：${meta.links.map((l) => l.label).join('、')}`}
+              className="text-text-2 flex max-w-[55%] min-w-0 shrink items-center gap-1 text-[11px]"
+            >
+              <BlocksIcon aria-hidden className="size-3 shrink-0" />
+              <span className="truncate">{meta.links[0]!.label}</span>
+              {meta.links.length > 1 && <span className="text-text-3 shrink-0">+{meta.links.length - 1}</span>}
+            </span>
+          )}
           {!compact && (
             <span className="text-text-3 tabular shrink-0 font-mono text-[11px]">
               {formatCost(meta.costUsd)}

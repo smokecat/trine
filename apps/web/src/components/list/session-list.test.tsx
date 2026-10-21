@@ -279,6 +279,34 @@ describe('工作空间分组', () => {
     expect(onPinWorkspace.mock.calls).toEqual([['m', '/w/two', true]]);
   });
 
+  test('扩展：组头菜单「扩展面板…」打开工作区面板；不支持的机器不出', () => {
+    const onOpenWorkspace = mock((_m: string, _cwd: string) => {});
+    render(sessions, { query: { groupBy: 'workspace' }, actions: { onOpenWorkspace, supportsLinks: (m) => m === 'm' } });
+    expect($$('session-group-menu')).toHaveLength(2);
+    openMenu($$('session-group-menu')[1]!);
+    expect($('group-menu-pin')).toBeNull();
+    click($('group-menu-workspace')!);
+    expect(onOpenWorkspace.mock.calls).toEqual([['m', '/w/two']]);
+    act(() => root?.unmount());
+    host?.remove();
+    render(sessions, { query: { groupBy: 'workspace' }, actions: { onOpenWorkspace, supportsLinks: () => false } });
+    expect($$('session-group-menu')).toHaveLength(0);
+  });
+
+  test('扩展：关联的会话在行上显示关联标签（多条时 +n）', () => {
+    render({
+      m: {
+        a: meta({ sessionId: 'a', links: [{ ext: 'tasks', ref: 'x', label: '任务 X', at: 1 }, { ext: 'tasks', ref: 'y', label: '任务 Y', at: 2 }] }),
+        b: meta({ sessionId: 'b' }),
+      },
+    });
+    const rows = $$('session-row');
+    const tag = rows.find((r) => r.dataset['sessionId'] === 'a')!.querySelector('[data-testid="session-row-links"]');
+    expect(tag?.textContent).toBe('任务 X+1');
+    expect(tag?.getAttribute('title')).toBe('关联：任务 X、任务 Y');
+    expect(rows.find((r) => r.dataset['sessionId'] === 'b')!.querySelector('[data-testid="session-row-links"]')).toBeNull();
+  });
+
   test('置顶：置顶会话行带图标、菜单项为「取消置顶」；不支持的机器不出置顶项', () => {
     const onPin = mock((_m: string, _s: string, _p: boolean) => {});
     render(

@@ -331,6 +331,11 @@ export function SessionList({
                 (actions.supportsPin?.(group.machineId) ?? true)
                   ? { onPin: (pinned: boolean) => actions.onPinWorkspace?.(group.machineId, group.cwd, pinned) }
                   : {})}
+                {...(actions?.onOpenWorkspace !== undefined &&
+                group.cwd !== '' &&
+                (actions.supportsLinks?.(group.machineId) ?? true)
+                  ? { onWorkspace: () => actions.onOpenWorkspace?.(group.machineId, group.cwd) }
+                  : {})}
               >
                 {group.rows.map(renderRow)}
               </GroupSection>
@@ -350,6 +355,7 @@ function GroupSection({
   compact,
   onToggle,
   onPin,
+  onWorkspace,
   children,
 }: {
   group: SessionGroup;
@@ -362,6 +368,8 @@ function GroupSection({
   onToggle: (expanded: boolean) => void;
   /** 置顶 / 取消置顶这个工作区；不给 = 没有组头菜单（旧 agent / 未知目录 / 归档视图） */
   onPin?: (pinned: boolean) => void;
+  /** 打开工作区的扩展面板；不给 = 没有这一项 */
+  onWorkspace?: () => void;
   children: React.ReactNode;
 }): React.JSX.Element {
   // 有待批准 / 搜索筛选中强制展开：点了也收不起来，别假装能收（评审 M5 / minor 3）
@@ -414,7 +422,7 @@ function GroupSection({
   const pinLabel = pinned ? '取消置顶工作区' : '置顶工作区';
   return (
     <section data-testid="session-group" data-group-key={group.key} data-expanded={expanded} data-pinned={pinned || undefined} className="flex flex-col gap-2">
-      {onPin === undefined ? (
+      {onPin === undefined && onWorkspace === undefined ? (
         header
       ) : (
         // 「⋯」与按钮是兄弟（不嵌套交互元素）；右键整条组头也能出同一个菜单
@@ -422,9 +430,16 @@ function GroupSection({
           <ContextMenu>
             <ContextMenuTrigger asChild>{header}</ContextMenuTrigger>
             <ContextMenuContent data-testid="session-group-context-menu">
-              <ContextMenuItem data-testid="group-menu-pin" onSelect={() => onPin(!pinned)}>
-                {pinLabel}
-              </ContextMenuItem>
+              {onPin !== undefined && (
+                <ContextMenuItem data-testid="group-menu-pin" onSelect={() => onPin(!pinned)}>
+                  {pinLabel}
+                </ContextMenuItem>
+              )}
+              {onWorkspace !== undefined && (
+                <ContextMenuItem data-testid="group-menu-workspace" onSelect={onWorkspace}>
+                  扩展面板…
+                </ContextMenuItem>
+              )}
             </ContextMenuContent>
           </ContextMenu>
           <DropdownMenu modal={false}>
@@ -441,9 +456,16 @@ function GroupSection({
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-auto min-w-36" data-testid="session-group-menu-content">
-              <DropdownMenuItem data-testid="group-menu-pin" onSelect={() => onPin(!pinned)}>
-                {pinLabel}
-              </DropdownMenuItem>
+              {onPin !== undefined && (
+                <DropdownMenuItem data-testid="group-menu-pin" onSelect={() => onPin(!pinned)}>
+                  {pinLabel}
+                </DropdownMenuItem>
+              )}
+              {onWorkspace !== undefined && (
+                <DropdownMenuItem data-testid="group-menu-workspace" onSelect={onWorkspace}>
+                  扩展面板…
+                </DropdownMenuItem>
+              )}
             </DropdownMenuContent>
           </DropdownMenu>
         </div>
