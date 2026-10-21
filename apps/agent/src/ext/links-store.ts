@@ -17,6 +17,13 @@ const LinksFileSchema = z.object({
 });
 type LinksFile = z.infer<typeof LinksFileSchema>;
 
+export interface LinksChange {
+  sessionId: string;
+  ext: string;
+  added: SessionLink[];
+  removed: SessionLink[];
+}
+
 export class LinkLimitError extends Error {
   constructor() {
     super(`每个会话最多 ${EXT_LIMITS.linksPerSession} 条关联`);
@@ -30,6 +37,7 @@ export class SessionLinksStore {
   #updates: Promise<unknown> = Promise.resolve();
   /** 每次改动 +1：读取缓存键用（关联变了，扩展视图就该重算） */
   #rev = 0;
+  readonly #listeners = new Set<(change: LinksChange) => void>();
 
   private constructor(path: string, data: LinksFile, log: (line: string) => void) {
     this.#data = data;
@@ -47,6 +55,15 @@ export class SessionLinksStore {
       tag: 'links',
     });
     return new SessionLinksStore(path, data, log);
+  }
+
+  /**
+   * update 落盘成功后通知新增 / 移除了哪些关联（只改 label 的不算）。时间线记录卡从这里产生，
+   * 所以手动关联、扩展的 links.* 效果、新会话带的关联都会留记录。
+   */
+  onChange(listener: (change: LinksChange) => void): () => void {
+    this.#listeners.add(listener);
+    return () => this.#listeners.delete(listener);
   }
 
   get rev(): number {
@@ -81,10 +98,13 @@ export class SessionLinksStore {
     const before = own(this.#data.links, sessionId);
     const next = (before ?? []).map((l) => ({ ...l }));
     let changed = false;
+    const added: SessionLink[] = [];
+    const removed: SessionLink[] = [];
     const removeSet = new Set(remove);
     for (let i = next.length - 1; i >= 0; i--) {
       const link = next[i]!;
       if (link.ext === ext && removeSet.has(link.ref)) {
+        removed.unshift(link);
         next.splice(i, 1);
         changed = true;
       }
@@ -98,7 +118,9 @@ export class SessionLinksStore {
         }
         continue;
       }
-      next.push({ ext, ref: ref.ref, label: ref.label, at });
+      const link = { ext, ref: ref.ref, label: ref.label, at };
+      next.push(link);
+      added.push({ ...link });
       changed = true;
     }
     if (!changed) return false;
@@ -110,6 +132,9 @@ export class SessionLinksStore {
     } catch (err) {
       this.#set(sessionId, before);
       throw err;
+    }
+    if (added.length > 0 || removed.length > 0) {
+      for (const listener of this.#listeners) listener({ sessionId, ext, added, removed });
     }
     return true;
   }

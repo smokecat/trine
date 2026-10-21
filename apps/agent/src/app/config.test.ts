@@ -74,6 +74,7 @@ describe('loadAgentConfig', () => {
       uploads: '/h/uploads',
       extensions: '/h/extensions.json',
       sessionLinks: '/h/session-links.json',
+      sessionRecords: '/h/session-ext-records.json',
     });
   });
 });

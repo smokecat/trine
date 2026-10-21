@@ -59,7 +59,7 @@ export const ExtCapabilitySchema = z.enum(['prompt.insert', 'prompt.send', 'sess
 export type ExtCapability = z.infer<typeof ExtCapabilitySchema>;
 
 /** 贡献点：扩展把内容放到界面的哪里 */
-export const ExtPointSchema = z.enum(['sessionPanel', 'workspacePanel', 'sessionBadge', 'linkPicker', 'composerAction']);
+export const ExtPointSchema = z.enum(['sessionPanel', 'workspacePanel', 'sessionBadge', 'linkPicker', 'composerAction', 'newSession']);
 export type ExtPoint = z.infer<typeof ExtPointSchema>;
 
 const PanelContribution = z.object({ title: text(40), icon: text(40).optional() });
@@ -70,6 +70,8 @@ export const ExtContributesSchema = z.object({
   sessionBadge: z.boolean().optional(),
   linkPicker: z.object({ title: text(40), multiple: z.boolean().optional() }).optional(),
   composerAction: z.object({ label: text(40), icon: text(40).optional() }).optional(),
+  /** 新建会话 sheet 的「从…开始」：选一项预填首条消息、建好后自动关联（agent ≥ 0.17.0） */
+  newSession: z.object({ title: text(40), icon: text(40).optional() }).optional(),
 });
 export type ExtContributes = z.infer<typeof ExtContributesSchema>;
 
@@ -297,6 +299,8 @@ export const MachineExtensionsSummarySchema = z.object({
   /** 目录版本：变化时 client 重新拉 ext.catalog */
   rev: z.string().min(1).max(64),
   count: z.number().int().nonnegative(),
+  /** 支持时间线记录卡（ext.records.request，agent ≥ 0.17.0） */
+  records: z.boolean().optional(),
 });
 export type MachineExtensionsSummary = z.infer<typeof MachineExtensionsSummarySchema>;
 
@@ -308,6 +312,29 @@ export const SessionLinkSchema = z.object({
   at: Ts,
 });
 export type SessionLink = z.infer<typeof SessionLinkSchema>;
+
+/**
+ * 时间线记录卡：扩展相关的操作在会话时间线留的一条记录，由 agent 产生（扩展不用写）。
+ * 单独存在 agent 上，不进 Claude 转录。kind 用宽松字符串：将来新增的种类旧 client 按通用样式显示。
+ *
+ * - `linked` / `unlinked`：会话的关联变了，label 是关联的显示名
+ * - `action`：会话面板里扩展的操作成功了，label 是动作名，subject 是条目标题，message 是扩展给的说明
+ */
+export const ExtRecordSchema = z.object({
+  id: z.string().min(1).max(64),
+  at: Ts,
+  ext: ExtIdSchema,
+  /** 记录时的扩展名（扩展移除后照样能显示） */
+  extName: z.string().max(60),
+  kind: z.string().min(1).max(32),
+  label: z.string().max(300),
+  subject: z.string().max(300).optional(),
+  message: z.string().max(500).optional(),
+});
+export type ExtRecord = z.infer<typeof ExtRecordSchema>;
+
+/** 每会话保留的记录条数 */
+export const EXT_RECORDS_PER_SESSION = 50;
 
 // ---------------------------------------------------------------------------
 // 执行计划（ext.action.plan：需要确认时给用户看的、agent 已固定下来的内容）

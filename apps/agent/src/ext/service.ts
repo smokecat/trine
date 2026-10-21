@@ -48,6 +48,7 @@ import {
 } from '@trine/core';
 import type { EventBody, EventBodyOf } from '../bridge/types.ts';
 import type { SessionLinksStore } from './links-store.ts';
+import type { SessionRecordsStore } from './records-store.ts';
 import type { ExtensionRegistry, LoadedExtension } from './registry.ts';
 import { ACTION_TIMEOUT_MS, READ_TIMEOUT_MS, type ExtensionRunner, type RunResult } from './runner.ts';
 
@@ -65,6 +66,18 @@ const MAX_TOKENS = 5_000;
 
 /** composerAction（输入框入口）只允许这些效果：那里是编辑语境，点一下不该发出任何东西 */
 const COMPOSER_EFFECTS: ReadonlySet<string> = new Set(['prompt.insert', 'links.add']);
+/**
+ * newSession（新建会话 sheet）只允许预填首条消息：会话由用户在 sheet 里自己建，
+ * 关联取候选项的 link，经宿主的 session.links.update 写入（用户本人操作）。
+ */
+const NEW_SESSION_EFFECTS: ReadonlySet<string> = new Set(['prompt.insert']);
+
+/** 贡献点允许的效果；undefined = 不另设限制 */
+function pointEffects(point: ExtPoint): ReadonlySet<string> | undefined {
+  if (point === 'composerAction') return COMPOSER_EFFECTS;
+  if (point === 'newSession') return NEW_SESSION_EFFECTS;
+  return undefined;
+}
 
 /** effect 类型 → 需要的能力（copy / refresh 不需要声明） */
 function capabilityOf(type: ExtEffect['type']): ExtCapability | undefined {
@@ -123,6 +136,8 @@ export interface ExtensionServiceDeps {
   registry: ExtensionRegistry;
   runner: Pick<ExtensionRunner, 'run'> & { dispose?: () => void };
   links: SessionLinksStore;
+  /** 时间线记录卡；缺省不记 */
+  records?: Pick<SessionRecordsStore, 'append'>;
   host: ExtHost;
   now?: () => number;
   uuid?: () => string;
@@ -139,6 +154,8 @@ interface TokenRecord {
   targetSessionId: string | undefined;
   cwd: string;
   itemId: string | undefined;
+  /** 条目标题（时间线记录卡用；工具栏动作没有） */
+  itemTitle: string | undefined;
   action: { id: string; label: string; destructive: boolean; confirm: string | undefined };
   effects: ExtEffect[] | undefined;
   invoke: { params?: Record<string, unknown> } | undefined;
@@ -204,6 +221,7 @@ export class ExtensionService {
   readonly #registry: ExtensionRegistry;
   readonly #runner: Pick<ExtensionRunner, 'run'> & { dispose?: () => void };
   readonly #links: SessionLinksStore;
+  readonly #records: Pick<SessionRecordsStore, 'append'> | undefined;
   readonly #host: ExtHost;
   readonly #now: () => number;
   readonly #uuid: () => string;
@@ -228,6 +246,7 @@ export class ExtensionService {
     this.#registry = deps.registry;
     this.#runner = deps.runner;
     this.#links = deps.links;
+    this.#records = deps.records;
     this.#host = deps.host;
     this.#now = deps.now ?? (() => Date.now());
     this.#uuid = deps.uuid ?? (() => randomUUID());
@@ -467,8 +486,8 @@ export class ExtensionService {
     view: ExtRawView,
     target: { ext: LoadedExtension; deviceId: string; point: ExtPoint; targetSessionId: string | undefined; cwd: string },
   ): ExtWireView {
-    const wire = (action: ExtRawAction, itemId: string | undefined): ExtWireAction | undefined =>
-      this.#wireAction(action, itemId, target);
+    const wire = (action: ExtRawAction, item: { id: string; title: string } | undefined): ExtWireAction | undefined =>
+      this.#wireAction(action, item, target);
     return {
       ...(view.title === undefined ? {} : { title: view.title }),
       ...(view.empty === undefined ? {} : { empty: view.empty }),
@@ -477,7 +496,7 @@ export class ExtensionService {
         ...section,
         items: section.items.map(({ actions, ...item }) => ({
           ...item,
-          ...(actions === undefined ? {} : { actions: compact(actions.map((a) => wire(a, item.id))) }),
+          ...(actions === undefined ? {} : { actions: compact(actions.map((a) => wire(a, item))) }),
         })),
       })),
     };
@@ -489,7 +508,7 @@ export class ExtensionService {
   ): ExtWirePickItem[] {
     return items.map(({ effects, ...item }) => {
       if (effects === undefined) return item;
-      const action = this.#wireAction({ id: `pick:${item.id}`, label: item.title, effects }, item.id, target);
+      const action = this.#wireAction({ id: `pick:${item.id}`, label: item.title, effects }, item, target);
       if (action === undefined) return item;
       return {
         ...item,
@@ -502,7 +521,7 @@ export class ExtensionService {
   /** 不允许的动作（越过贡献点、能力被禁）直接不给，返回 undefined */
   #wireAction(
     action: ExtRawAction,
-    itemId: string | undefined,
+    item: { id: string; title: string } | undefined,
     target: { ext: LoadedExtension; deviceId: string; point: ExtPoint; targetSessionId: string | undefined; cwd: string },
   ): ExtWireAction | undefined {
     const { ext, point } = target;
@@ -514,8 +533,9 @@ export class ExtensionService {
       ...(action.confirm === undefined ? {} : { confirm: action.confirm }),
     };
     if (action.effects !== undefined) {
+      const allowed = pointEffects(point);
       for (const effect of action.effects) {
-        if (point === 'composerAction' && !COMPOSER_EFFECTS.has(effect.type)) return undefined;
+        if (allowed !== undefined && !allowed.has(effect.type)) return undefined;
         const capability = capabilityOf(effect.type);
         if (capability !== undefined && this.#registry.decide(ext.id, capability) === 'deny') return undefined;
         // 指向会话的效果，没有目标会话就不给
@@ -527,7 +547,7 @@ export class ExtensionService {
         return { ...common, local: action.effects.filter(isLocalEffect) };
       }
     } else {
-      if (point === 'composerAction') return undefined;
+      if (pointEffects(point) !== undefined) return undefined;
       if (this.#registry.decide(ext.id, 'invoke') === 'deny') return undefined;
     }
     const token = this.#issue({
@@ -537,7 +557,8 @@ export class ExtensionService {
       deviceId: target.deviceId,
       targetSessionId: target.targetSessionId,
       cwd: target.cwd,
-      itemId,
+      itemId: item?.id,
+      itemTitle: item?.title,
       action: { id: action.id, label: action.label, destructive: action.destructive === true, confirm: action.confirm },
       effects: action.effects,
       invoke: action.invoke,
@@ -760,9 +781,10 @@ export class ExtensionService {
     const parsed = ExtActionOutputSchema.parse(output);
     if (!parsed.ok) throw new ExtFailure('extension_error', parsed.message ?? '扩展报告操作失败');
     const effects = parsed.effects ?? [];
+    const allowed = pointEffects(token.point);
     for (const effect of effects) {
-      if (token.point === 'composerAction' && !COMPOSER_EFFECTS.has(effect.type)) {
-        throw new ExtFailure('denied', `输入框入口不允许 ${effect.type}`);
+      if (allowed !== undefined && !allowed.has(effect.type)) {
+        throw new ExtFailure('denied', `这个入口不允许 ${effect.type}`);
       }
     }
     let view: ExtWireView | undefined;
@@ -994,6 +1016,10 @@ export class ExtensionService {
       }
     }
     for (const sid of touched) await this.#host.broadcastSession(sid).catch(() => {});
+    // 会话面板里扩展自己的操作成功了：在该会话时间线留一条记录（关联的增删由 links store 另记）
+    if (token.invoke !== undefined && token.point === 'sessionPanel' && token.targetSessionId !== undefined) {
+      this.#record(token, extra.message);
+    }
     this.#bumpEpoch(token.ext);
     this.#markDirty((lease) => lease.read.ext === token.ext);
     if (extra.local.length > 0) result.local = extra.local;
@@ -1002,6 +1028,23 @@ export class ExtensionService {
     const message = [extra.message, warning].filter((m): m is string => m !== undefined).join('；');
     if (message !== '') result.message = message;
     return result;
+  }
+
+  #record(token: TokenRecord, message: string | undefined): void {
+    if (this.#records === undefined || token.targetSessionId === undefined) return;
+    try {
+      const ext = this.#registry.get(token.ext);
+      this.#records.append(token.targetSessionId, {
+        ext: token.ext,
+        extName: ext?.manifest?.name ?? token.ext,
+        kind: 'action',
+        label: token.action.label,
+        ...(token.itemTitle === undefined ? {} : { subject: token.itemTitle }),
+        ...(message === undefined || message === '' ? {} : { message }),
+      });
+    } catch (err) {
+      this.#log(`[ext] 写时间线记录失败：${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   /** 扩展仍可用、代次没变（停用 / 改权限 / reload 后在途的动作不再提交） */
@@ -1120,7 +1163,7 @@ function checkPoint(ext: LoadedExtension, op: ReadOp, point: ExtPoint): void {
   const ok =
     (op === 'view' && (point === 'sessionPanel' || point === 'workspacePanel')) ||
     (op === 'badge' && point === 'sessionBadge') ||
-    (op === 'pick' && (point === 'linkPicker' || point === 'composerAction'));
+    (op === 'pick' && (point === 'linkPicker' || point === 'composerAction' || point === 'newSession'));
   const declared = point === 'sessionBadge' ? contributes.sessionBadge === true : contributes[point] !== undefined;
   if (!ok || !declared) throw new ExtFailure('unsupported', `扩展没有提供 ${point}`);
 }

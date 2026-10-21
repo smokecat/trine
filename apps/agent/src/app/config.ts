@@ -53,6 +53,7 @@ export function agentPaths(home: string): {
   uploads: string;
   extensions: string;
   sessionLinks: string;
+  sessionRecords: string;
 } {
   return {
     identity: join(home, 'identity.json'),
@@ -65,6 +66,7 @@ export function agentPaths(home: string): {
     /** 扩展注册表与会话关联（见 ext/） */
     extensions: join(home, 'extensions.json'),
     sessionLinks: join(home, 'session-links.json'),
+    sessionRecords: join(home, 'session-ext-records.json'),
   };
 }
 

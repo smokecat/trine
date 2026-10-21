@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import type { ExtRawView, SessionMeta } from '@trine/core';
 import type { EventBody } from '../bridge/types.ts';
 import { SessionLinksStore } from './links-store.ts';
+import { recordLinkChanges, SessionRecordsStore } from './records-store.ts';
 import { ExtensionRegistry, MANIFEST_FILE } from './registry.ts';
 import type { RunRequest, RunResult } from './runner.ts';
 import { ExtensionService, REFRESH_DEBOUNCE_MS, type ExtHost } from './service.ts';
@@ -25,6 +26,7 @@ interface Harness {
   service: ExtensionService;
   registry: ExtensionRegistry;
   links: SessionLinksStore;
+  records: SessionRecordsStore;
   sent: { to: string; body: EventBody }[];
   runs: { op: string; input: unknown }[];
   outputs: Map<string, Output>;
@@ -82,6 +84,8 @@ async function harness(
   await registry.add(dir);
   if (policy !== undefined) await registry.setConfig('tasks', { policy: { trust: policy.trust, capabilities: policy.capabilities ?? {} } });
   const links = await SessionLinksStore.load(join(root, 'session-links.json'));
+  const records = await SessionRecordsStore.load(join(root, 'session-ext-records.json'), { now: () => h.clock!.now });
+  recordLinkChanges(links, records, (ext) => registry.get(ext)?.manifest?.name ?? ext);
   const h: Partial<Harness> = {
     sent: [],
     runs: [],
@@ -119,6 +123,7 @@ async function harness(
   const service = new ExtensionService({
     registry,
     links,
+    records,
     host,
     runner: {
       run: async (req): Promise<RunResult> => {
@@ -142,6 +147,7 @@ async function harness(
     service,
     registry,
     links,
+    records,
     last<T extends EventBody['type']>(type: T) {
       const found = [...h.sent!].reverse().find((s) => s.body.type === type);
       if (found === undefined) throw new Error(`没有 ${type}`);
@@ -249,6 +255,28 @@ describe('读取', () => {
     expect(items[0]!.token).toBeString();
     expect(items[1]!.token).toBeUndefined();
     expect(items[1]!.local).toBeUndefined();
+  });
+
+  test('newSession：只允许 prompt.insert（预填），上下文只有目录、没有会话', async () => {
+    const h = await harness({ contributes: { newSession: { title: '从任务开始' } } });
+    h.outputs.set('pick', {
+      items: [
+        { id: 'a', title: 'A', link: { ref: 'a', label: 'A' }, effects: [{ type: 'prompt.insert', text: '继续 a' }] },
+        { id: 'b', title: 'B', effects: [{ type: 'session.create', prompt: 'go' }] },
+        { id: 'c', title: 'C', effects: [{ type: 'prompt.insert', text: 'x' }, { type: 'links.add', links: [{ ref: 'c', label: 'C' }] }] },
+      ],
+    });
+    await read(h, 'd1', { op: 'pick', point: 'newSession', targetSessionId: undefined, cwd: '/work/other' });
+    const items = h.last('ext.read.response').items!;
+    expect(items[0]).toMatchObject({ link: { ref: 'a' }, local: [{ type: 'prompt.insert', text: '继续 a' }] });
+    expect(items[0]!.token).toBeUndefined();
+    for (const item of items.slice(1)) {
+      expect(item.token).toBeUndefined();
+      expect(item.local).toBeUndefined();
+    }
+    expect(h.runs[0]!.input).toMatchObject({ op: 'pick', point: 'newSession', context: { cwd: '/work/other' } });
+    expect((h.runs[0]!.input as { context: Record<string, unknown> }).context.session).toBeUndefined();
+    expect(h.service.tokenCount).toBe(0);
   });
 
   test('没有贡献这个点 → unsupported；扩展报错 → extension_error；非法输出 → invalid_output', async () => {
@@ -431,6 +459,45 @@ describe('动作', () => {
     await prepare(h, h.last('ext.read.response').items![0]!.token!);
     expect(h.last('ext.action.result')).toMatchObject({ ok: true });
     expect(h.links.of('s1')).toMatchObject([{ ext: 'tasks', ref: 'a', label: 'A' }]);
+  });
+
+  test('时间线记录：会话面板的 invoke 成功后记一条；关联增删各记一条', async () => {
+    const h = await harness({}, { trust: 'full' });
+    h.outputs.set('view', { view: VIEW });
+    h.outputs.set('action', { ok: true, message: '已归档' });
+    await read(h);
+    await prepare(h, tokenOf(h, 'archive'));
+    expect(h.records.of('s1')).toMatchObject([{ ext: 'tasks', extName: 'Tasks', kind: 'action', label: '归档', subject: 'Task A', message: '已归档' }]);
+
+    h.outputs.set('pick', { items: [{ id: 'a', title: 'A', effects: [{ type: 'links.add', links: [{ ref: 'a', label: 'A' }] }] }] });
+    await read(h, 'd1', { op: 'pick', point: 'composerAction' });
+    await prepare(h, h.last('ext.read.response').items![0]!.token!, 'inv-2');
+    expect(h.records.of('s1').map((r) => [r.kind, r.label])).toEqual([
+      ['action', '归档'],
+      ['linked', 'A'],
+    ]);
+    // 已有的关联再加一次 / 只改 label：不记
+    await h.links.update('s1', 'tasks', [{ ref: 'a', label: 'A2' }], [], 1);
+    await h.links.update('s1', 'tasks', [], ['a'], 2);
+    expect(h.records.of('s1').map((r) => [r.kind, r.label])).toEqual([
+      ['action', '归档'],
+      ['linked', 'A'],
+      ['unlinked', 'A2'],
+    ]);
+  });
+
+  test('时间线记录：失败的 invoke、工作区面板的 invoke 不记', async () => {
+    const h = await harness({ contributes: { sessionPanel: { title: 'T' }, workspacePanel: { title: 'T' } } }, { trust: 'full' });
+    h.outputs.set('view', { view: VIEW });
+    h.outputs.set('action', { ok: false, message: '失败' });
+    await read(h);
+    await prepare(h, tokenOf(h, 'archive'));
+    expect(h.last('ext.action.result')).toMatchObject({ ok: false });
+    h.outputs.set('action', { ok: true });
+    await read(h, 'd1', { point: 'workspacePanel', targetSessionId: undefined, cwd: '/work/repo' });
+    await prepare(h, tokenOf(h, 'archive'), 'inv-2');
+    expect(h.last('ext.action.result')).toMatchObject({ ok: true });
+    expect(h.records.of('s1')).toEqual([]);
   });
 
   test('等待确认时查询状态：返回当前计划', async () => {

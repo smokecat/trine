@@ -35,6 +35,7 @@ import type { ClaudeSession } from '../bridge/session.ts';
 import { createHeadlessProbe, type HeadlessProbe } from '../bridge/session-origin.ts';
 import type { EventBody, OutboundEvent } from '../bridge/types.ts';
 import { SessionLinksStore } from '../ext/links-store.ts';
+import { recordLinkChanges, SessionRecordsStore } from '../ext/records-store.ts';
 import { ExtensionRegistry } from '../ext/registry.ts';
 import { ExtensionRunner } from '../ext/runner.ts';
 import { ExtensionService } from '../ext/service.ts';
@@ -126,6 +127,7 @@ export class AgentApp {
   #machineStats!: MachineStatsWatcher;
   #extRegistry!: ExtensionRegistry;
   #extLinks!: SessionLinksStore;
+  #extRecords!: SessionRecordsStore;
   #extensions!: ExtensionService;
 
   private constructor(
@@ -166,6 +168,7 @@ export class AgentApp {
     // 会话标记要在 manager 之前就位：manager 的每个 meta 出口都经它 decorate
     const flags = await SessionFlagsStore.load(paths.sessions, { log });
     const links = await SessionLinksStore.load(paths.sessionLinks, { log, now });
+    const records = await SessionRecordsStore.load(paths.sessionRecords, { log, now });
 
     const emitter = new EventEmitter({
       now,
@@ -304,6 +307,7 @@ export class AgentApp {
       commandsProbe,
       attachments,
       links,
+      records,
       machineId: node.machineId,
     });
 
@@ -312,6 +316,7 @@ export class AgentApp {
       registry: extRegistry,
       runner: deps.extRunner ?? new ExtensionRunner({ now }),
       links,
+      records,
       host: router.extHost(),
       now,
       log,
@@ -335,6 +340,12 @@ export class AgentApp {
     app.#machineStats = machineStats;
     app.#extRegistry = extRegistry;
     app.#extLinks = links;
+    app.#extRecords = records;
+    // 时间线记录卡：关联的增删（不论来源）都留一条，新记录广播给全部设备
+    recordLinkChanges(links, records, (ext) => extRegistry.get(ext)?.manifest?.name ?? ext);
+    records.onAppend((targetSessionId, record) => {
+      app.#emitMachine({ type: 'ext.record', targetSessionId, record });
+    });
     app.#extensions = extensions;
     // 目录变了：作废该扩展的 token / plan / 缓存，广播 machine.info（client 按 rev 重拉目录）
     extRegistry.onChange = (ext) => {
@@ -424,6 +435,7 @@ export class AgentApp {
     await this.state.flush();
     await this.flags.flush();
     await this.#extLinks.flush();
+    await this.#extRecords.flush();
     await this.#extRegistry.flush();
     await this.node.disconnect();
   }
@@ -478,7 +490,7 @@ export class AgentApp {
       activeSessionCount: this.manager.activeCount,
       maxSessions: this.manager.maxConcurrent,
       rateLimits: this.#planUsage.current,
-      extensions: this.#extRegistry?.summary(),
+      extensions: this.#extRegistry === undefined ? undefined : { ...this.#extRegistry.summary(), records: true },
     });
   }
 

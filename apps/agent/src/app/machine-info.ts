@@ -42,7 +42,9 @@ import type { MachineExtensionsSummary, MachineInfo, RateLimits } from '@trine/c
 //   停止任务或会话关闭丢弃排队消息时发 input.cancelled（旧 web 会丢掉这帧——先部署 web 再重启 agent）
 // - 0.16.0 起支持扩展：ext.* 帧、session.links.update、MachineInfo 带 extensions、
 //   SessionMeta 带 links（web 按 machine.info.extensions 有无判断，不按版本号）
-export const AGENT_VERSION = '0.16.0';
+// - 0.17.0 起扩展贡献点 newSession（新建会话「从任务开始」）、时间线记录卡（ext.record 广播、
+//   ext.records.request；web 按 machine.info.extensions.records 判断）
+export const AGENT_VERSION = '0.17.0';
 
 export function buildMachineInfo(input: {
   name: string;

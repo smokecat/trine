@@ -47,6 +47,7 @@ import {
 } from './session-mutations.ts';
 import { AgentState } from './state.ts';
 import { SessionLinksStore } from '../ext/links-store.ts';
+import { SessionRecordsStore } from '../ext/records-store.ts';
 import { ExtensionRegistry } from '../ext/registry.ts';
 import { ExtensionService } from '../ext/service.ts';
 
@@ -234,6 +235,8 @@ async function makeHarness(options: {
   attachments?: AttachmentStore;
   /** 会话关联（扩展）；省略 = 不支持 */
   links?: SessionLinksStore;
+  /** 时间线记录卡（扩展）；省略 = 不支持 */
+  records?: SessionRecordsStore;
 } = {}) {
   const probeCalls: string[] = [];
   const historyCalls: { sessionId: string; dir: string | undefined }[] = [];
@@ -331,6 +334,7 @@ async function makeHarness(options: {
     },
     ...(options.attachments === undefined ? {} : { attachments: options.attachments }),
     ...(options.links === undefined ? {} : { links: options.links, machineId: 'mbp-id' }),
+    ...(options.records === undefined ? {} : { records: options.records }),
     ...(options.probeCommands === undefined
       ? {}
       : {
@@ -2478,6 +2482,25 @@ describe('Router · 扩展', () => {
     );
     await h.router.idle();
     expect(h.byType('session.links.update.response').at(-1)).toMatchObject({ reqId: 'l2', ok: false, error: { code: 'not_found' } });
+  });
+
+  test('ext.records.request：定向回该会话的记录卡；删除会话后清掉', async () => {
+    const records = await SessionRecordsStore.load(join(dir, 'session-ext-records.json'));
+    const h = await withHistorical('h1', { records });
+    records.append('h1', { ext: 'tasks', extName: 'Tasks', kind: 'linked', label: 'A' });
+    await h.router.handle({ type: 'ext.records.request', ...c2a(), reqId: 'r1', targetSessionId: 'h1' }, phone);
+    await h.router.handle({ type: 'ext.records.request', ...c2a(), reqId: 'r2', targetSessionId: 'nope' }, phone);
+    await h.router.idle();
+    const [r1, r2] = h.byType('ext.records.response') as { reqId: string; targetSessionId: string; records: { label: string }[] }[];
+    expect(r1).toMatchObject({ reqId: 'r1', targetSessionId: 'h1', records: [{ kind: 'linked', label: 'A' }] });
+    expect(r2).toMatchObject({ reqId: 'r2', records: [] });
+    expect(h.events.find((e) => e.event.type === 'ext.records.response')!.to).toBe('phone');
+
+    await h.router.handle(archive('h1', 'q-arch'), phone);
+    await h.router.handle(del('h1', 'q-del'), phone);
+    await h.router.idle();
+    expect(responseOf(h, 'q-del')).toMatchObject({ ok: true });
+    expect(records.of('h1')).toEqual([]);
   });
 
   test('删除会话时清掉关联', async () => {

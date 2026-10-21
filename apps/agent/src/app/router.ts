@@ -118,6 +118,7 @@ import {
 import type { ClaudeSession } from '../bridge/session.ts';
 import type { EventBody, EventBodyOf } from '../bridge/types.ts';
 import { LinkLimitError, type SessionLinksStore } from '../ext/links-store.ts';
+import type { SessionRecordsStore } from '../ext/records-store.ts';
 import type { ExtensionService, ExtHost } from '../ext/service.ts';
 import type { Recipient } from '../net/recipients.ts';
 import type { MachineStatsWatcher } from './machine-stats.ts';
@@ -168,6 +169,7 @@ const MACHINE_LEVEL_TYPES = new Set<ClientToAgentEvent['type']>([
   'ext.action.status',
   'ext.config.set',
   'session.links.update',
+  'ext.records.request',
 ]);
 
 /** 扩展帧：机器级，但不占机器链（扩展进程可能跑好几秒），见 ext/service.ts */
@@ -180,6 +182,7 @@ const EXT_TYPES = new Set<ClientToAgentEvent['type']>([
   'ext.action.status',
   'ext.config.set',
   'session.links.update',
+  'ext.records.request',
 ]);
 
 /**
@@ -268,6 +271,8 @@ export interface RouterDeps {
   attachments?: AttachmentStore;
   /** 会话关联（扩展）；缺省 = 不支持扩展 */
   links?: SessionLinksStore;
+  /** 时间线记录卡（扩展）；缺省 = 不支持，ext.records.request 回空 */
+  records?: SessionRecordsStore;
   /** 本机 machineId（扩展上下文用） */
   machineId?: string;
 }
@@ -694,6 +699,7 @@ export class Router {
           outcome = await this.#mutations.delete(sessionId);
           if (outcome.ok) {
             this.#deps.links?.forget(sessionId);
+            this.#deps.records?.forget(sessionId);
             await this.#deps.attachments?.removeSession(sessionId).catch((err: unknown) => {
               this.#log(`[router] 清理会话附件失败 session=${sessionId}: ${String(err)}`);
             });
@@ -1312,6 +1318,12 @@ export class Router {
     // 手动关联只要有 links store，不依赖扩展服务
     if (event.type === 'session.links.update') {
       await this.#updateLinks(event, deviceId);
+      return;
+    }
+    if (event.type === 'ext.records.request') {
+      const sid = event.targetSessionId;
+      const records = this.#deps.flags.isDeleted(sid) ? [] : (this.#deps.records?.of(sid) ?? []);
+      this.#deps.emitter.emit({ type: 'ext.records.response', reqId: event.reqId, targetSessionId: sid, records }, null, { to: deviceId });
       return;
     }
     if (service === undefined) {

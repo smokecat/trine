@@ -41,6 +41,7 @@ import {
   BgTaskSchema,
   ContextUsageSchema,
   EXT_LIMITS,
+  EXT_RECORDS_PER_SESSION,
   ExtBadgeSchema,
   ExtErrorSchema,
   ExtIdSchema,
@@ -49,6 +50,7 @@ import {
   ExtPlanSchema,
   ExtPointSchema,
   ExtPolicySchema,
+  ExtRecordSchema,
   ExtWirePickItemSchema,
   ExtWireViewSchema,
   HistoryItemSchema,
@@ -1316,6 +1318,35 @@ export const SessionLinksUpdateResponseSchema = z.object({
   error: ExtErrorSchema.optional(),
 });
 
+/**
+ * agent → 全部设备：某会话新增了一条时间线记录卡（agent 0.17.0 起，见 ExtRecordSchema）。
+ * 机器级广播：记录不是会话进程产出的，不进会话的时间线游标；client 按 targetSessionId 归位。
+ * 旧 client 不认识本 type，schema 层丢弃。
+ */
+export const ExtRecordEventSchema = z.object({
+  type: z.literal('ext.record'),
+  ...a2cBase,
+  targetSessionId: z.string().min(1),
+  record: ExtRecordSchema,
+});
+
+/** client → agent：拉某会话的时间线记录卡（machine.info.extensions.records 为 true 时才发） */
+export const ExtRecordsRequestSchema = z.object({
+  type: z.literal('ext.records.request'),
+  ...c2aBase,
+  reqId: ReqIdSchema,
+  targetSessionId: z.string().min(1),
+});
+
+/** agent → 请求设备：该会话的记录卡（按时间正序，最多 EXT_RECORDS_PER_SESSION 条） */
+export const ExtRecordsResponseSchema = z.object({
+  type: z.literal('ext.records.response'),
+  ...a2cBase,
+  reqId: ReqIdSchema,
+  targetSessionId: z.string().min(1),
+  records: z.array(ExtRecordSchema).max(EXT_RECORDS_PER_SESSION),
+});
+
 // ---------------------------------------------------------------------------
 // §6.2 工作目录管理（决策 7：agent 端持久化，每机器一份）
 // ---------------------------------------------------------------------------
@@ -1449,6 +1480,8 @@ export const AgentToClientEventSchema = z.discriminatedUnion('type', [
   ExtActionResultSchema,
   ExtConfigResponseSchema,
   SessionLinksUpdateResponseSchema,
+  ExtRecordEventSchema,
+  ExtRecordsResponseSchema,
   CwdListResponseSchema,
   CwdUpdatedSchema,
   ErrorTransientSchema,
@@ -1495,6 +1528,7 @@ export const ClientToAgentEventSchema = z.discriminatedUnion('type', [
   ExtActionStatusSchema,
   ExtConfigSetSchema,
   SessionLinksUpdateSchema,
+  ExtRecordsRequestSchema,
   CwdListRequestSchema,
   CwdAddSchema,
   CwdRemoveSchema,
