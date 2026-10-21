@@ -34,13 +34,14 @@ docs/          功能范围、架构决策与协议说明
 - `agent/app`：配置、生命周期、命令路由、状态、回退编排、CLI 更新与订阅限额用量（`plan-usage.ts`）、机器资源采样与订阅（`machine-stats.ts`）。
 - `agent/bridge`：SDK 会话、工具权限、事件翻译、历史与子代理历史、附件落盘（`attachments.ts`）、用量解析（`usage.ts`）。
 - `agent/net`：设备身份、收件人列表、加密信封、配对与 WS 客户端。
-- `agent/control`：本机控制通道（`<home>/control.sock`）与 `pair`/`devices`/`status` 子命令。
+- `agent/ext`：扩展（注册表 `extensions.json`、进程执行、动作令牌与执行计划、会话关联 `session-links.json`），契约见 [EXTENSIONS.md](EXTENSIONS.md)。
+- `agent/control`：本机控制通道（`<home>/control.sock`）与 `pair`/`devices`/`status`/`ext` 子命令。
 - `server/auth`、`store`、`ws`：设备认证、存储、连接路由及离线补发；`blobs.ts` 是附件密文存储。
-- `web/lib`：浏览器传输、身份、缓存与 reducer；`components`/`views` 负责展示。
+- `web/lib`：浏览器传输、身份、缓存与 reducer；`components`/`views` 负责展示。扩展界面在 `components/ext`，只渲染固定词汇的数据。
 
 ## 持久化与信任
 
-agent 默认状态目录为 `~/.trine`，内含单实例锁 `agent.lock`（同一目录只许一个进程）与收到的附件 `uploads/`；Claude 的会话目录独立于 trine。Web 使用
+agent 默认状态目录为 `~/.trine`，内含单实例锁 `agent.lock`（同一目录只许一个进程）、收到的附件 `uploads/`、扩展注册表 `extensions.json` 与会话关联 `session-links.json`；Claude 的会话目录独立于 trine。Web 使用
 localStorage/IndexedDB。生产数据库应放仓库外。开发实例可用忽略的 `.dev/`。
 
 加密保护浏览器到 agent 的消息链路，但前端脚本、浏览器和 agent 仍是信任根。

@@ -33,6 +33,11 @@ the agent runs on your own computer.
   in Settings (1 minute by default, 5 seconds on the machine page), and can be refreshed by hand.
 - Pins sessions and workspaces (most recently pinned first). When grouped by workspace, groups
   keep a fixed order (newest workspace first) instead of jumping around as sessions change state.
+- Extensions: programs on the agent machine can add a panel, a badge and action buttons to the
+  session page (for example a project's task list, with "resume this task in a new session"), and
+  sessions can be linked to their items. The browser never runs extension code; it only renders the
+  data the agent returns, and actions run on the agent after a click. Install with
+  `trine-agent ext add <dir>`; see [extensions](docs/EXTENSIONS.md). Requires agent 0.16.0 or later.
 - Hides temporary sessions by default (working directory under a system temp directory, or
   non-interactive runs such as `claude -p`); a list filter shows them again.
 - Relays tool approval requests and interactive questions to your browser.

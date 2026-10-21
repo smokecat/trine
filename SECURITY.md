@@ -42,6 +42,15 @@ is not a substitute for those controls, backups or TLS.
 - The agent's local control socket (`<home>/control.sock`, same OS user only) can
   start pairings and remove paired devices. Anyone who can use it can already read
   the agent identity; pairing still requires a human to compare the short code.
+- Extensions (`trine-agent ext add`) run as the agent's OS user with no sandbox: installing
+  one trusts its code as much as a Claude Code hook. trine only controls what an extension can make
+  trine do (insert text, send a message, start a session, change session links, call back into the
+  extension), per extension and per capability. The browser never runs extension code and renders
+  extension text as untrusted data (no images, no raw HTML, https links only). Reading, refreshing or
+  pushing an extension view never runs an action; actions run on the agent only after a click,
+  through a single-use token bound to the device that received it. With "full trust" an extension's
+  actions run without a confirmation prompt, including capabilities a later version declares.
+  Any paired controller can change extension permissions for that machine.
 - There is no forward-secrecy guarantee for long-term device key compromise.
 - Agent permission settings and project/user Claude configuration affect execution.
   Enabling bypass permissions increases the authority of every paired controller.
