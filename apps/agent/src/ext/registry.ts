@@ -150,26 +150,10 @@ async function resolveEntry(dir: string, entry: readonly string[], which: (cmd: 
   } catch {
     throw new ManifestError(`entry ${program} 不存在或不可执行`);
   }
-  // 参数里指向扩展目录内文件的相对路径（`bash bin/run`、`python3 ./main.py`）一律按扩展目录解析：
-  // 留成相对路径的话，进程在会话目录里启动，会执行到工作项目里的同名文件
-  const args = await Promise.all(
-    rest.map(async (arg) => {
-      if (arg.startsWith('./') || arg.startsWith('../')) return resolve(dir, arg);
-      if (arg.startsWith('-') || isAbsolute(arg)) return arg;
-      const candidate = resolve(dir, arg);
-      return (await exists(candidate)) ? candidate : arg;
-    }),
-  );
+  // 参数里的相对路径（以 ./ ../ 开头，或含 /，如 `bash bin/run`）一律按扩展目录解析：留成相对路径的话，
+  // 进程在会话目录里启动，会执行到工作项目里的同名文件。不含 / 的参数（`-m pkg`、`--flag`）原样保留
+  const args = rest.map((arg) => (!isAbsolute(arg) && !arg.startsWith('-') && arg.includes('/') ? resolve(dir, arg) : arg));
   return [program, ...args];
-}
-
-async function exists(path: string): Promise<boolean> {
-  try {
-    await access(path, constants.F_OK);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 function defaultWhich(cmd: string): string | null {

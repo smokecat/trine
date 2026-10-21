@@ -280,3 +280,22 @@ describe('评审回归：解释器后的脚本路径', () => {
     expect(inspected.argv).toEqual(['/bin/sh', join(inspected.dir, 'bin', 'run'), 'view-flag']);
   });
 });
+
+describe('评审回归（第二轮）', () => {
+  test('不含 / 的参数原样保留（python3 -m pkg）', async () => {
+    const dir = await makeExtension('pyish', 'echo {}', { entry: ['python3', '-m', 'bin', 'bin/run'] });
+    await mkdir(join(dir, 'bin', 'sub'), { recursive: true });
+    const inspected = await inspectExtensionDir(dir, (cmd) => (cmd === 'python3' ? '/bin/sh' : null));
+    expect(inspected.argv).toEqual(['/bin/sh', '-m', 'bin', join(inspected.dir, 'bin', 'run')]);
+  });
+
+  test('links flush 等排队中的更新写完', async () => {
+    const path = join(root, 'session-links.json');
+    const store = await SessionLinksStore.load(path);
+    void store.update('s1', 'm', [{ ref: 'a', label: 'A' }], [], 1);
+    void store.update('s1', 'm', [{ ref: 'b', label: 'B' }], [], 2);
+    await store.flush();
+    const saved = JSON.parse(await readFile(path, 'utf8'));
+    expect(saved.links.s1).toHaveLength(2);
+  });
+});

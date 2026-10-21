@@ -290,7 +290,7 @@ describe('动作', () => {
     h.outputs.set('view', { view: VIEW });
     await read(h);
     await prepare(h, tokenOf(h, 'resume-new'));
-    expect(h.created).toEqual([
+    expect(h.created.map(({ precheck: _p, ...rest }) => rest)).toEqual([
       {
         cwd: '/work/repo',
         model: 'opus',

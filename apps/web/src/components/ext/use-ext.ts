@@ -2,8 +2,8 @@
  * 扩展的 React 胶水：目录、读取（含订阅续租）、动作执行、全局弹窗（确认 / 关联选择器）的状态。
  * 规则在 lib/ext-model.ts；这里只管 client 引用、页面可见性与组件生命周期。
  */
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
-import { useLocation, useNavigate } from 'react-router';
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
+import { useNavigate } from 'react-router';
 import { toast } from 'sonner';
 import type { ExtCatalogItem, ExtLocalEffect, ExtPlan, ExtPoint } from '@trine/core';
 import { useClient, useTrine } from '@/app/runtime.ts';
@@ -273,10 +273,7 @@ export interface ActionContext {
 export function useExtAction(): (action: { local?: readonly ExtLocalEffect[]; token?: string; label: string }, ctx: ActionContext) => Promise<void> {
   const client = useClient();
   const navigate = useNavigate();
-  const location = useLocation();
-  // 结果回来时用户可能已经离开发起的页面：迟到的跳转 / 插入不能作用到别的页面
-  const pathRef = useRef(location.pathname);
-  pathRef.current = location.pathname;
+
   const model = useTrine((s) => s.prefs.defaultModel);
   const permissionMode = useTrine((s) => s.prefs.defaultPermissionMode);
   const newSession = useMemo(() => ({ model, permissionMode }), [model, permissionMode]);
@@ -284,8 +281,10 @@ export function useExtAction(): (action: { local?: readonly ExtLocalEffect[]; to
   return useCallback(
     async (action, ctx) => {
       if (client === null) return;
-      const origin = pathRef.current;
-      const stillHere = (): boolean => pathRef.current === origin;
+      // 结果回来时用户可能已经离开发起的页面（组件也可能已卸载）：看浏览器当前地址，
+      // 迟到的跳转 / 插入不作用到别的页面
+      const origin = window.location.pathname;
+      const stillHere = (): boolean => window.location.pathname === origin;
       const apply = async (effects: readonly ExtLocalEffect[]): Promise<void> => {
         // 同一个动作的多段插入合成一次（逐段插入会被 React 合批成只剩最后一段）
         const inserts: string[] = [];

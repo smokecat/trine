@@ -170,13 +170,15 @@ function LinkPickerBody({ request, ext, multiple }: { request: LinkPickerRequest
     { query: debounced },
   );
   const sessions = useTrine((s) => s.sessions[request.machineId]);
-  // 初始勾选：单个会话时是它现有的关联；批量时从空开始（只做添加）
-  const initial = useMemo(() => {
+  // 现有关联（跟着会话实时更新）；用户的改动单独记成「要加 / 要去」，保存时只发这些改动——
+  // 弹窗开着时别的设备加的关联不会被当成「用户取消了」
+  const existing = useMemo(() => {
     if (single === undefined) return new Set<string>();
     return new Set((sessions?.[single]?.links ?? []).filter((l) => l.ext === ext).map((l) => l.ref));
   }, [sessions, single, ext]);
-  const [checked, setChecked] = useState<Set<string> | null>(null);
-  const current = checked ?? initial;
+  const [added, setAdded] = useState<ReadonlySet<string>>(new Set());
+  const [removed, setRemoved] = useState<ReadonlySet<string>>(new Set());
+  const isOn = (ref: string): boolean => added.has(ref) || (existing.has(ref) && !removed.has(ref));
   const [saving, setSaving] = useState(false);
   const items = (read.response?.items ?? []).filter((i) => i.link !== undefined);
   // 搜索过的结果都记住 label：换了搜索词，之前勾选的仍能保存
@@ -184,10 +186,26 @@ function LinkPickerBody({ request, ext, multiple }: { request: LinkPickerRequest
   for (const i of items) labels.current.set(i.link!.ref, i.link!.label);
 
   const toggle = (ref: string): void => {
-    const next = new Set(multiple ? current : []);
-    if (current.has(ref)) next.delete(ref);
-    else next.add(ref);
-    setChecked(next);
+    const nextAdded = new Set(added);
+    const nextRemoved = new Set(removed);
+    const turnOn = !isOn(ref);
+    if (turnOn && !multiple) {
+      // 单选：选中一个即去掉其余
+      for (const r of [...existing, ...added]) {
+        if (r === ref) continue;
+        nextAdded.delete(r);
+        if (existing.has(r)) nextRemoved.add(r);
+      }
+    }
+    if (turnOn) {
+      nextRemoved.delete(ref);
+      if (!existing.has(ref)) nextAdded.add(ref);
+    } else {
+      nextAdded.delete(ref);
+      if (existing.has(ref)) nextRemoved.add(ref);
+    }
+    setAdded(nextAdded);
+    setRemoved(nextRemoved);
   };
 
   const save = async (): Promise<void> => {
@@ -195,13 +213,12 @@ function LinkPickerBody({ request, ext, multiple }: { request: LinkPickerRequest
     setSaving(true);
     try {
       const known = labels.current;
-      const add = [...current].filter((r) => !initial.has(r) && known.has(r)).map((r) => ({ ref: r, label: known.get(r)! }));
-      // 取消勾选的就是要取消的，不管它此刻在不在搜索结果里
-      const remove = [...initial].filter((r) => !current.has(r));
+      const add = [...added].filter((r) => known.has(r)).map((r) => ({ ref: r, label: known.get(r)! }));
+      const remove = single === undefined ? [] : [...removed];
       for (const sid of request.sessionIds) {
         await updateLinks(client, request.machineId, sid, ext, {
           ...(add.length === 0 ? {} : { add }),
-          ...(remove.length === 0 || single === undefined ? {} : { remove }),
+          ...(remove.length === 0 ? {} : { remove }),
         });
       }
       closeLinkPicker();
@@ -222,7 +239,7 @@ function LinkPickerBody({ request, ext, multiple }: { request: LinkPickerRequest
         {read.response?.ok === true && items.length === 0 && <p className="text-text-3 text-[12.5px]">没有可关联的条目</p>}
         {items.map((item) => {
           const ref = item.link!.ref;
-          const on = current.has(ref);
+          const on = isOn(ref);
           return (
             <label
               key={item.id}

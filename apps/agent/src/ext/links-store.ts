@@ -145,8 +145,9 @@ export class SessionLinksStore {
     this.#writer.persist().catch(() => {});
   }
 
-  flush(): Promise<void> {
-    return this.#writer.flush();
+  async flush(): Promise<void> {
+    await this.#updates.catch(() => {});
+    await this.#writer.flush();
   }
 
   #set(sessionId: string, list: SessionLink[] | undefined): void {

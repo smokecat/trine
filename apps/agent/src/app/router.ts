@@ -1407,6 +1407,7 @@ export class Router {
       createSession: async (args) => {
         // 建会话占机器链（与 session.create 串行，名额判断才可靠）
         const sessionId = await this.#onChain(MACHINE_CHAIN, async () => {
+          args.precheck?.();
           const sid = await this.#createSession(args.cwd, args.model, args.permissionMode);
           if (args.title !== undefined && args.title.trim() !== '') {
             await deps.flags.setPendingTitle(sid, args.title.trim().slice(0, 200), this.#now()).catch(() => {});

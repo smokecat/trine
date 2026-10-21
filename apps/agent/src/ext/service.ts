@@ -102,6 +102,8 @@ export interface ExtHost {
     ext: string;
     links: readonly ExtLinkRef[];
     prompt: string;
+    /** 在机器链上、真正建会话之前调：抛错则不建（扩展在排队期间被停用等） */
+    precheck?: () => void;
   }): Promise<{ sessionId: string; clientMsgId?: string; sendError?: string }>;
   /**
    * 在该会话的命令链上执行 fn：前置条件复查与提交在同一环里完成，排在前面的改权限 / 改目录 /
@@ -727,8 +729,15 @@ export class ExtensionService {
   ): Promise<void> {
     this.#assertCurrent(token);
     const { cwd, context } = await this.#context(ext, token.targetSessionId, token.cwd);
-    // 会话换了目录：扩展会在别的数据上执行，不跑
+    // 会话换了目录：扩展会在别的数据上执行，不跑。在会话链上确认一次，排在前面的切目录已生效
     if (cwd !== token.cwd) throw new ExtFailure('stale', '会话的工作目录已变化，请刷新后重试');
+    if (token.targetSessionId !== undefined) {
+      await this.#host.withSession(token.targetSessionId, async (api) => {
+        const meta = await api.meta();
+        if (meta === undefined) throw new ExtFailure('stale', '会话已不存在');
+        if (meta.cwd !== token.cwd) throw new ExtFailure('stale', '会话的工作目录已变化，请刷新后重试');
+      });
+    }
     const output = await this.#runOp(
       ext,
       'action',
@@ -949,6 +958,7 @@ export class ExtensionService {
             ext: token.ext,
             links: view.links,
             prompt: view.prompt,
+            precheck: () => this.#assertCurrent(token),
           });
           result.createdSessionId = created.sessionId;
           if (created.sendError !== undefined) warning = `会话已建好，但接续消息没有发出去（${created.sendError}），请在新会话里重发`;

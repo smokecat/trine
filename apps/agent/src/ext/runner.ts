@@ -106,7 +106,11 @@ export async function runProcess(
     const timer = setTimeout(() => fail('timeout', `扩展超过 ${request.timeoutMs}ms 没有返回`), request.timeoutMs);
     timer.unref?.();
     // agent 退出：杀掉整组，不留下继续运行的扩展进程
-    const onAbort = (): void => fail('io', 'agent 正在退出');
+    const onAbort = (): void => {
+      // 退出流程等不了宽限期：直接 SIGKILL 整组
+      if (failure === undefined) failure = { code: 'io', message: 'agent 正在退出' };
+      if (child.pid !== undefined) signalGroup(child.pid, 'SIGKILL');
+    };
     if (options.signal?.aborted === true) onAbort();
     else options.signal?.addEventListener('abort', onAbort, { once: true });
 
@@ -232,13 +236,18 @@ export class ExtensionRunner {
   }
 
   #pump(): void {
+    // 先清掉排队超时的（不管有没有空位，都要按时报 busy）
     for (let i = 0; i < this.#queue.length; ) {
       const waiter = this.#queue[i]!;
       if (this.#now() - waiter.enqueuedAt > QUEUE_DEADLINE_MS) {
         this.#queue.splice(i, 1);
         waiter.resolve({ ok: false, code: 'busy', message: '扩展忙，排队超时', stderr: '', durationMs: 0 });
-        continue;
+      } else {
+        i++;
       }
+    }
+    for (let i = 0; i < this.#queue.length; ) {
+      const waiter = this.#queue[i]!;
       if (this.#globalRunning >= GLOBAL_CONCURRENCY) return;
       const ext = waiter.request.ext;
       if ((this.#running.get(ext) ?? 0) >= PER_EXT_CONCURRENCY) {
