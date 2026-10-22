@@ -143,6 +143,7 @@ async function main(): Promise<void> {
   }
 
   await app.start();
+  app.startClaudeLatestChecks();
 
   if (config.pair) {
     const session = app.node.startPairing();

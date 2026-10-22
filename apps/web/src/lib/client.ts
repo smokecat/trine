@@ -208,6 +208,9 @@ export const CLAUDE_UPDATE_TIMEOUT_MS = 6 * 60_000;
  */
 export const AGENT_RESTART_TIMEOUT_MS = 7 * 60_000;
 
+/** 检查 claude 最新版本的等待上限：agent 侧请求发布源 15 秒超时，留余量 */
+export const CLAUDE_CHECK_TIMEOUT_MS = 30_000;
+
 /** 手动刷新限额用量的等待上限：agent 可能要临时起一个 claude 进程（agent 侧 30s 超时） */
 export const USAGE_REFRESH_TIMEOUT_MS = 45_000;
 
@@ -222,6 +225,9 @@ export type UsageRefreshResult = Extract<AgentToClientEvent, { type: 'machine.us
 
 /** `machine.agent.restart.response`（ok 为 false 也照常返回，由调用方展示原因） */
 export type AgentRestartResult = Extract<AgentToClientEvent, { type: 'machine.agent.restart.response' }>;
+
+/** `machine.claude.check.response`（ok 为 false 也照常返回，由调用方展示原因） */
+export type ClaudeCheckResult = Extract<AgentToClientEvent, { type: 'machine.claude.check.response' }>;
 
 /** `machine.claude.update.response`（ok 为 false 也照常返回，由调用方展示原因） */
 export type ClaudeUpdateResult = Extract<AgentToClientEvent, { type: 'machine.claude.update.response' }>;
@@ -1704,6 +1710,22 @@ export class TrineClient {
       throw err;
     }
     if (res.type !== 'machine.claude.update.response') throw new Error(`意外的应答 ${res.type}`);
+    return res;
+  }
+
+  /**
+   * 立即检查 claude 最新版本（machine.info.claudeLatest 存在才支持，调用方先做能力探测）。
+   * 结果随 agent 先广播的 machine.info.claudeLatest 到达；业务失败不抛，发不出去 / 超时才抛。
+   */
+  async checkClaude(machineId: string): Promise<ClaudeCheckResult> {
+    let res: AgentToClientEvent;
+    try {
+      res = await this.request(machineId, { type: 'machine.claude.check.request' }, { timeoutMs: CLAUDE_CHECK_TIMEOUT_MS });
+    } catch (err) {
+      if (err instanceof RequestTimeoutError) throw new RequestTimeoutError(err.requestType, err.timeoutMs, MUTATE_TIMEOUT_HINT);
+      throw err;
+    }
+    if (res.type !== 'machine.claude.check.response') throw new Error(`意外的应答 ${res.type}`);
     return res;
   }
 

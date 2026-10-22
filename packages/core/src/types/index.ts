@@ -350,6 +350,23 @@ export const MachineRestartInfoSchema = z.object({
 });
 export type MachineRestartInfo = z.infer<typeof MachineRestartInfoSchema>;
 
+/**
+ * claude 最新版本（claude-latest，agent ≥ 0.19.0）：agent 向 claude 自更新所用的发布源
+ * （`downloads.claude.ai/claude-code-releases/<channel>`）查到的版本，与 claudeVersion 比较
+ * 即知有没有新版本。启动后与每 6 小时自动查一次，也可手动 `machine.claude.check.request`。
+ */
+export const MachineClaudeLatestSchema = z.object({
+  /** 查询的渠道：claude settings 的 `autoUpdatesChannel`，默认 latest */
+  channel: z.enum(['latest', 'stable']),
+  /** 最近一次查到的版本（如 `2.1.308`）；还没查成功过就省略 */
+  version: z.string().max(64).optional(),
+  /** version 的查询时刻 */
+  checkedAt: TimestampSchema.optional(),
+  /** 最近一次查询失败的原因（给人看）；之后查成功就清掉 */
+  error: z.string().max(300).optional(),
+});
+export type MachineClaudeLatest = z.infer<typeof MachineClaudeLatestSchema>;
+
 /** 机器信息（E2E 密文内） */
 export const MachineInfoSchema = z.object({
   name: z.string(),
@@ -369,6 +386,8 @@ export const MachineInfoSchema = z.object({
   extensions: MachineExtensionsSummarySchema.optional(),
   /** agent 自重启（agent-restart 新增，可选；agent ≥ 0.18.0）。缺失 = 不支持，client 隐藏重启入口 */
   restart: MachineRestartInfoSchema.optional(),
+  /** claude 最新版本（claude-latest 新增，可选；agent ≥ 0.19.0）。缺失 = 不支持，client 隐藏检查入口 */
+  claudeLatest: MachineClaudeLatestSchema.optional(),
 });
 export type MachineInfo = z.infer<typeof MachineInfoSchema>;
 

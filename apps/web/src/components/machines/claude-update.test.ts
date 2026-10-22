@@ -1,6 +1,10 @@
 import { describe, expect, test } from 'bun:test';
-import type { ClaudeUpdateResult } from '@/lib/client.ts';
+import type { ClaudeCheckResult, ClaudeUpdateResult } from '@/lib/client.ts';
 import {
+  claudeLatestView,
+  claudeUpdateHint,
+  claudeVersionNumber,
+  summarizeClaudeCheck,
   RUNNING_SESSIONS_NOTE,
   shortClaudeVersion,
   summarizeClaudeUpdate,
@@ -71,5 +75,72 @@ describe('summarizeClaudeUpdate', () => {
     expect(shortClaudeVersion('2.1.282 (Claude Code)')).toBe('2.1.282');
     expect(shortClaudeVersion('2.1.251 (SDK 内置)')).toBe('2.1.251 (SDK 内置)');
     expect(shortClaudeVersion('unknown')).toBe('unknown');
+  });
+});
+
+describe('最新版本（claude-latest）', () => {
+  test('claudeVersionNumber：取开头的版本号', () => {
+    expect(claudeVersionNumber('2.1.282 (Claude Code)')).toBe('2.1.282');
+    expect(claudeVersionNumber('2.1.251 (SDK 内置)')).toBe('2.1.251');
+    expect(claudeVersionNumber('unknown')).toBeNull();
+    expect(claudeVersionNumber(undefined)).toBeNull();
+  });
+
+  test('claudeLatestView：没有 claudeLatest = 不支持；比较当前与最新', () => {
+    expect(claudeLatestView(null)).toBeNull();
+    expect(claudeLatestView({ claudeVersion: '2.1.282 (Claude Code)' })).toBeNull();
+    expect(
+      claudeLatestView({
+        claudeVersion: '2.1.282 (Claude Code)',
+        claudeLatest: { channel: 'latest', version: '2.1.308', checkedAt: 5 },
+      }),
+    ).toEqual({
+      current: '2.1.282',
+      latest: '2.1.308',
+      channel: 'latest',
+      checkedAt: 5,
+      error: null,
+      updateAvailable: true,
+    });
+    // stable 渠道可能比已装的旧：不算有新版本
+    expect(
+      claudeLatestView({ claudeVersion: '2.1.308 (Claude Code)', claudeLatest: { channel: 'stable', version: '2.1.300' } })
+        ?.updateAvailable,
+    ).toBe(false);
+    // 还没查到 / 当前版本未知：无从判断
+    expect(claudeLatestView({ claudeVersion: '2.1.308', claudeLatest: { channel: 'latest' } })?.updateAvailable).toBeNull();
+    expect(
+      claudeLatestView({ claudeVersion: 'unknown', claudeLatest: { channel: 'latest', version: '2.1.308' } })?.updateAvailable,
+    ).toBeNull();
+  });
+
+  test('claudeUpdateHint：只在有新版本时给', () => {
+    expect(
+      claudeUpdateHint({ claudeVersion: '2.1.282 (Claude Code)', claudeLatest: { channel: 'latest', version: '2.1.308' } }),
+    ).toBe('claude 可更新 → 2.1.308');
+    expect(claudeUpdateHint({ claudeVersion: '2.1.308 (Claude Code)', claudeLatest: { channel: 'latest', version: '2.1.308' } })).toBe('');
+    expect(claudeUpdateHint({ claudeVersion: '2.1.282 (Claude Code)' })).toBe('');
+  });
+
+  test('summarizeClaudeCheck', () => {
+    const base: ClaudeCheckResult = {
+      type: 'machine.claude.check.response',
+      ts: 1,
+      seq: 1,
+      dir: 'a2c',
+      reqId: 'c',
+      ok: true,
+      currentVersion: '2.1.282 (Claude Code)',
+      latest: { version: '2.1.308', channel: 'latest' },
+    };
+    expect(summarizeClaudeCheck(base)).toEqual({ tone: 'success', title: 'Claude 有新版本：2.1.282 → 2.1.308' });
+    expect(summarizeClaudeCheck({ ...base, currentVersion: '2.1.308 (Claude Code)' })).toEqual({
+      tone: 'info',
+      title: 'Claude 已是最新（2.1.308）',
+    });
+    expect(summarizeClaudeCheck({ ...base, currentVersion: 'unknown' }).title).toBe('Claude 最新版本是 2.1.308');
+    expect(
+      summarizeClaudeCheck({ ...base, ok: false, latest: undefined, error: { code: 'failed', message: '检查失败：x' } }),
+    ).toEqual({ tone: 'error', title: '检查失败：x' });
   });
 });

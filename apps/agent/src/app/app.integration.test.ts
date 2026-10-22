@@ -30,6 +30,7 @@ import { MockClient } from '../testing/mock-client.ts';
 import type { AgentApp, AgentAppDeps } from './app.ts';
 import type { SpawnedProcess, SpawnFn } from './claude-cli.ts';
 import { agentPaths } from './config.ts';
+import { AGENT_VERSION } from './machine-info.ts';
 
 // ---------------------------------------------------------------------------
 // 夹具
@@ -75,7 +76,12 @@ afterEach(async () => {
 
 /** 起一个假会话 agent（不自动接入——多数用例要自己控制 start 的时机） */
 async function createApp(
-  extra: { whichFn?: (cmd: string) => string | null; spawnFn?: SpawnFn; restart?: AgentAppDeps['restart'] } = {},
+  extra: {
+    whichFn?: (cmd: string) => string | null;
+    spawnFn?: SpawnFn;
+    restart?: AgentAppDeps['restart'];
+    claudeLatest?: AgentAppDeps['claudeLatest'];
+  } = {},
 ): Promise<AgentApp> {
   const { app: created } = await startEchoAgent({
     ...extra,
@@ -684,6 +690,41 @@ describe('agent 接线 · 端到端', () => {
     client.close();
   });
 
+  test('h2. 检查 claude 最新版本：先广播带 claudeLatest 的 machine.info 再回应答', async () => {
+    const urls: string[] = [];
+    await app.stop();
+    app = await createApp({
+      claudeLatest: {
+        fetchImpl: (async (input: string | URL | Request) => {
+          urls.push(String(input));
+          return new Response('2.1.308\n');
+        }) as typeof fetch,
+        configDir: home,
+      },
+    });
+    const client = await pairAndConnect();
+    // 不支持之前也有 claudeLatest（只有渠道）：client 据它有无做能力探测
+    expect(app.machineInfo().claudeLatest).toEqual({ channel: 'latest' });
+    send(client, { type: 'machine.claude.check.request', reqId: 'q-chk' });
+    await waitFor(
+      () => eventsOf(client).some((e) => e.type === 'machine.claude.check.response'),
+      'claude 检查应答',
+    );
+    const events = eventsOf(client);
+    const respIdx = events.findIndex((e) => e.type === 'machine.claude.check.response');
+    expect(events[respIdx]).toMatchObject({
+      reqId: 'q-chk',
+      ok: true,
+      currentVersion: 'test',
+      latest: { version: '2.1.308', channel: 'latest' },
+    });
+    const infoIdx = events.findIndex((e) => e.type === 'machine.info' && e.info.claudeLatest?.version === '2.1.308');
+    expect(infoIdx).toBeGreaterThanOrEqual(0);
+    expect(infoIdx).toBeLessThan(respIdx);
+    expect(urls).toEqual(['https://downloads.claude.ai/claude-code-releases/latest']);
+    client.close();
+  });
+
   test('h. 远程 claude update：用解析出的路径跑 update，先广播新版本 machine.info 再回应答', async () => {
     const commands: string[][] = [];
     const versions = ['2.1.251 (Claude Code)', '2.1.282 (Claude Code)'];
@@ -730,7 +771,7 @@ describe('agent 接线 · 端到端', () => {
       ['/home/u/.local/bin/claude', 'update'],
       ['/home/u/.local/bin/claude', '--version'],
     ]);
-    expect(app.machineInfo()).toMatchObject({ agentVersion: '0.18.0', claudeVersion: '2.1.282 (Claude Code)' });
+    expect(app.machineInfo()).toMatchObject({ agentVersion: AGENT_VERSION, claudeVersion: '2.1.282 (Claude Code)' });
     client.close();
   });
 
@@ -759,7 +800,7 @@ describe('agent 接线 · 端到端', () => {
     const phases = events.flatMap((e) => (e.type === 'machine.info' && e.info.restart?.pending ? [e.info.restart.pending.phase] : []));
     expect(phases).toEqual(['checking', 'draining']);
     const marker = JSON.parse(await readFile(agentPaths(home).restartMarker, 'utf8'));
-    expect(marker).toMatchObject({ v: 1, fromVersion: '0.18.0', notices: [] });
+    expect(marker).toMatchObject({ v: 1, fromVersion: AGENT_VERSION, notices: [] });
     client.close();
   });
 
@@ -803,7 +844,7 @@ describe('agent 接线 · 端到端', () => {
     const record = eventsOf(client).find((e) => e.type === 'ext.record');
     expect(record).toMatchObject({
       targetSessionId: sid,
-      record: { ext: 'trine', kind: 'agent.restart', label: 'agent 已重启', message: '0.18.0 → 0.18.0（升级）' },
+      record: { ext: 'trine', kind: 'agent.restart', label: 'agent 已重启', message: `${AGENT_VERSION} → ${AGENT_VERSION}（升级）` },
     });
     // 标记读完即删：再重启一次不会重复续跑
     expect(existsSync(agentPaths(home).restartMarker)).toBe(false);

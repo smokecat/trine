@@ -27,6 +27,7 @@ import { FakeBlobs } from '../testing/fake-blobs.ts';
 import { FakeTranscripts } from '../testing/fake-transcripts.ts';
 import type { PlanUsageRefreshOutcome } from './plan-usage.ts';
 import type { ClaudeUpdateOutcome } from './claude-cli.ts';
+import type { ClaudeCheckOutcome } from './claude-latest.ts';
 import { CwdStore } from './cwd-store.ts';
 import {
   CapabilitiesCache,
@@ -225,6 +226,8 @@ async function makeHarness(options: {
   subagentTranscripts?: Record<string, unknown[]>;
   /** 注入 claude update 执行（默认回 not_found） */
   updateClaude?: () => Promise<ClaudeUpdateOutcome>;
+  /** 注入 claude 最新版本检查；省略 = router 回「不支持」 */
+  checkClaude?: () => Promise<ClaudeCheckOutcome>;
   /** 注入限额用量刷新；省略 = router 回「不支持」 */
   refreshUsage?: () => Promise<PlanUsageRefreshOutcome>;
   /** 注入资源订阅；省略 = router 忽略 machine.stats.request */
@@ -311,6 +314,7 @@ async function makeHarness(options: {
         error: { code: 'not_found' as const, message: 'no claude' },
       })),
     ...(options.refreshUsage === undefined ? {} : { refreshUsage: options.refreshUsage }),
+    ...(options.checkClaude === undefined ? {} : { checkClaude: options.checkClaude }),
     ...(options.machineStats === undefined ? {} : { machineStats: options.machineStats }),
     now,
     log: (l) => logs.push(l),
@@ -971,6 +975,49 @@ describe('Router · 路由表（机器级）', () => {
       error: { code: 'failed' },
     });
     expect(t.byType('error.fatal')).toHaveLength(0);
+  });
+
+  test('machine.claude.check.request：链外执行；成功 / 失败 / 抛错 / 不支持都回机器级应答', async () => {
+    let release!: (o: ClaudeCheckOutcome) => void;
+    const h = await makeHarness({ checkClaude: () => new Promise((r) => (release = r)) });
+    await h.router.handle({ type: 'machine.claude.check.request', ...c2a(), reqId: 'k1' }, phone);
+    await h.router.handle({ type: 'session.list.request', ...c2a(), reqId: 'l1' }, phone);
+    expect(h.byType('session.list.response')).toHaveLength(1);
+    expect(h.byType('machine.claude.check.response')).toHaveLength(0);
+    release({ ok: true, version: '2.1.308', channel: 'stable' });
+    await h.router.idle();
+    const [resp] = h.events.filter((e) => e.event.type === 'machine.claude.check.response');
+    expect(resp!.scope).toBeNull();
+    expect(resp!.event).toMatchObject({
+      reqId: 'k1',
+      ok: true,
+      currentVersion: '2.1',
+      latest: { version: '2.1.308', channel: 'stable' },
+    });
+    expect(resp!.event).not.toHaveProperty('error');
+
+    const failed = await makeHarness({ checkClaude: async () => ({ ok: false, message: 'offline' }) });
+    await failed.router.handle({ type: 'machine.claude.check.request', ...c2a(), reqId: 'k2' }, phone);
+    await failed.router.idle();
+    expect(failed.byType('machine.claude.check.response')[0]).toMatchObject({
+      ok: false,
+      error: { code: 'failed', message: 'offline' },
+    });
+
+    const thrown = await makeHarness({
+      checkClaude: async () => {
+        throw new Error('boom');
+      },
+    });
+    await thrown.router.handle({ type: 'machine.claude.check.request', ...c2a(), reqId: 'k3' }, phone);
+    await thrown.router.idle();
+    expect(thrown.byType('machine.claude.check.response')[0]).toMatchObject({ ok: false, error: { code: 'failed' } });
+    expect(thrown.byType('error.fatal')).toHaveLength(0);
+
+    const unsupported = await makeHarness();
+    await unsupported.router.handle({ type: 'machine.claude.check.request', ...c2a(), reqId: 'k4' }, phone);
+    await unsupported.router.idle();
+    expect(unsupported.byType('machine.claude.check.response')[0]).toMatchObject({ ok: false });
   });
 
   test('machine.usage.request：链外执行；成功 / 失败 / 抛错 / 不支持都回机器级应答', async () => {

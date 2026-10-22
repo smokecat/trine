@@ -5,7 +5,8 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import type { Root } from 'react-dom/client';
 import '@/lib/dom-test-env.ts';
-import type { ClaudeUpdateResult } from '@/lib/client.ts';
+import type { ClaudeCheckResult, ClaudeUpdateResult } from '@/lib/client.ts';
+import type { ClaudeLatestView } from './claude-update.ts';
 
 // react-dom 必须在 DOM 环境装好之后再加载（见 .local learnings / session-list.test.tsx）
 const { act } = await import('react');
@@ -15,7 +16,12 @@ const { ClaudeUpdateSection } = await import('./ClaudeUpdateSection.tsx');
 let root: Root | null = null;
 let host: HTMLDivElement | null = null;
 
-function render(props: { online?: boolean | null; update: () => Promise<ClaudeUpdateResult> }): void {
+function render(props: {
+  online?: boolean | null;
+  update: () => Promise<ClaudeUpdateResult>;
+  latest?: ClaudeLatestView | null;
+  check?: () => Promise<ClaudeCheckResult>;
+}): void {
   host = document.createElement('div');
   document.body.appendChild(host);
   root = createRoot(host);
@@ -26,6 +32,9 @@ function render(props: { online?: boolean | null; update: () => Promise<ClaudeUp
         online={props.online === undefined ? true : props.online}
         claudeVersion="2.1.251 (Claude Code)"
         update={props.update}
+        latest={props.latest ?? null}
+        {...(props.check === undefined ? {} : { check: props.check })}
+        now={3_600_000 * 3}
       />,
     ),
   );
@@ -127,5 +136,74 @@ describe('ClaudeUpdateSection', () => {
   test('已知离线：按钮禁用', () => {
     render({ online: false, update: async () => result() });
     expect(($('claude-update') as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  test('没有最新版本信息（旧 agent）：不显示最新版本行与检查按钮', () => {
+    render({ update: async () => result() });
+    expect($('claude-latest')).toBeNull();
+    expect($('claude-check')).toBeNull();
+    expect($('claude-update')!.textContent).toBe('更新 Claude');
+  });
+
+  test('有新版本：显示当前 / 最新与检查时间，更新按钮带目标版本；检查更新发请求并在等待中禁用', async () => {
+    let calls = 0;
+    let resolve!: (r: ClaudeCheckResult) => void;
+    render({
+      update: async () => result(),
+      latest: {
+        current: '2.1.251',
+        latest: '2.1.308',
+        channel: 'latest',
+        checkedAt: 0,
+        error: null,
+        updateAvailable: true,
+      },
+      check: () => {
+        calls++;
+        return new Promise((r) => (resolve = r));
+      },
+    });
+    const line = $('claude-latest')!.textContent!;
+    expect(line).toContain('2.1.251');
+    expect(line).toContain('2.1.308');
+    expect(line).toContain('3 小时前检查');
+    expect($('claude-latest-status')!.dataset['available']).toBe('true');
+    expect($('claude-update')!.textContent).toBe('更新到 2.1.308');
+
+    click($('claude-check')!);
+    expect(calls).toBe(1);
+    expect(($('claude-check') as HTMLButtonElement).disabled).toBe(true);
+    await act(async () => {
+      resolve({
+        type: 'machine.claude.check.response',
+        ts: 1,
+        seq: 1,
+        dir: 'a2c',
+        reqId: 'c',
+        ok: true,
+        currentVersion: '2.1.251 (Claude Code)',
+        latest: { version: '2.1.308', channel: 'latest' },
+      });
+    });
+    expect(($('claude-check') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  test('已是最新 / 检查失败原因', () => {
+    render({
+      update: async () => result(),
+      latest: {
+        current: '2.1.308',
+        latest: '2.1.308',
+        channel: 'stable',
+        checkedAt: null,
+        error: '检查 claude 最新版本失败：network down',
+        updateAvailable: false,
+      },
+      check: async () => Promise.reject(new Error('x')),
+    });
+    expect($('claude-latest-status')!.textContent).toBe('已是最新');
+    expect($('claude-latest')!.textContent).toContain('stable 渠道');
+    expect($('claude-latest-error')!.textContent).toContain('network down');
+    expect($('claude-update')!.textContent).toBe('更新 Claude');
   });
 });

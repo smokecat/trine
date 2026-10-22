@@ -42,6 +42,11 @@ the agent runs on your own computer.
   data the agent returns, and actions run on the agent after a click. Install with
   `trine-agent ext add <dir>`; see [extensions](docs/EXTENSIONS.md). Requires agent 0.16.0 or later
   (0.17.0 for starting from an item and timeline notes).
+- Shows the Claude Code version each machine's sessions use and updates it remotely (`claude update`).
+  The agent checks the release channel Claude Code updates from (`autoUpdatesChannel`, `latest` by
+  default) shortly after start and every 6 hours, and machine cards flag a newer version; "检查更新"
+  on the machine page checks right away. Automatic checks are off when `DISABLE_AUTOUPDATER` or
+  `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` is set. Checking requires agent 0.19.0 or later.
 - Restarts the agent safely after you update its checkout, from the machine page or with
   `trine-agent restart` (also from inside a trine session): it checks the new code first, waits
   until no session is busy, then exits for the service manager to start it again. Restarting

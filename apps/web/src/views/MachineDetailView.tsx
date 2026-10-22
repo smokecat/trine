@@ -20,7 +20,7 @@ import { StatusDot } from '@/components/shell/StatusDot.tsx';
 import { ConfirmDialog } from '@/components/machines/ConfirmDialog.tsx';
 import { AgentRestartSection } from '@/components/machines/AgentRestartSection.tsx';
 import { ClaudeUpdateSection } from '@/components/machines/ClaudeUpdateSection.tsx';
-import { supportsClaudeUpdate } from '@/components/machines/claude-update.ts';
+import { claudeLatestView, claudeUpdateHint, supportsClaudeUpdate } from '@/components/machines/claude-update.ts';
 import { supportsAgentRestart } from '@/components/machines/agent-restart.ts';
 import {
   machineHeartbeatLine,
@@ -111,6 +111,12 @@ export function MachineDetailView(): React.JSX.Element {
           <dt className="text-text-3">版本</dt>
           <dd className="font-mono text-xs" data-testid="detail-versions">
             {machineVersionLine(machine.info)}
+            {claudeUpdateHint(machine.info) !== '' && (
+              <span className="text-amber" data-testid="detail-claude-update-hint">
+                {' · '}
+                {claudeUpdateHint(machine.info)}
+              </span>
+            )}
           </dd>
           <dt className="text-text-3">会话</dt>
           <dd>
@@ -197,6 +203,9 @@ export function MachineDetailView(): React.JSX.Element {
               online={machine.online}
               claudeVersion={machine.info?.claudeVersion}
               update={() => client.updateClaude(machine.machineId)}
+              latest={claudeLatestView(machine.info)}
+              check={() => client.checkClaude(machine.machineId)}
+              now={now}
             />
           </>
         )}

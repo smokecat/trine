@@ -232,6 +232,11 @@ export interface StartEchoAgentOptions {
    * 不读 git、预检直接失败——测试绝不能真跑 bun install 或退出进程。
    */
   restart?: AgentAppDeps['restart'];
+  /**
+   * 查 claude 最新版本（见 AgentAppDeps.claudeLatest）。默认：发布源一律不可达、配置目录
+   * 用 agent home——测试绝不能碰网络或真 ~/.claude。
+   */
+  claudeLatest?: AgentAppDeps['claudeLatest'];
 }
 
 export interface EchoAgent {
@@ -289,6 +294,12 @@ export async function startEchoAgent(
       env: {},
       repoRoot: null,
       precheck: async () => ({ ok: false, message: '测试里不跑预检', output: '' }),
+    },
+    claudeLatest: options.claudeLatest ?? {
+      fetchImpl: (async () => {
+        throw new Error('测试里不访问发布源');
+      }) as unknown as typeof fetch,
+      configDir: options.home,
     },
   });
 

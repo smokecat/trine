@@ -124,6 +124,7 @@ import type { Recipient } from '../net/recipients.ts';
 import type { MachineStatsWatcher } from './machine-stats.ts';
 import type { CwdStore } from './cwd-store.ts';
 import type { ClaudeUpdateOutcome } from './claude-cli.ts';
+import type { ClaudeCheckOutcome } from './claude-latest.ts';
 import type { RestartOutcome } from './restart.ts';
 import type { PlanUsageRefreshOutcome } from './plan-usage.ts';
 import type { SessionFlagsStore } from './session-flags.ts';
@@ -155,6 +156,7 @@ const MACHINE_LEVEL_TYPES = new Set<ClientToAgentEvent['type']>([
   'machine.rename',
   'machine.unpair',
   'machine.claude.update.request',
+  'machine.claude.check.request',
   'machine.usage.request',
   'machine.agent.restart.request',
   'machine.stats.request',
@@ -245,6 +247,11 @@ export interface RouterDeps {
    * 广播 machine.info）。不抛——失败以 outcome 表达；万一抛了 router 兜成 failed。
    */
   updateClaude: () => Promise<ClaudeUpdateOutcome>;
+  /**
+   * 查一次 claude 最新版本（app 的 ClaudeLatestChecker：单飞；查完先广播 machine.info）。
+   * 不抛。不给 = 不支持（测试）。
+   */
+  checkClaude?: () => Promise<ClaudeCheckOutcome>;
   /**
    * 手动刷新订阅限额用量（app 的 PlanUsageTracker：单飞、超时；拿到后先广播
    * machine.info）。不抛——失败以 outcome 表达。不给 = 不支持（测试）。
@@ -1273,6 +1280,13 @@ export class Router {
         void task.finally(() => this.#background.delete(task));
         return;
       }
+      case 'machine.claude.check.request': {
+        // 不 await：要等网络（最长 15 秒）
+        const task = this.#runClaudeCheck(event.reqId);
+        this.#background.add(task);
+        void task.finally(() => this.#background.delete(task));
+        return;
+      }
       case 'machine.usage.request': {
         // 不 await：同 machine.claude.update.request
         const task = this.#runUsageRefresh(event.reqId);
@@ -1541,6 +1555,27 @@ export class Router {
       output: outcome.output,
       ...(outcome.outputTruncated ? { outputTruncated: true } : {}),
       ...(outcome.error === undefined ? {} : { error: outcome.error }),
+    });
+  }
+
+  /** 查 claude 最新版本并回机器级应答（新结果已随 machine.info.claudeLatest 广播） */
+  async #runClaudeCheck(reqId: string): Promise<void> {
+    let outcome: ClaudeCheckOutcome;
+    try {
+      outcome = this.#deps.checkClaude === undefined
+        ? { ok: false, message: '这个 agent 不支持检查 claude 最新版本' }
+        : await this.#deps.checkClaude();
+    } catch (err) {
+      outcome = { ok: false, message: `agent 检查 claude 最新版本出错：${(err as Error).message}` };
+    }
+    this.#emitMachine({
+      type: 'machine.claude.check.response',
+      reqId,
+      ok: outcome.ok,
+      currentVersion: this.#deps.machineInfo().claudeVersion,
+      ...(outcome.ok
+        ? { latest: { version: outcome.version, channel: outcome.channel } }
+        : { error: { code: 'failed', message: outcome.message.slice(0, 300) } }),
     });
   }
 

@@ -17,6 +17,7 @@ import {
   machineVersionLine,
   parkedWarnLine,
 } from './machine-text.ts';
+import { claudeUpdateHint } from './claude-update.ts';
 import { PlanUsageLine } from '@/components/usage/PlanUsage.tsx';
 import { MachineStatsLine } from './MachineStats.tsx';
 
@@ -38,6 +39,7 @@ export function MachineCard({
   const platform = machinePlatformLine(machine.info);
   const live = liveSessionsLine(liveCount, machine.info?.maxSessions);
   const warn = parkedWarnLine(machine.parkedCount);
+  const claudeHint = claudeUpdateHint(machine.info);
 
   return (
     <NavLink
@@ -64,6 +66,11 @@ export function MachineCard({
         <span className="font-mono text-[11.5px]" data-testid="machine-versions">
           {machineVersionLine(machine.info)}
         </span>
+        {claudeHint !== '' && (
+          <span className="text-amber font-mono text-[11.5px]" data-testid="machine-claude-update">
+            {claudeHint}
+          </span>
+        )}
         {activeCount > 0 && <span className="text-brand-ink">{activeCount} 个活跃会话</span>}
         {live !== '' && (
           <span className="tabular" data-testid="machine-live">

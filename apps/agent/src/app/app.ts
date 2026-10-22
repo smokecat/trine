@@ -57,6 +57,7 @@ import {
   type ClaudeUpdateOutcome,
   type SpawnFn,
 } from './claude-cli.ts';
+import { ClaudeLatestChecker } from './claude-latest.ts';
 import { AGENT_VERSION, buildMachineInfo } from './machine-info.ts';
 import {
   findUp,
@@ -118,6 +119,8 @@ export interface AgentAppDeps {
   spawnFn?: SpawnFn;
   /** `claude update` 超时（测试）；默认 5 分钟 */
   claudeUpdateTimeoutMs?: number;
+  /** 查 claude 最新版本的 fetch 与 claude 配置目录（测试）；默认真网络、claudeConfigDir() */
+  claudeLatest?: { fetchImpl?: typeof fetch; configDir?: string };
   /** 扩展进程执行（测试注入假 runner）；默认真起子进程 */
   extRunner?: Pick<ExtensionRunner, 'run'>;
   /** 首次生成身份时指定 machineId（测试） */
@@ -155,6 +158,7 @@ export class AgentApp {
   #flagsSweepTimer: ReturnType<typeof setInterval> | undefined = undefined;
   /** 由 create 在构造后接上（它的 onVersion 回调要写回本实例） */
   #updater!: ClaudeUpdater;
+  #claudeLatest!: ClaudeLatestChecker;
   /** 斜杠命令探测（router 用；退出时收掉在跑的探测子进程） */
   #commandsProbe!: CommandsProbe;
   #planUsage!: PlanUsageTracker;
@@ -343,6 +347,7 @@ export class AgentApp {
       machineInfo: () => app.machineInfo(),
       renameMachine: (name) => app.#rename(name, paths.identity),
       updateClaude: () => app.#updateClaude(),
+      checkClaude: () => app.#claudeLatest.check(),
       refreshUsage: () => app.#planUsage.refresh(),
       restartAgent: async (action) => (action === 'cancel' ? app.cancelRestart() : app.restartAgent({ mode: action === 'now' ? 'now' : 'when_idle' })),
       machineStats,
@@ -414,6 +419,13 @@ export class AgentApp {
       },
       ...(deps.spawnFn === undefined ? {} : { spawn: deps.spawnFn }),
       ...(deps.claudeUpdateTimeoutMs === undefined ? {} : { timeoutMs: deps.claudeUpdateTimeoutMs }),
+      log,
+    });
+    app.#claudeLatest = new ClaudeLatestChecker({
+      onChange: () => app.#emitMachine({ type: 'machine.info', info: app.machineInfo() }),
+      ...(deps.claudeLatest?.fetchImpl === undefined ? {} : { fetchImpl: deps.claudeLatest.fetchImpl }),
+      ...(deps.claudeLatest?.configDir === undefined ? {} : { configDir: deps.claudeLatest.configDir }),
+      now,
       log,
     });
 
@@ -515,6 +527,7 @@ export class AgentApp {
     await this.manager.closeAll(reason, SHUTDOWN_DRAIN_TIMEOUT_MS);
     this.router.dispose();
     this.#updater.dispose();
+    this.#claudeLatest.dispose();
     this.#commandsProbe.dispose();
     this.#planUsage.dispose();
     this.#machineStats.dispose();
@@ -585,6 +598,7 @@ export class AgentApp {
       rateLimits: this.#planUsage.current,
       extensions: this.#extRegistry === undefined ? undefined : { ...this.#extRegistry.summary(), records: true },
       restart: this.#restart === undefined ? undefined : this.#restartInfo(),
+      claudeLatest: this.#claudeLatest?.current,
     });
   }
 
@@ -746,6 +760,14 @@ export class AgentApp {
 
   #updateClaude(): Promise<ClaudeUpdateOutcome> {
     return this.#updater.run();
+  }
+
+  /**
+   * 开始自动检查 claude 最新版本（启动后约 30 秒、之后每 6 小时，见 claude-latest.ts）。
+   * 只由 cli 调：测试里的 app 不碰网络。
+   */
+  startClaudeLatestChecks(): void {
+    this.#claudeLatest.startAuto();
   }
 
   #emitMachine(body: EventBody): void {

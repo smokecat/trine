@@ -6,7 +6,13 @@
  * 跑完后再探测一次：它只用于展示，探测失败不该影响启动；每次广播都去 spawn 一遍也没必要。
  */
 import { release } from 'node:os';
-import type { MachineExtensionsSummary, MachineInfo, MachineRestartInfo, RateLimits } from '@trine/core';
+import type {
+  MachineClaudeLatest,
+  MachineExtensionsSummary,
+  MachineInfo,
+  MachineRestartInfo,
+  RateLimits,
+} from '@trine/core';
 
 /**
  * 与 apps/agent/package.json 的 version 对齐（手工同步；没有构建步骤可注入）。
@@ -47,7 +53,9 @@ import type { MachineExtensionsSummary, MachineInfo, MachineRestartInfo, RateLim
 // - 0.18.0 起支持自重启：machine.agent.restart.request、MachineInfo 带 restart（运行版本 /
 //   工作区版本 / 进行中的重启；web 按 machine.info.restart 有无判断）；`restart` / `selfcheck`
 //   子命令；会话子进程带 TRINE_HOME / TRINE_SESSION_ID
-export const AGENT_VERSION = '0.18.0';
+// - 0.19.0 起 MachineInfo 带 claudeLatest（发布源上的 claude 最新版本，启动后与每 6 小时自动查），
+//   支持 machine.claude.check.request 立即检查（web 按 machine.info.claudeLatest 有无判断）
+export const AGENT_VERSION = '0.19.0';
 
 export function buildMachineInfo(input: {
   name: string;
@@ -57,6 +65,7 @@ export function buildMachineInfo(input: {
   rateLimits?: RateLimits | undefined;
   extensions?: MachineExtensionsSummary | undefined;
   restart?: MachineRestartInfo | undefined;
+  claudeLatest?: MachineClaudeLatest | undefined;
 }): MachineInfo {
   return {
     name: input.name,
@@ -69,5 +78,6 @@ export function buildMachineInfo(input: {
     ...(input.rateLimits === undefined ? {} : { rateLimits: input.rateLimits }),
     ...(input.extensions === undefined ? {} : { extensions: input.extensions }),
     ...(input.restart === undefined ? {} : { restart: input.restart }),
+    ...(input.claudeLatest === undefined ? {} : { claudeLatest: input.claudeLatest }),
   };
 }

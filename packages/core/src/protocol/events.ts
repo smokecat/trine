@@ -1047,6 +1047,34 @@ export const MachineClaudeUpdateResponseSchema = z.object({
     .optional(),
 });
 
+// --- §3.1a 检查 claude 最新版本（claude-latest，agent 0.19.0 起） ---
+//
+// 语义：agent 立即向发布源查一次最新版本（不安装），先广播带新 `claudeLatest` 的
+// `machine.info`，再回应答。agent 平时也会自动查（启动后与每 6 小时），client 不必定时发。
+//
+// 互操作：旧 agent 不认识本 type → client 只能等超时；client 按 machine.info.claudeLatest 有无探测。
+
+/** client → agent：立即检查 claude 最新版本（机器级帧） */
+export const MachineClaudeCheckRequestSchema = z.object({
+  type: z.literal('machine.claude.check.request'),
+  ...c2aBase,
+  reqId: ReqIdSchema,
+});
+
+/** agent → client：`machine.claude.check.request` 的应答（机器级，reqId 关联） */
+export const MachineClaudeCheckResponseSchema = z.object({
+  type: z.literal('machine.claude.check.response'),
+  ...a2cBase,
+  reqId: ReqIdSchema,
+  ok: z.boolean(),
+  /** agent 当前记着的会话所用版本（与 machine.info.claudeVersion 同口径） */
+  currentVersion: z.string(),
+  /** ok 时：查到的最新版本与渠道 */
+  latest: z.object({ version: z.string().max(64), channel: z.enum(['latest', 'stable']) }).optional(),
+  /** ok 为 false 时必带（网络 / 返回内容不认识） */
+  error: z.object({ code: z.enum(['failed']), message: z.string().max(300) }).optional(),
+});
+
 // --- §3.2 手动刷新订阅限额用量（usage-display，agent 0.12.0 起） ---
 //
 // 语义：agent 向 Claude 查一次当前账号的 5 小时 / 7 天用量。有活跃会话进程时借用它，
@@ -1526,6 +1554,7 @@ export const AgentToClientEventSchema = z.discriminatedUnion('type', [
   SessionCapabilitiesSchema,
   MachineInfoEventSchema,
   MachineClaudeUpdateResponseSchema,
+  MachineClaudeCheckResponseSchema,
   MachineUsageResponseSchema,
   MachineAgentRestartResponseSchema,
   MachineStatsEventSchema,
@@ -1573,6 +1602,7 @@ export const ClientToAgentEventSchema = z.discriminatedUnion('type', [
   MachineRenameSchema,
   MachineUnpairSchema,
   MachineClaudeUpdateRequestSchema,
+  MachineClaudeCheckRequestSchema,
   MachineUsageRequestSchema,
   MachineAgentRestartRequestSchema,
   MachineStatsRequestSchema,
