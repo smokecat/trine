@@ -1150,7 +1150,12 @@ export class TrineClient {
   openFile(machineId: string, sessionId: string, path: string, options: { refresh?: boolean } = {}): Promise<OpenedFile> {
     const key = `${machineId}#${sessionId}#${path}`;
     const cached = this.#files.get(key);
-    if (cached !== undefined && options.refresh !== true) return Promise.resolve(cached);
+    if (cached !== undefined && options.refresh !== true) {
+      // Map 的插入顺序即 LRU 顺序：命中就挪到最新
+      this.#files.delete(key);
+      this.#files.set(key, cached);
+      return Promise.resolve(cached);
+    }
     const inflight = this.#fileInflight.get(key);
     if (inflight !== undefined) return inflight;
     const task = (async () => {
@@ -1171,14 +1176,28 @@ export class TrineClient {
       if (url === undefined) throw new Error('当前环境无法显示文件');
       const opened: OpenedFile = { file, blob, url };
       const old = this.#files.get(key);
-      if (old !== undefined && old.url !== url) URL.revokeObjectURL(old.url);
+      if (old !== undefined) URL.revokeObjectURL(old.url);
+      this.#files.delete(key);
       this.#files.set(key, opened);
+      this.#trimFileCache();
       return opened;
     })().finally(() => {
       this.#fileInflight.delete(key);
     });
     this.#fileInflight.set(key, task);
     return task;
+  }
+
+  /** 文件缓存按条数与总字节淘汰最旧的（最新那个即使超额也留着：它正在显示） */
+  #trimFileCache(): void {
+    let total = 0;
+    for (const f of this.#files.values()) total += f.file.size;
+    for (const [key, f] of this.#files) {
+      if (this.#files.size <= 1 || (this.#files.size <= FILE_CACHE_MAX_ENTRIES && total <= FILE_CACHE_MAX_BYTES)) break;
+      URL.revokeObjectURL(f.url);
+      this.#files.delete(key);
+      total -= f.file.size;
+    }
   }
 
   #blobs(): BlobClient {
@@ -2180,6 +2199,10 @@ function uploadErrorText(status: number, payload: { error?: unknown; maxBytes?: 
   if (status === 401) return '认证失败，请稍后重试';
   return `上传失败：HTTP ${status}${typeof payload.error === 'string' ? ` ${payload.error}` : ''}`;
 }
+
+/** 文件预览缓存上限：条数与解密后的总字节 */
+const FILE_CACHE_MAX_ENTRIES = 24;
+const FILE_CACHE_MAX_BYTES = 64 * 1024 * 1024;
 
 /** 一次目录列表 */
 export interface FsListing {

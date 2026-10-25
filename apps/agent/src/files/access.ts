@@ -16,8 +16,11 @@
  * （身份私钥、名册）整个拒绝，即使它就在会话 cwd 里。
  */
 import { realpath } from 'node:fs/promises';
-import { basename, isAbsolute, join, resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import type { FsErrorCode } from '@trine/core';
+
+const OUT_OF_SCOPE = '不在可查看的范围内（会话目录或 TRINE_FILES_ALLOW）';
+const SENSITIVE = '密钥类文件不提供查看';
 
 export class FileAccessError extends Error {
   readonly code: FsErrorCode;
@@ -92,8 +95,9 @@ export class FileAccess {
 
   /** 真实路径是否密钥类：任一段命中目录黑名单、末段命中文件名黑名单，或在 trine home 里 */
   async isSensitivePath(real: string): Promise<boolean> {
+    // 目录段不分大小写：macOS 默认文件系统里 `.SSH` 就是 `.ssh`
     const parts = real.split(sep);
-    if (parts.some((p) => SENSITIVE_DIRS.has(p))) return true;
+    if (parts.some((p) => SENSITIVE_DIRS.has(p.toLowerCase()))) return true;
     if (isSensitiveName(basename(real))) return true;
     this.#protectedReal ??= await Promise.all(this.#protected.map((p) => realpath(p).catch(() => p)));
     return [...this.#protected, ...this.#protectedReal].some((p) => isWithin(real, p));
@@ -102,6 +106,10 @@ export class FileAccess {
   /**
    * 把请求路径解析成范围内的真实路径，不在范围内 / 密钥类 → `denied`，不存在 → `not_found`。
    * `input` 省略 = 第一个根（会话 cwd）。
+   *
+   * 密钥类判断对**字面路径和真实路径都做**：`.env → config/live` 这种链接，真实路径看着无害，
+   * 但用户请求的就是 `.env`。不存在的路径要先确认它最深的已存在祖先在范围内才回 not_found，
+   * 否则经由指向范围外的符号链接（`out/x`）就能探测范围外文件存不存在。
    */
   async resolve(input: string | undefined, roots: readonly Root[]): Promise<Resolved> {
     if (roots.length === 0) throw new FileAccessError('denied', '这个会话没有可查看的目录');
@@ -113,21 +121,42 @@ export class FileAccess {
 
     if (path.includes('\0')) throw new FileAccessError('denied', '路径不合法');
     const lexical = roots.find((r) => isWithin(path, r.path) || isWithin(path, r.real));
-    if (lexical === undefined) throw new FileAccessError('denied', '不在可查看的范围内（会话目录或 TRINE_FILES_ALLOW）');
+    if (lexical === undefined) throw new FileAccessError('denied', OUT_OF_SCOPE);
+    if (await this.isSensitivePath(path)) throw new FileAccessError('denied', SENSITIVE);
 
     let real: string;
     try {
       real = await realpath(path);
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code;
-      if (code === 'ENOENT' || code === 'ENOTDIR') throw new FileAccessError('not_found', '文件不存在');
+      if (code === 'ENOENT' || code === 'ENOTDIR') {
+        await this.#assertAncestorInScope(path, roots);
+        throw new FileAccessError('not_found', '文件不存在');
+      }
       if (code === 'EACCES' || code === 'EPERM') throw new FileAccessError('denied', '没有读取权限');
       throw new FileAccessError('io', `读取失败：${(err as Error).message}`);
     }
     // 字面上命中的根优先（同一路径可能同时落在 cwd 与白名单里）
     const root = isWithin(real, lexical.real) ? lexical : roots.find((r) => isWithin(real, r.real));
-    if (root === undefined) throw new FileAccessError('denied', '符号链接指向了可查看范围之外');
-    if (await this.isSensitivePath(real)) throw new FileAccessError('denied', '密钥类文件不提供查看');
+    if (root === undefined) throw new FileAccessError('denied', OUT_OF_SCOPE);
+    if (await this.isSensitivePath(real)) throw new FileAccessError('denied', SENSITIVE);
     return { path, real, root };
+  }
+
+  /** 不存在的路径：最深的已存在祖先解析后不在范围内（或是密钥类）就当 denied，与「范围外」回同一句话 */
+  async #assertAncestorInScope(path: string, roots: readonly Root[]): Promise<void> {
+    let cur = dirname(path);
+    for (;;) {
+      const real = await realpath(cur).catch(() => undefined);
+      if (real !== undefined) {
+        if (!roots.some((r) => isWithin(real, r.real)) || (await this.isSensitivePath(real))) {
+          throw new FileAccessError('denied', OUT_OF_SCOPE);
+        }
+        return;
+      }
+      const up = dirname(cur);
+      if (up === cur) throw new FileAccessError('denied', OUT_OF_SCOPE);
+      cur = up;
+    }
   }
 }

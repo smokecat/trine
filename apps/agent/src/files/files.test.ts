@@ -143,7 +143,8 @@ describe('FileService.list', () => {
     symlinkSync(join(repo, 'gone'), join(repo, 'dangling'));
     const r = await service().list(repo, undefined);
     const byName = new Map(r.entries.map((e) => [e.name, e]));
-    expect(byName.get('escape')).toMatchObject({ type: 'dir', denied: true });
+    // 范围外的目标只给名字，不给类型 / 大小 / 时间
+    expect(byName.get('escape')).toEqual({ name: 'escape', type: 'other', denied: true });
     expect(byName.get('docs-link')?.denied).toBeUndefined();
     expect(byName.get('dangling')).toEqual({ name: 'dangling', type: 'other', denied: true });
   });
@@ -182,6 +183,39 @@ describe('FileService.read', () => {
     const f = await service().read(repo, 'alias.md');
     expect(f.path).toBe(join(repo, 'alias.md'));
     expect(f.size).toBe(12);
+  });
+
+  test('密钥类名字经符号链接改名也拒绝：.env → 无害文件、.git → 别的目录', async () => {
+    mkdirSync(join(repo, 'cfg'));
+    writeFileSync(join(repo, 'cfg', 'live'), 'TOKEN=x');
+    symlinkSync(join(repo, 'cfg', 'live'), join(repo, '.env.local'));
+    mkdirSync(join(repo, 'git-store'));
+    writeFileSync(join(repo, 'git-store', 'config'), '[core]');
+    rmSync(join(repo, '.git'), { recursive: true });
+    symlinkSync(join(repo, 'git-store'), join(repo, '.git'));
+    expect(await code(service().read(repo, '.env.local'))).toBe('denied');
+    expect(await code(service().read(repo, '.git/config'))).toBe('denied');
+    const r = await service().list(repo, undefined);
+    expect(r.entries.find((e) => e.name === '.env.local')).toEqual({ name: '.env.local', type: 'file', denied: true });
+  });
+
+  test('密钥类目录不分大小写', async () => {
+    mkdirSync(join(repo, '.SSH'));
+    writeFileSync(join(repo, '.SSH', 'deploy'), 'k');
+    expect(await code(service().read(repo, '.SSH/deploy'))).toBe('denied');
+  });
+
+  test('经范围外的符号链接探测不存在的文件：同样回 denied，不泄露存在与否', async () => {
+    symlinkSync(outside, join(repo, 'out'));
+    expect(await code(service().read(repo, 'out/secret.md'))).toBe('denied');
+    expect(await code(service().read(repo, 'out/missing.md'))).toBe('denied');
+    expect(await code(service().read(repo, 'docs/missing/deeper.md'))).toBe('not_found');
+  });
+
+  test('命名管道不会把读取挂住', async () => {
+    const fifo = join(repo, 'pipe');
+    if (Bun.spawnSync(['mkfifo', fifo]).exitCode !== 0) return; // 没有 mkfifo 的环境跳过
+    expect(await code(service().read(repo, 'pipe'))).toBe('io');
   });
 
   test('目录 / 不存在 / 过大', async () => {

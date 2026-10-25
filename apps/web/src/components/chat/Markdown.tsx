@@ -55,7 +55,7 @@ import { memo, useContext } from 'react';
 import { defaultRehypePlugins, Streamdown, type StreamdownProps } from 'streamdown';
 import { code } from '@streamdown/code';
 import { ImageIcon } from 'lucide-react';
-import { detectPath, isLocalHref, resolveRelative } from '@/components/files/file-model.ts';
+import { decodeHref, detectPath, isLocalHref, resolveRelative } from '@/components/files/file-model.ts';
 import { FileBaseContext, useFileLinks } from '@/components/files/file-links.ts';
 import { cn } from '@/lib/utils.ts';
 
@@ -113,9 +113,11 @@ function FileAwareLink({
   const links = useFileLinks();
   const base = useContext(FileBaseContext);
   if (links !== null && typeof fileHref === 'string') {
-    const target = base === undefined ? fileHref : resolveRelative(base, fileHref);
+    // 先去掉 ?query / #锚点 再解码（文件名里的 %23 解码后是 #，不能再被当锚点切掉）
+    const href = decodeHref(fileHref.replace(/[?#].*$/, ''));
+    const target = base === undefined ? href : resolveRelative(base, href);
     // 聊天里只认像路径的（`[x](foo)` 这种裸词不算）；文件里的相对链接都当文件
-    const detected = base === undefined ? detectPath(target) : { path: target.replace(/[?#].*$/, ''), dir: target.endsWith('/') };
+    const detected = base === undefined ? detectPath(target) : { path: target, dir: target.endsWith('/') };
     if (detected !== undefined) {
       return (
         <button
@@ -148,7 +150,7 @@ function FileDocImage({
   const base = useContext(FileBaseContext);
   // 外部图片一律不显示（零远端资源）；本地图片只给按钮
   if (links === null || base === undefined || typeof fileHref !== 'string') return null;
-  const target = resolveRelative(base, fileHref);
+  const target = resolveRelative(base, decodeHref(fileHref.replace(/[?#].*$/, '')));
   return (
     <button
       type="button"

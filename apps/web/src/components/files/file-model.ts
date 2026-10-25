@@ -45,6 +45,15 @@ export function detectPath(raw: string): DetectedPath | undefined {
   return { path, dir: false };
 }
 
+/** markdown 链接是 URL：`%E8%AE%BE` / `My%20File.md` 要解码成文件名（非法转义原样保留） */
+export function decodeHref(href: string): string {
+  try {
+    return decodeURIComponent(href);
+  } catch {
+    return href;
+  }
+}
+
 /**
  * Markdown 文件里的相对链接：相对的是**这个文件所在的目录**，不是会话 cwd。
  * 绝对路径与 `~` 原样返回；去掉 `#锚点` 与 `?查询`。

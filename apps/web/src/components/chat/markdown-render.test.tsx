@@ -144,6 +144,11 @@ describe('Markdown 文件链接（FileLinksContext）：路径可点，外连拦
     expect(http).not.toContain('file-link');
   });
 
+  test('链接里的 URL 编码解码成文件名', () => {
+    expect(renderLinked('[设计](./%E8%AE%BE%E8%AE%A1.md)', '/w/repo/docs/a.md')).toContain('data-path="/w/repo/docs/设计.md"');
+    expect(renderLinked('[f](My%20File.md#top)', '/w/repo/a.md')).toContain('data-path="/w/repo/My File.md"');
+  });
+
   test('文件预览里的相对图片不加载，给打开按钮', () => {
     const html = renderLinked('![架构图](./img/arch.png)', '/w/repo/docs/a.md');
     expect(html).not.toContain('<img');
