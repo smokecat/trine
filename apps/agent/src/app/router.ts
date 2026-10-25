@@ -67,6 +67,11 @@
  * 附件按需重新上传（blob 过期 / CLI 里粘贴的图片）：读 manifest 或转录，不拉起会话进程，
  * 上传放链外跑，只定向回请求方。
  *
+ * ## 不 resolve 的会话级读命令：fs.list.request / fs.read.request
+ *
+ * 文件查看（files/）：范围是会话 cwd（取法同 #readTranscript）加白名单，不拉起会话进程，
+ * 读盘与上传放链外跑，只定向回请求方。
+ *
  * ## 不 resolve 的会话级读命令：session.commands.request
  *
  * 斜杠命令清单：同样不拉起会话进程、不走 resolveSession，交给 CommandsProbe
@@ -94,12 +99,15 @@ import { getSessionMessages, type SessionMessage, type SlashCommand as SdkSlashC
 import type {
   AgentToClientEvent,
   ClientToAgentEvent,
+  FsErrorCode,
   MachineInfo,
   PermissionMode,
   McpServerStatus,
   SlashCommand,
 } from '@trine/core';
 import { AttachmentError, type AttachmentStore, type PreparedInput } from '../bridge/attachments.ts';
+import { FileAccessError } from '../files/access.ts';
+import type { FileService } from '../files/service.ts';
 import type { EventEmitter } from '../bridge/emitter.ts';
 import {
   cutAtRewind,
@@ -283,6 +291,8 @@ export interface RouterDeps {
   commandsProbe?: { commands(cwd: string): Promise<SdkSlashCommand[]> };
   /** 附件（下载落盘 / 历史还原 / 按需重新上传）；缺省 = 带附件的消息一律拒收 */
   attachments?: AttachmentStore;
+  /** 文件查看（fs.list / fs.read）；缺省 = 不支持或已关闭，回 unavailable */
+  files?: FileService;
   /** 会话关联（扩展）；缺省 = 不支持扩展 */
   links?: SessionLinksStore;
   /** 时间线记录卡（扩展）；缺省 = 不支持，ext.records.request 回空 */
@@ -579,6 +589,11 @@ export class Router {
       this.#runBackground(this.#fetchAttachment(sessionId, event, sender));
       return;
     }
+    if (event.type === 'fs.list.request' || event.type === 'fs.read.request') {
+      // 不拉起会话；读盘 / 上传放链外跑（见文件头）
+      this.#runBackground(this.#files(sessionId, event, sender));
+      return;
+    }
     if (event.type === 'session.commands.request') {
       // 同上：不拉起会话；探测放链外跑，不堵同会话后续命令（见文件头）
       this.#runBackground(this.#commands(sessionId, event.reqId, sender));
@@ -850,6 +865,39 @@ export class Router {
         const message = err instanceof Error ? err.message : String(err);
         this.#log(`[router] 附件拉取失败 session=${sessionId}: ${message}`);
         body = { type: 'attachment.fetch.response', reqId: event.reqId, ok: false, error: { code, message: message.slice(0, 300) } };
+      }
+    }
+    this.#deps.emitter.emit(body, sessionId, { to: sender.deviceId });
+  }
+
+  /** 文件查看（见文件头），结果只发给请求方 */
+  async #files(
+    sessionId: string,
+    event: Extract<ClientToAgentEvent, { type: 'fs.list.request' | 'fs.read.request' }>,
+    sender: Recipient,
+  ): Promise<void> {
+    const files = this.#deps.files;
+    const cwd = this.#deps.state.sessionParams(sessionId)?.cwd ?? this.#deps.manager.metaOf(sessionId)?.cwd;
+    const fail = (code: FsErrorCode, message: string): EventBody =>
+      event.type === 'fs.list.request'
+        ? { type: 'fs.list.response', reqId: event.reqId, ok: false, error: { code, message } }
+        : { type: 'fs.read.response', reqId: event.reqId, ok: false, error: { code, message } };
+    let body: EventBody;
+    if (files === undefined) {
+      body = fail('unavailable', '这台 agent 关闭了文件查看');
+    } else {
+      try {
+        if (event.type === 'fs.list.request') {
+          const r = await files.list(cwd, event.path);
+          body = { type: 'fs.list.response', reqId: event.reqId, ok: true, ...r };
+        } else {
+          body = { type: 'fs.read.response', reqId: event.reqId, ok: true, file: await files.read(cwd, event.path) };
+        }
+      } catch (err) {
+        const code = err instanceof FileAccessError ? err.code : 'io';
+        const message = err instanceof Error ? err.message : String(err);
+        if (code === 'io') this.#log(`[router] 文件查看失败 session=${sessionId}: ${message}`);
+        body = fail(code, message.slice(0, 300));
       }
     }
     this.#deps.emitter.emit(body, sessionId, { to: sender.deviceId });

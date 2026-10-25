@@ -34,7 +34,7 @@
 import type { SessionMessage } from '@anthropic-ai/claude-agent-sdk';
 import type { HistoryAttachment, HistoryItem } from '@trine/core';
 import { stripAttachedFiles, transcriptImageMeta, type TranscriptImage } from './attachments.ts';
-import { outputPreview, subagentReportText, summarizeToolArgs, summarizeToolResult } from './summarize.ts';
+import { outputPreview, subagentReportText, summarizeToolArgs, summarizeToolResult, withFilePath } from './summarize.ts';
 
 /** 单条 user/assistant 文本上限（字符数），超出截断并标注 */
 export const HISTORY_TEXT_MAX = 8 * 1024;
@@ -213,7 +213,14 @@ export function toHistoryItems(
           if (typeof toolUseId !== 'string' || toolUseId === '' || typeof toolName !== 'string' || toolName === '') continue;
           if (toolIdx.has(toolUseId)) continue;
           toolIdx.set(toolUseId, items.length);
-          items.push({ kind: 'tool', id: toolUseId, toolName, argSummary: summarizeToolArgs(toolName, b['input']), ts });
+          items.push({
+            kind: 'tool',
+            id: toolUseId,
+            toolName,
+            argSummary: summarizeToolArgs(toolName, b['input']),
+            ...withFilePath(toolName, b['input']),
+            ts,
+          });
         }
         // thinking / redacted_thinking / 其他块：不外传
       }

@@ -38,6 +38,7 @@ import { SeqSchema } from './transport.ts';
 import {
   ATTACHMENTS_MAX_COUNT,
   AttachmentRefSchema,
+  BlobIdSchema,
   BgTaskSchema,
   ContextUsageSchema,
   EXT_LIMITS,
@@ -171,6 +172,11 @@ export const ToolStartSchema = z.object({
   toolName: z.string().min(1),
   /** 单行参数摘要（Bash→命令、Edit→文件路径），由 agent 端生成 */
   argSummary: z.string(),
+  /**
+   * 文件类工具（Read / Write / Edit / MultiEdit / NotebookEdit）的完整路径（agent ≥ 0.20.0）。
+   * argSummary 会把长路径缩成 `…/a/b`，client 要打开文件预览得用这个。旧 client 忽略。
+   */
+  filePath: z.string().min(1).max(4096).optional(),
   /** 子 agent 的工具调用：父 Agent/Task 工具的 toolUseId（见 ParentToolUseIdSchema） */
   parentToolUseId: ParentToolUseIdSchema.optional(),
 });
@@ -533,6 +539,98 @@ export const AttachmentFetchResponseSchema = z.object({
   ok: z.boolean(),
   attachment: AttachmentRefSchema.optional(),
   error: z.object({ code: AttachmentFetchErrorCodeSchema, message: z.string() }).optional(),
+});
+
+// ---------------------------------------------------------------------------
+// §1.10 文件查看（agent ≥ 0.20.0，client 按 machine.info.files 有无判断）
+// ---------------------------------------------------------------------------
+
+/**
+ * 在会话上下文里浏览 / 预览 agent 机器上的文件（只读）。
+ *
+ * 范围由 agent 决定：会话 cwd 及其子目录，加上 agent 环境变量 `TRINE_FILES_ALLOW`
+ * 列出的目录；符号链接按真实路径判断；密钥类文件（`.env`、私钥、`.ssh`、`.git` 内部、
+ * trine 自己的 home）一律拒绝。与 attachment.fetch 一样**不拉起会话进程**，只定向回请求方。
+ *
+ * `path` 可以是绝对路径、`~` 开头，或相对会话 cwd 的相对路径。
+ */
+export const FS_PATH_MAX = 4096;
+/** 目录列表最多返回的条目数（超出置 truncated） */
+export const FS_LIST_MAX_ENTRIES = 2000;
+/** 单个文件可预览的默认字节上限（agent 在 machine.info.files.maxBytes 里报实际值） */
+export const FS_READ_DEFAULT_MAX_BYTES = 20 * 1024 * 1024;
+
+export const FsErrorCodeSchema = z.enum(['not_found', 'denied', 'too_large', 'is_dir', 'not_dir', 'io', 'unavailable']);
+export type FsErrorCode = z.infer<typeof FsErrorCodeSchema>;
+
+const FsErrorSchema = z.object({ code: FsErrorCodeSchema, message: z.string().max(500) });
+
+/** 预览方式：markdown 渲染 / 文本（含源码）/ pdf / 图片 / 其他（只能下载） */
+export const FsFileKindSchema = z.enum(['markdown', 'text', 'pdf', 'image', 'binary']);
+export type FsFileKind = z.infer<typeof FsFileKindSchema>;
+
+export const FsEntrySchema = z.object({
+  name: z.string().min(1).max(1024),
+  type: z.enum(['file', 'dir', 'other']),
+  /** 文件字节数（目录省略） */
+  size: z.number().int().nonnegative().optional(),
+  mtime: TimestampSchema.optional(),
+  /** 列出但不允许打开（密钥类文件 / 指向范围外的符号链接） */
+  denied: z.boolean().optional(),
+});
+export type FsEntry = z.infer<typeof FsEntrySchema>;
+
+export const FsListRequestSchema = z.object({
+  type: z.literal('fs.list.request'),
+  ...c2aBase,
+  reqId: ReqIdSchema,
+  /** 省略 = 会话 cwd */
+  path: z.string().min(1).max(FS_PATH_MAX).optional(),
+});
+
+export const FsListResponseSchema = z.object({
+  type: z.literal('fs.list.response'),
+  ...a2cBase,
+  reqId: ReqIdSchema,
+  ok: z.boolean(),
+  /** 解析后的绝对路径 */
+  path: z.string().max(FS_PATH_MAX).optional(),
+  /** 命中的根目录（会话 cwd 或白名单里的一项）；面包屑从这里开始，不能往上 */
+  root: z.string().max(FS_PATH_MAX).optional(),
+  entries: z.array(FsEntrySchema).max(FS_LIST_MAX_ENTRIES).optional(),
+  truncated: z.boolean().optional(),
+  error: FsErrorSchema.optional(),
+});
+
+export const FsReadRequestSchema = z.object({
+  type: z.literal('fs.read.request'),
+  ...c2aBase,
+  reqId: ReqIdSchema,
+  path: z.string().min(1).max(FS_PATH_MAX),
+});
+
+/** 读到的文件：内容在 relay blob 里（agent 用一次性 key 加密上传，同附件） */
+export const FsFileSchema = z.object({
+  path: z.string().min(1).max(FS_PATH_MAX),
+  /** 命中的根目录（同 fs.list.response.root） */
+  root: z.string().max(FS_PATH_MAX),
+  name: z.string().min(1).max(1024),
+  size: z.number().int().nonnegative(),
+  mtime: TimestampSchema,
+  mime: z.string().max(255),
+  kind: FsFileKindSchema,
+  blobId: BlobIdSchema,
+  key: AttachmentRefSchema.shape.key,
+});
+export type FsFile = z.infer<typeof FsFileSchema>;
+
+export const FsReadResponseSchema = z.object({
+  type: z.literal('fs.read.response'),
+  ...a2cBase,
+  reqId: ReqIdSchema,
+  ok: z.boolean(),
+  file: FsFileSchema.optional(),
+  error: FsErrorSchema.optional(),
 });
 
 // ---------------------------------------------------------------------------
@@ -1551,6 +1649,8 @@ export const AgentToClientEventSchema = z.discriminatedUnion('type', [
   SessionRewindResponseSchema,
   SessionRewoundSchema,
   AttachmentFetchResponseSchema,
+  FsListResponseSchema,
+  FsReadResponseSchema,
   SessionCapabilitiesSchema,
   MachineInfoEventSchema,
   MachineClaudeUpdateResponseSchema,
@@ -1599,6 +1699,8 @@ export const ClientToAgentEventSchema = z.discriminatedUnion('type', [
   SessionRewindPreviewSchema,
   SessionRewindSchema,
   AttachmentFetchRequestSchema,
+  FsListRequestSchema,
+  FsReadRequestSchema,
   MachineRenameSchema,
   MachineUnpairSchema,
   MachineClaudeUpdateRequestSchema,

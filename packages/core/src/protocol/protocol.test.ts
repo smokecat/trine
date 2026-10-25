@@ -246,6 +246,48 @@ describe('E2E 事件帧', () => {
     expect(AgentToClientEventSchema.parse(res).type).toBe('attachment.fetch.response');
   });
 
+  test('fs.list / fs.read 请求与应答', () => {
+    const list = { type: 'fs.list.request', ...c2a, reqId: 'r1' };
+    expect(ClientToAgentEventSchema.parse(list).type).toBe('fs.list.request');
+    expect(() => ClientToAgentEventSchema.parse({ ...list, path: '' })).toThrow();
+    const listRes = {
+      type: 'fs.list.response',
+      ...a2c,
+      reqId: 'r1',
+      ok: true,
+      path: '/w/repo',
+      root: '/w/repo',
+      entries: [
+        { name: 'docs', type: 'dir', mtime: 1 },
+        { name: 'README.md', type: 'file', size: 10, mtime: 1 },
+        { name: '.env', type: 'file', size: 3, mtime: 1, denied: true },
+      ],
+    };
+    expect(AgentToClientEventSchema.parse(listRes).type).toBe('fs.list.response');
+    const read = { type: 'fs.read.request', ...c2a, reqId: 'r2', path: 'docs/a.md' };
+    expect(ClientToAgentEventSchema.parse(read).type).toBe('fs.read.request');
+    expect(() => ClientToAgentEventSchema.parse({ ...read, path: undefined })).toThrow();
+    const file = {
+      path: '/w/repo/docs/a.md',
+      root: '/w/repo',
+      name: 'a.md',
+      size: 10,
+      mtime: 1,
+      mime: 'text/markdown',
+      kind: 'markdown',
+      blobId: 'b'.repeat(22),
+      key: 'k'.repeat(43),
+    };
+    expect(AgentToClientEventSchema.parse({ type: 'fs.read.response', ...a2c, reqId: 'r2', ok: true, file }).type).toBe(
+      'fs.read.response',
+    );
+    expect(() =>
+      AgentToClientEventSchema.parse({ type: 'fs.read.response', ...a2c, reqId: 'r2', ok: true, file: { ...file, kind: 'html' } }),
+    ).toThrow();
+    const err = { type: 'fs.read.response', ...a2c, reqId: 'r2', ok: false, error: { code: 'denied', message: 'no' } };
+    expect(AgentToClientEventSchema.parse(err).type).toBe('fs.read.response');
+  });
+
   test('未知事件类型被拒绝', () => {
     expect(() => E2eEventSchema.parse({ type: 'nope.unknown', ...a2c })).toThrow();
   });

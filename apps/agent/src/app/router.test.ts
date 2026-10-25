@@ -6,6 +6,7 @@
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { chmod, mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type {
@@ -17,6 +18,8 @@ import type {
 import type { ClientToAgentEvent, PermissionMode, SessionState } from '@trine/core';
 import { sodiumReady } from '@trine/core/crypto';
 import { AttachmentStore, type PreparedInput } from '../bridge/attachments.ts';
+import { FileAccess } from '../files/access.ts';
+import { FileService } from '../files/service.ts';
 import { EventEmitter } from '../bridge/emitter.ts';
 import { SessionManager, type CreateSessionArgs } from '../bridge/manager.ts';
 import type { PendingPermissionSnapshot, PermissionVerdict } from '../bridge/permission.ts';
@@ -236,6 +239,8 @@ async function makeHarness(options: {
   probeCommands?: (cwd: string) => Promise<SdkSlashCommand[]>;
   /** 附件存储；省略 = 不启用附件 */
   attachments?: AttachmentStore;
+  /** 文件查看；省略 = 关闭 */
+  files?: FileService;
   /** 会话关联（扩展）；省略 = 不支持 */
   links?: SessionLinksStore;
   /** 时间线记录卡（扩展）；省略 = 不支持 */
@@ -337,6 +342,7 @@ async function makeHarness(options: {
       return options.subagentTranscripts?.[`${sessionId}/${toolUseId}`] ?? [];
     },
     ...(options.attachments === undefined ? {} : { attachments: options.attachments }),
+    ...(options.files === undefined ? {} : { files: options.files }),
     ...(options.links === undefined ? {} : { links: options.links, machineId: 'mbp-id' }),
     ...(options.records === undefined ? {} : { records: options.records }),
     ...(options.probeCommands === undefined
@@ -2494,6 +2500,48 @@ describe('Router · 附件', () => {
     );
     await h.router.idle();
     expect(h.byType('attachment.fetch.response').at(-1)).toMatchObject({ ok: false, error: { code: 'not_found' } });
+  });
+});
+
+describe('Router · 文件查看', () => {
+  async function setup(withFiles = true) {
+    await sodiumReady();
+    const blobs = new FakeBlobs();
+    const repo = join(dir, 'repo');
+    mkdirSync(join(repo, 'docs'), { recursive: true });
+    writeFileSync(join(repo, 'docs', 'a.md'), '# a');
+    const files = new FileService({
+      access: new FileAccess({ allow: [], osHome: dir, trineHome: join(dir, 'trine-home') }),
+      maxBytes: 1024,
+      blobs: () => blobs,
+    });
+    const h = await makeHarness(withFiles ? { files } : {});
+    h.state.rememberSession('s1', { ...params, cwd: repo });
+    return { ...h, repo, blobs };
+  }
+
+  test('fs.list / fs.read：范围是会话 cwd，只回请求方，不拉起会话', async () => {
+    const h = await setup();
+    await h.router.handle({ type: 'fs.list.request', ...c2a('s1'), reqId: 'l1' }, phone);
+    await h.router.handle({ type: 'fs.read.request', ...c2a('s1'), reqId: 'r1', path: 'docs/a.md' }, phone);
+    await h.router.handle({ type: 'fs.read.request', ...c2a('s1'), reqId: 'r2', path: '/etc/hosts' }, phone);
+    await h.router.idle();
+    const list = h.events.find((e) => e.event.type === 'fs.list.response')!;
+    expect(list.to).toBe('phone');
+    expect(list.event).toMatchObject({ reqId: 'l1', ok: true, path: h.repo, root: h.repo, entries: [{ name: 'docs', type: 'dir' }] });
+    // 两个读请求在链外并发，应答先后不定：按 reqId 取
+    const read = (reqId: string) => h.byType('fs.read.response').find((e) => 'reqId' in e && e.reqId === reqId);
+    expect(read('r1')).toMatchObject({ ok: true, file: { name: 'a.md', kind: 'markdown', size: 3 } });
+    expect(read('r2')).toMatchObject({ ok: false, error: { code: 'denied' } });
+    expect(h.created).toHaveLength(0);
+    expect(h.byType('error.fatal')).toHaveLength(0);
+  });
+
+  test('关闭时回 unavailable', async () => {
+    const h = await setup(false);
+    await h.router.handle({ type: 'fs.read.request', ...c2a('s1'), reqId: 'r1', path: 'docs/a.md' }, phone);
+    await h.router.idle();
+    expect(h.byType('fs.read.response')[0]).toMatchObject({ ok: false, error: { code: 'unavailable' } });
   });
 });
 

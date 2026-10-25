@@ -41,6 +41,7 @@ import {
   summarizeToolArgs,
   summarizeToolResult,
   toSingleLine,
+  withFilePath,
 } from './summarize.ts';
 import type { EventBody } from './types.ts';
 
@@ -376,6 +377,7 @@ function toolStarts(messageBody: unknown, ctx: TranslateContext, parentToolUseId
       toolUseId,
       toolName,
       argSummary: summarizeToolArgs(toolName, b['input']),
+      ...withFilePath(toolName, b['input']),
       ...(parentToolUseId === undefined ? {} : { parentToolUseId }),
     });
   }

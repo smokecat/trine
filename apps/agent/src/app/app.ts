@@ -18,8 +18,9 @@
  * 一切外部依赖都可注入：假 ClaudeSession 工厂（不起真子进程）、假 listSessions、
  * 假 socket、假 fetch。集成测试用进程内真服务端 + 真 AgentNode + 假会话跑整条链。
  */
+import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
-import type { AgentToClientEvent, MachineInfo, TransportFrame } from '@trine/core';
+import { FS_READ_DEFAULT_MAX_BYTES, type AgentToClientEvent, type MachineInfo, type TransportFrame } from '@trine/core';
 import type {
   deleteSession,
   getSessionInfo,
@@ -30,6 +31,8 @@ import type {
 } from '@anthropic-ai/claude-agent-sdk';
 import { BlobClient, httpBase } from '@trine/core/net';
 import { AttachmentStore } from '../bridge/attachments.ts';
+import { FileAccess } from '../files/access.ts';
+import { FileService } from '../files/service.ts';
 import { EventEmitter } from '../bridge/emitter.ts';
 import { SessionManager, type CreateSessionArgs } from '../bridge/manager.ts';
 import type { ClaudeSession } from '../bridge/session.ts';
@@ -161,6 +164,8 @@ export class AgentApp {
   #claudeLatest!: ClaudeLatestChecker;
   /** 斜杠命令探测（router 用；退出时收掉在跑的探测子进程） */
   #commandsProbe!: CommandsProbe;
+  /** 文件查看的单文件上限；undefined = 关闭（machine.info 不带 files） */
+  #filesMaxBytes: number | undefined;
   #planUsage!: PlanUsageTracker;
   #machineStats!: MachineStatsWatcher;
   #extRegistry!: ExtensionRegistry;
@@ -230,6 +235,14 @@ export class AgentApp {
     // 回调只在收到带附件的消息时才调用，那时早已就位）
     let blobClient: BlobClient | undefined;
     const attachments = new AttachmentStore({ root: paths.uploads, blobs: () => blobClient, now });
+    // 文件查看：范围 = 会话 cwd + TRINE_FILES_ALLOW；trine home（身份私钥）始终拒绝
+    const files = config.filesEnabled
+      ? new FileService({
+          access: new FileAccess({ allow: config.filesAllow, osHome: homedir(), trineHome: config.home }),
+          maxBytes: FS_READ_DEFAULT_MAX_BYTES,
+          blobs: () => blobClient,
+        })
+      : undefined;
 
     const manager = new SessionManager({
       emitter,
@@ -356,6 +369,7 @@ export class AgentApp {
       ...(deps.getSessionMessagesFn === undefined ? {} : { getSessionMessagesFn: deps.getSessionMessagesFn }),
       commandsProbe,
       attachments,
+      ...(files === undefined ? {} : { files }),
       links,
       records,
       machineId: node.machineId,
@@ -387,6 +401,7 @@ export class AgentApp {
       claudeVersion,
     );
     app.#commandsProbe = commandsProbe;
+    app.#filesMaxBytes = files?.maxBytes;
     app.#machineStats = machineStats;
     app.#extRegistry = extRegistry;
     app.#extLinks = links;
@@ -599,6 +614,7 @@ export class AgentApp {
       extensions: this.#extRegistry === undefined ? undefined : { ...this.#extRegistry.summary(), records: true },
       restart: this.#restart === undefined ? undefined : this.#restartInfo(),
       claudeLatest: this.#claudeLatest?.current,
+      files: this.#filesMaxBytes === undefined ? undefined : { maxBytes: this.#filesMaxBytes },
     });
   }
 

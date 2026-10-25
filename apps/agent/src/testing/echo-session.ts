@@ -195,6 +195,10 @@ export interface StartEchoAgentOptions {
   name?: string;
   /** 默认模型名，默认 'test-model' */
   defaultModel?: string;
+  /** 文件查看开关，默认开 */
+  filesEnabled?: boolean;
+  /** 会话 cwd 之外允许查看的目录（同 TRINE_FILES_ALLOW） */
+  filesAllow?: string[];
   /**
    * claude 版本号。默认写死 'test' 而不是真去探测——测试不该依赖本机有没有
    * 装 claude（探测本身有兜底会回 'unknown'，但那样断言就得跟着环境变）。
@@ -268,6 +272,8 @@ export async function startEchoAgent(
     maxSessions: undefined,
     idleTimeoutMs: undefined,
     claudeBin: undefined,
+    filesEnabled: options.filesEnabled ?? true,
+    filesAllow: options.filesAllow ?? [],
   };
 
   const recording = options.transcripts;

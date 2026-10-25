@@ -12,6 +12,8 @@ import {
   summarizeToolArgs,
   summarizeToolResult,
   toSingleLine,
+  toolFilePath,
+  withFilePath,
 } from './summarize.ts';
 
 describe('summarizeToolArgs', () => {
@@ -227,5 +229,18 @@ describe('后台子 agent（评审 M1）', () => {
   test('subagentReportText：后台启动回执（内部元数据）剥成空串', () => {
     expect(subagentReportText({ status: 'async_launched' }, 'whatever')).toBe('');
     expect(subagentReportText(undefined, 'Async agent launched successfully. (This tool result is internal metadata …)')).toBe('');
+  });
+});
+
+describe('toolFilePath', () => {
+  test('文件类工具给完整路径，其余 undefined', () => {
+    const long = `/w/${'a/'.repeat(40)}plan.md`;
+    expect(toolFilePath('Read', { file_path: long })).toBe(long);
+    expect(toolFilePath('Edit', { file_path: '/w/a.ts' })).toBe('/w/a.ts');
+    expect(toolFilePath('NotebookEdit', { notebook_path: '/w/n.ipynb' })).toBe('/w/n.ipynb');
+    expect(toolFilePath('Bash', { command: 'cat /w/a.ts' })).toBeUndefined();
+    expect(toolFilePath('Read', {})).toBeUndefined();
+    expect(withFilePath('Grep', { pattern: 'x' })).toEqual({});
+    expect(withFilePath('Write', { file_path: '/w/b.md' })).toEqual({ filePath: '/w/b.md' });
   });
 });

@@ -9,6 +9,7 @@ import { release } from 'node:os';
 import type {
   MachineClaudeLatest,
   MachineExtensionsSummary,
+  MachineFilesInfo,
   MachineInfo,
   MachineRestartInfo,
   RateLimits,
@@ -55,7 +56,9 @@ import type {
 //   子命令；会话子进程带 TRINE_HOME / TRINE_SESSION_ID
 // - 0.19.0 起 MachineInfo 带 claudeLatest（发布源上的 claude 最新版本，启动后与每 6 小时自动查），
 //   支持 machine.claude.check.request 立即检查（web 按 machine.info.claudeLatest 有无判断）
-export const AGENT_VERSION = '0.19.0';
+// - 0.20.0 起支持文件查看：fs.list.request / fs.read.request（会话 cwd + TRINE_FILES_ALLOW 范围内只读），
+//   MachineInfo 带 files（web 按有无判断）；tool.start / history tool 条目带 filePath
+export const AGENT_VERSION = '0.20.0';
 
 export function buildMachineInfo(input: {
   name: string;
@@ -66,6 +69,7 @@ export function buildMachineInfo(input: {
   extensions?: MachineExtensionsSummary | undefined;
   restart?: MachineRestartInfo | undefined;
   claudeLatest?: MachineClaudeLatest | undefined;
+  files?: MachineFilesInfo | undefined;
 }): MachineInfo {
   return {
     name: input.name,
@@ -79,5 +83,6 @@ export function buildMachineInfo(input: {
     ...(input.extensions === undefined ? {} : { extensions: input.extensions }),
     ...(input.restart === undefined ? {} : { restart: input.restart }),
     ...(input.claudeLatest === undefined ? {} : { claudeLatest: input.claudeLatest }),
+    ...(input.files === undefined ? {} : { files: input.files }),
   };
 }

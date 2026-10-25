@@ -7,7 +7,7 @@
  */
 import { assertEnrollmentUrl, httpBase } from '@trine/core/net';
 import { homedir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { isAbsolute, join, resolve } from 'node:path';
 import type { Subcommand } from '../control/commands.ts';
 
 export interface AgentConfig {
@@ -31,6 +31,10 @@ export interface AgentConfig {
    * `claude`，再找不到回退 SDK 内置（见 claude-cli.ts）
    */
   claudeBin: string | undefined;
+  /** 文件查看（fs.list / fs.read）总开关：env `TRINE_FILES=off` 关闭 */
+  filesEnabled: boolean;
+  /** 会话 cwd 之外允许查看的目录（env `TRINE_FILES_ALLOW`，`:` 分隔，已展开 `~`、转成绝对路径） */
+  filesAllow: string[];
 }
 
 /**
@@ -109,7 +113,8 @@ export const USAGE = `用法：trine-agent [--enroll] [--pair] [--server URL] [-
   restart cancel  取消还没执行的重启
   selfcheck       加载全部代码后退出（重启预检用）
 
-env：TRINE_DEFAULT_MODEL  TRINE_MAX_SESSIONS  TRINE_IDLE_TIMEOUT_MS`;
+env：TRINE_DEFAULT_MODEL  TRINE_MAX_SESSIONS  TRINE_IDLE_TIMEOUT_MS
+     TRINE_FILES=off（关闭文件查看）  TRINE_FILES_ALLOW=DIR[:DIR...]（会话目录之外允许查看的目录）`;
 
 export interface SubcommandInvocation {
   command: Subcommand;
@@ -266,7 +271,26 @@ export function loadAgentConfig(
     maxSessions: envInt(env, 'TRINE_MAX_SESSIONS'),
     idleTimeoutMs: envInt(env, 'TRINE_IDLE_TIMEOUT_MS'),
     claudeBin,
+    filesEnabled: !['off', '0', 'false', 'no'].includes((env['TRINE_FILES'] ?? '').trim().toLowerCase()),
+    filesAllow: parseFilesAllow(env['TRINE_FILES_ALLOW']),
   };
+}
+
+/**
+ * `TRINE_FILES_ALLOW`：`:` 分隔的目录，必须是绝对路径或 `~` 开头（相对路径相对谁说不清，
+ * 直接报错，免得白名单悄悄落到别处）。
+ */
+export function parseFilesAllow(raw: string | undefined): string[] {
+  if (raw === undefined) return [];
+  const out: string[] = [];
+  for (const item of raw.split(':')) {
+    const p = item.trim();
+    if (p === '') continue;
+    if (p === '~' || p.startsWith('~/')) out.push(join(homedir(), p.slice(1)));
+    else if (isAbsolute(p)) out.push(resolve(p));
+    else throw new ConfigError(`TRINE_FILES_ALLOW 里的路径必须是绝对路径或以 ~ 开头：${p}`);
+  }
+  return [...new Set(out)];
 }
 
 /** `--flag`、`--flag value`、`--flag=value` 三种写法都收 */

@@ -66,6 +66,25 @@ function shortPath(path: string): string {
   return `…/${tail}`;
 }
 
+/** 带文件路径的内置工具 */
+const FILE_TOOLS = new Set(['Read', 'Write', 'Edit', 'MultiEdit', 'NotebookEdit']);
+
+/**
+ * 文件类工具的完整路径（tool.start.filePath，client 据此打开文件预览）。
+ * 不是文件类工具、没有路径或路径过长（超出协议上限）时返回 undefined。
+ */
+export function toolFilePath(toolName: string, input: unknown): string | undefined {
+  if (!FILE_TOOLS.has(toolName)) return undefined;
+  const path = str(input, 'file_path') ?? str(input, 'notebook_path');
+  return path === undefined || path === '' || path.length > 4096 ? undefined : path;
+}
+
+/** 展开进 tool.start / history tool 条目：有路径才带 filePath 字段 */
+export function withFilePath(toolName: string, input: unknown): { filePath?: string } {
+  const filePath = toolFilePath(toolName, input);
+  return filePath === undefined ? {} : { filePath };
+}
+
 /**
  * 生成工具调用的单行参数摘要。
  *

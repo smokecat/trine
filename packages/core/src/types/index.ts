@@ -240,6 +240,8 @@ export const HistoryItemSchema = z.discriminatedUnion('kind', [
     id: z.string().min(1),
     toolName: z.string().min(1),
     argSummary: z.string(),
+    /** 文件类工具（Read/Write/Edit…）的完整路径，见 ToolStartSchema.filePath（agent ≥ 0.20.0） */
+    filePath: z.string().min(1).max(4096).optional(),
     status: ToolResultStatusSchema.optional(),
     /** tool_use 到 tool_result 两行 timestamp 之差（配到结果才有） */
     durationMs: z.number().int().nonnegative().optional(),
@@ -367,6 +369,13 @@ export const MachineClaudeLatestSchema = z.object({
 });
 export type MachineClaudeLatest = z.infer<typeof MachineClaudeLatestSchema>;
 
+/** 文件查看能力（fs.list / fs.read，见 protocol §1.10） */
+export const MachineFilesInfoSchema = z.object({
+  /** 单个文件可预览的字节上限 */
+  maxBytes: z.number().int().positive(),
+});
+export type MachineFilesInfo = z.infer<typeof MachineFilesInfoSchema>;
+
 /** 机器信息（E2E 密文内） */
 export const MachineInfoSchema = z.object({
   name: z.string(),
@@ -388,6 +397,8 @@ export const MachineInfoSchema = z.object({
   restart: MachineRestartInfoSchema.optional(),
   /** claude 最新版本（claude-latest 新增，可选；agent ≥ 0.19.0）。缺失 = 不支持，client 隐藏检查入口 */
   claudeLatest: MachineClaudeLatestSchema.optional(),
+  /** 文件查看（file-viewer 新增，可选；agent ≥ 0.20.0）。缺失 = 不支持或已关闭，client 隐藏文件入口 */
+  files: MachineFilesInfoSchema.optional(),
 });
 export type MachineInfo = z.infer<typeof MachineInfoSchema>;
 
