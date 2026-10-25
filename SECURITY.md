@@ -36,6 +36,13 @@ is not a substitute for those controls, backups or TLS.
 - The agent keeps plaintext copies of received attachments under `<home>/uploads`
   (deleted with the session) and lets Claude read that session's folder without an
   approval prompt. Any paired controller can place files there.
+- File viewing (agent 0.20.0+) lets any paired device read files in a session's
+  working directory, plus directories listed in the agent's `TRINE_FILES_ALLOW`.
+  File contents travel like attachments (encrypted relay blobs). The agent always
+  refuses key material (`.env*` except templates, private keys and certificates,
+  `.ssh`, `.gnupg`, `.aws`, `.git` internals, `.netrc`/`.npmrc`, the agent's own home)
+  and checks symlink targets, but anything else in scope is readable. Set
+  `TRINE_FILES=off` on the agent to disable it.
 - A compromised frontend host can replace JavaScript and steal browser keys or plaintext.
   Same-origin hosting trusts the relay host to serve the correct frontend.
 - A compromised paired device or agent can read content and send authorized operations.

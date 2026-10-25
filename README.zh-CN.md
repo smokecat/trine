@@ -11,6 +11,7 @@
 - 显示用量：会话的 context 占用，以及每台机器 5 小时 / 每周订阅限额的用量和重置时间（仅订阅账号）。限额在会话运行时自动更新，也可手动刷新。
 - `/usage`、`/cost` 等本地命令的输出以卡片显示，保留终端排版；`/usage` 显示为各限额的进度条。
 - 消息可以带图片和文件：点回形针选择、粘贴剪贴板里的图片或文件，或直接拖到页面上。附件在浏览器里加密后经 relay 中转；小图直接交给 Claude，其他文件存到 agent 所在机器上，以路径交给 Claude 读取。
+- 不用登录服务器就能看 agent 机器上的文件：Read/Write/Edit 工具卡上有预览按钮，消息里的文件路径可以点开，会话菜单「浏览文件」按工作目录浏览。Markdown 渲染显示（文档里的相对链接直接打开对应文件），文本和代码带高亮，PDF 用浏览器自带阅读器，图片直接显示，其他文件可以下载。只读；范围是会话工作目录加上 `TRINE_FILES_ALLOW`，`.env`、私钥等密钥类文件一律不给看。需要 agent 0.20.0 及以上。
 - 常用 prompt 片段存在本设备：在设置里增删、编辑、复制；在输入区回形针旁的 prompt 按钮里点选插入光标处，或直接复制。手机上附件和片段收在「+」里，不挤占输入框宽度。
 - 多台机器的会话列表、继续会话、重命名和归档；右键菜单、多选（Ctrl/Cmd/Shift 点击）批量归档，复制会话工作目录。
 - 显示每台机器的 CPU、内存、磁盘、网络和 claude 子进程占用（列表顶部、机器卡、机器详情页），只在页面可见时刷新，间隔可在设置里调（默认 1 分钟），也可手动刷新。
@@ -75,6 +76,7 @@ TRINE_DEFAULT_MODEL=sonnet bun run dev:agent --   --server http://localhost:5173
 - 排队消息：Claude 工作时发出的消息在输入框上方排队，当前任务结束后按顺序执行。排着的消息可以撤回，也可以撤回后放回输入框修改；输入框为空时按 ↑ 编辑最后一条。消息开始执行时才进入对话。停止任务时被丢下的排队消息留在排队区，可以重发、编辑或丢弃。机器离线时暂存在 relay 的消息只能撤回。撤回和这些回执需要 agent 0.15.0 及以上；旧 agent 上排队的消息会直接出现在对话里，不能撤回。升级时先更新 web，再重启 agent：旧版 web 不认识新的回执，停止任务时丢下的消息会一直显示为排队中。
 - 回退：鼠标悬停（触屏上点一下）自己发的消息，选「回退到这里」（需要 agent 0.9.0 及以上，且会话空闲）。对话框先预览改动，再提供与 Claude Code `/rewind` 相同的三个选项：还原代码和对话、只回退对话、只还原代码。回退对话会在所有设备上撤掉这条消息及之后的内容，并把这条消息填回输入框。代码按 Claude Code 的文件快照还原，agent 现在为每个会话开启快照（由 Claude Code 存在它自己的配置目录里）。只能还原 Claude 用编辑工具做的改动，Bash 命令和手工改动无法还原；开启快照之前的轮次只能回退对话，会话的第一条消息只能还原代码。
 - 附件：默认每条消息最多 10 个、合计 64MB，可在「设置 → 附件」里调整，但单个附件不能超过 relay 的上限（`TRINE_BLOB_MAX_BYTES`，默认 256MB）。图片默认原样上传，也可以在设置里给压缩阈值。relay 把加密后的附件存在 `TRINE_BLOB_DIR`（默认数据库旁边的 `blobs/`），保留 `TRINE_BLOB_TTL_MS`（默认 7 天）；过期后再点开，会请 agent 用它在 `<home>/uploads` 下的副本重新上传。约 3.75MB、2000px 以内的图片直接交给 Claude，更大的图片和其他文件以路径交给 Claude 读取。需要 agent 0.11.0 及以上。
+- 文件查看：已配对的设备可以列出、读取会话工作目录里的文件。agent 的 `TRINE_FILES_ALLOW` 可以再加目录（`:` 分隔，绝对路径或 `~` 开头）；`TRINE_FILES=off` 关闭这个功能。符号链接只有指向范围内才能打开；密钥类文件一律拒绝：`.env` 文件（`.env.example` 这类模板除外）、私钥和证书、`.netrc` / `.npmrc` / `.pypirc`、`.ssh` / `.gnupg` / `.aws` / `.git` / `.docker` / `.kube` 下的一切，以及 agent 自己的 home。20MiB 以内的文件由 agent 加密后像附件一样经 relay 传给浏览器（同样按 `TRINE_BLOB_TTL_MS` 保留）。需要 agent 0.20.0 及以上。
 - relay：[配置模板](apps/server/deploy/trine-server.env.example)，复制到仓库外再填写真实值。
 - 验证：`bun run typecheck`、`bun test`、`bun run build`，或 `bun run check`。
 - 架构：[STRUCTURE](docs/STRUCTURE.md)；决策：[DECISIONS](docs/DECISIONS.md)；协议：[PROTOCOL-REQUIREMENTS](docs/PROTOCOL-REQUIREMENTS.md)。

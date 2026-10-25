@@ -23,6 +23,12 @@ the agent runs on your own computer.
 - Attaches images and files to messages: pick them, paste them or drop them onto the page.
   Attachments are encrypted in the browser and relayed as ciphertext; small images go to
   Claude inline, other files are saved on the agent's machine and handed over by path.
+- Views files on the agent machine without SSH: preview buttons on Read/Write/Edit tool cards,
+  clickable paths in messages, and "浏览文件" in the session menu to browse the session's
+  working directory. Markdown is rendered (relative links open the linked file), text and code
+  are highlighted, PDFs open in the browser's viewer, images are shown, anything else can be
+  downloaded. Read-only; limited to the session directory plus `TRINE_FILES_ALLOW`, and key
+  material such as `.env` and private keys is always refused. Requires agent 0.20.0 or later.
 - Keeps reusable prompt snippets on the device: edit and copy them in Settings, and insert one at
   the cursor (or copy it) from the prompt button next to the paperclip. On phones, attachments and
   snippets live behind a `+` button so the input keeps its width.
@@ -160,6 +166,15 @@ keeps encrypted attachments for `TRINE_BLOB_TTL_MS` (default 7 days) in
 the agent to upload it again from its copy under `<home>/uploads`. Images up to about
 3.75 MB and 2000 px are given to Claude inline; larger images and other files are listed
 by path for Claude to read. Requires agent 0.11.0 or later.
+
+File viewing: any paired device can list and read files in a session's working directory.
+`TRINE_FILES_ALLOW` on the agent adds more directories (`:`-separated, absolute or starting
+with `~`); `TRINE_FILES=off` turns the feature off. Symlinks are followed only if the target is
+in scope, and key material is always refused: `.env` files (templates such as `.env.example`
+are allowed), private keys and certificates, `.netrc`/`.npmrc`/`.pypirc`, anything under
+`.ssh`, `.gnupg`, `.aws`, `.git`, `.docker` or `.kube`, and the agent's own home. Files up to
+20 MiB are encrypted by the agent and passed through the relay like attachments (same
+`TRINE_BLOB_TTL_MS`). Requires agent 0.20.0 or later.
 
 Model fields accept Claude Code family aliases (`fable`, `opus`, `sonnet`, `haiku`, and
 suffixed forms such as `opus[1m]`), which Claude Code resolves to the latest model in

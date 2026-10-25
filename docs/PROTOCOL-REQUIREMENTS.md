@@ -29,8 +29,10 @@
 
 ### 1.2 工具调用卡（原地更新）
 
-- `tool.start` — `{ toolUseId, toolName, argSummary }`
+- `tool.start` — `{ toolUseId, toolName, argSummary, filePath? }`
   - argSummary：单行摘要（Bash→命令、Edit→文件路径），由 agent 端生成，避免 client 理解每种工具的参数结构
+  - filePath（agent ≥ 0.20.0）：Read / Write / Edit / MultiEdit / NotebookEdit 的完整路径（argSummary 会把长路径缩成 `…/a/b`），
+    client 据此打开文件预览（§1.10）。history 的 tool 条目同样带。旧 client 忽略
 - `tool.end` — `{ toolUseId, status: ok|warn|error, durationMs, resultSummary, outputPreview }`
   - resultSummary：单行（`✓ +9 −2` / `⚠ 1 failed · 3.5s` 的数据源：exit code、diff stat、耗时）
   - outputPreview：尾部截断的输出文本（阈值待定，~2KB），展开查看用
@@ -125,6 +127,28 @@
   agent 从本机副本（有 manifest）或转录里的图片块重新加密上传，返回新引用。client 在 blob 404 或没有引用时使用
 - 互操作：旧 agent 丢弃 `attachments` 字段、拒收空 text 的 `input.send`，client 按 `agentVersion ≥ 0.11.0` 决定给不给附件入口
 
+### 1.10 文件查看（agent ≥ 0.20.0）
+
+在会话里浏览、预览 agent 机器上的文件（只读）。两个请求都是会话级、不拉起会话进程、应答只发给请求方：
+
+- `fs.list.request { reqId, path? }` → `fs.list.response { reqId, ok, path?, root?, entries?, truncated?, error? }`
+  - `path` 省略 = 会话 cwd；可以是绝对路径、`~` 开头或相对 cwd 的路径。`path` 是解析后的绝对路径，`root` 是命中的根目录
+  - `entries: [{ name, type: file|dir|other, size?, mtime?, denied? }]`，目录在前、按名字排，至多 2000 条（超出置 `truncated`）。
+    符号链接按目标报类型；`denied` = 列出但不能打开（密钥类文件、指向范围外的链接、断链）
+- `fs.read.request { reqId, path }` → `fs.read.response { reqId, ok, file?, error? }`
+  - `file: { path, root, name, size, mtime, mime, kind: markdown|text|pdf|image|binary, blobId, key }`：内容同附件（§1.9），
+    agent 用一次性 key 加密后上传 relay blob，引用随应答返回；单文件上限 20MiB（`machine.info.files.maxBytes`）
+  - kind 先看扩展名，文本类扩展名与未知扩展名再嗅探前 8KB（无 NUL 且是合法 UTF-8 → text，否则 binary）
+- 错误码：`not_found | denied | too_large | is_dir | not_dir | io | unavailable`
+- 范围：会话 cwd 及其子目录，加上 agent 环境变量 `TRINE_FILES_ALLOW`（`:` 分隔的绝对路径或 `~` 开头的路径）。请求路径先按字面判断范围
+  （范围外直接 `denied`，不碰文件系统，避免泄露范围外文件是否存在），再按 realpath 判断一次（挡符号链接逃逸）。
+  密钥类文件始终拒绝，不能配置放开：`.env` / `.env.*`（`.env.example` 等模板除外）、`*.pem` / `*.key` / `*.p12` / `*.pfx` 等、
+  `id_rsa` 等 SSH 私钥、`.netrc` / `.npmrc` / `.pypirc` / `.pgpass` / `.git-credentials`、`credentials*.json`，
+  路径中任一段是 `.ssh` / `.gnupg` / `.aws` / `.git` / `.docker` / `.kube` 的，以及 agent 自己的 home
+- `machine.info.files?: { maxBytes }` — 有 = 支持；`TRINE_FILES=off` 时不带，请求回 `unavailable`
+- client：入口是工具卡的预览按钮（`filePath`）、消息里像路径的行内代码与相对链接、会话菜单「浏览文件」；按 `machine.info.files` 有无决定显示。
+  html 只显示源码；svg 只经 `<img>` 显示；PDF 放进 `<iframe>`（Blob 强制 `application/pdf`，静态响应的 CSP 因此带 `frame-src 'self' blob:`）
+
 ## 2. 会话列表
 
 - `session.list`（client→agent 请求 / agent 推增量）— 每条：
@@ -180,7 +204,7 @@ agent 侧所有产出 SessionMeta 的出口（list、session.created、session.u
 ## 3. 机器管理
 
 - `machine.status`† — 服务端可见（在线状态本身就是服务端知道的）：`{ machineId, online, lastSeenAt }`
-- `machine.info` — E2E 内容：`{ name, platform, osVersion, agentVersion, claudeVersion, activeSessionCount, maxSessions?, rateLimits?, extensions?, restart?, claudeLatest? }`（maxSessions 自 0.10.0，rateLimits 自 0.12.0，extensions 自 0.16.0、其中 records 自 0.17.0，见 §3.1；restart 自 0.18.0，claudeLatest 自 0.19.0，见下）（常用目录另见 §6）
+- `machine.info` — E2E 内容：`{ name, platform, osVersion, agentVersion, claudeVersion, activeSessionCount, maxSessions?, rateLimits?, extensions?, restart?, claudeLatest?, files? }`（maxSessions 自 0.10.0，rateLimits 自 0.12.0，extensions 自 0.16.0、其中 records 自 0.17.0，见 §3.1；restart 自 0.18.0，claudeLatest 自 0.19.0，见下；files 自 0.20.0，见 §1.10）（常用目录另见 §6）
 - `rateLimits?: { fiveHour?, sevenDay?: { percent(0–100), resetsAt? }, updatedAt }`（usage-display）— 机器上登录账号的订阅限额用量，账号级、同机所有会话共用。来源：会话活动时 CLI 每次 API 请求发的 `rate_limit_event`（取其 `unifiedWindows`，类型定义里没有的字段；没有时退回顶层的单个窗口），值变了（或值不变但距上次广播超过 5 分钟）就广播一次 `machine.info`。API key / Bedrock / Vertex 等没有订阅限额的账号不带。agent 不落盘，重启后等下一次会话活动或手动刷新
 - `machine.claude.update.request { reqId }`（client→agent，机器级，agent ≥ 0.4.0）— 用会话所用的同一个 claude 可执行文件跑 `claude update`（单飞，5 分钟超时），跑完重新探测版本、先广播 `machine.info` 再回 `machine.claude.update.response { reqId, ok, fromVersion, toVersion, output, outputTruncated?, error?: { code: busy|not_found|timeout|failed, message } }`。运行中的会话不重启，新起的会话才用新版
 - `claudeLatest?: { channel: latest|stable, version?, checkedAt?, error? }`（agent ≥ 0.19.0）— 发布源上的 claude 最新版本：agent 查 `https://downloads.claude.ai/claude-code-releases/<channel>`（claude 原生安装自更新用的同一个地址，返回体就是版本号），渠道取 claude settings（`$CLAUDE_CONFIG_DIR` 或 `~/.claude`）的 `autoUpdatesChannel`，每次检查重读。启动后约 30 秒与每 6 小时自动查一次（环境里设了 `DISABLE_AUTOUPDATER` / `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` 时不自动查），每次查完广播 `machine.info`。失败保留上次的 version / checkedAt 并带 `error`。client 拿 version 与 claudeVersion 开头的版本号比较，判断有没有新版本。缺失 = 不支持，client 隐藏检查入口
