@@ -162,6 +162,7 @@ export interface ToolEntry {
   id: string;
   toolName: string;
   argSummary: string;
+  filePath?: string;
   status?: z.infer<typeof ToolResultStatusSchema>;
   durationMs?: number;
   resultSummary?: string;
@@ -178,6 +179,8 @@ export const ToolEntrySchema = z.object({
   id: z.string().min(1),
   toolName: z.string(),
   argSummary: z.string(),
+  /** 文件类工具的完整路径（agent ≥ 0.20.0），点击打开文件预览 */
+  filePath: z.string().optional(),
   status: ToolResultStatusSchema.optional(),
   durationMs: z.number().optional(),
   resultSummary: z.string().optional(),
@@ -542,9 +545,18 @@ export function applyEvent(tl: Timeline, event: AgentToClientEvent): Timeline {
         ...cur,
         toolName: event.toolName,
         argSummary: event.argSummary,
+        ...(event.filePath === undefined ? {} : { filePath: event.filePath }),
       }));
       if (updated !== undefined) return withEntries(tl, updated, seq);
-      const entry: ToolEntry = { kind: 'tool', id: event.toolUseId, toolName: event.toolName, argSummary: event.argSummary, seq, ts: event.ts };
+      const entry: ToolEntry = {
+        kind: 'tool',
+        id: event.toolUseId,
+        toolName: event.toolName,
+        argSummary: event.argSummary,
+        ...(event.filePath === undefined ? {} : { filePath: event.filePath }),
+        seq,
+        ts: event.ts,
+      };
       return placeTool(tl, entry, event.parentToolUseId, seq);
     }
     case 'tool.end': {
@@ -730,6 +742,9 @@ export function applyEvent(tl: Timeline, event: AgentToClientEvent): Timeline {
     case 'subagent.history.response':
     // 附件新引用由 client.openAttachment 按 reqId 关联后写回条目；这里只推进游标
     case 'attachment.fetch.response':
+    // 文件查看由 client.listFiles / openFile 按 reqId 关联；这里只推进游标
+    case 'fs.list.response':
+    case 'fs.read.response':
     // 命令清单由 client.loadCommands 按 reqId 关联后写进 capabilities；这里只推进游标
     case 'session.commands.response':
     // 回退的预览 / 结果由 client 按 reqId 关联；时间线的变化走 session.rewound
@@ -1101,6 +1116,7 @@ function historyToEntry(item: HistoryItem): TimelineEntry {
         id: item.id,
         toolName: item.toolName,
         argSummary: item.argSummary,
+        ...(item.filePath === undefined ? {} : { filePath: item.filePath }),
         ...(item.status === undefined ? {} : { status: item.status }),
         ...(item.durationMs === undefined ? {} : { durationMs: item.durationMs }),
         ...(item.resultSummary === undefined ? {} : { resultSummary: item.resultSummary }),

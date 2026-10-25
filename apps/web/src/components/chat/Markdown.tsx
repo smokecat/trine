@@ -51,9 +51,12 @@
  * shiki 双主题 `[github-light, github-dark]` 由 streamdown 按 CSS 变量切，
  * 与 app/theme.ts 的三态主题自洽（跟随 `prefers-color-scheme` 与 `.dark`）。
  */
-import { memo } from 'react';
-import { Streamdown } from 'streamdown';
+import { memo, useContext } from 'react';
+import { defaultRehypePlugins, Streamdown, type StreamdownProps } from 'streamdown';
 import { code } from '@streamdown/code';
+import { ImageIcon } from 'lucide-react';
+import { detectPath, isLocalHref, resolveRelative } from '@/components/files/file-model.ts';
+import { FileBaseContext, useFileLinks } from '@/components/files/file-links.ts';
 import { cn } from '@/lib/utils.ts';
 
 /** 插件实例提到模块级：每次渲染新建会丢掉 shiki 已加载的语言缓存 */
@@ -67,6 +70,141 @@ const plugins = { code };
  * 同样提到模块级：内联箭头函数每次渲染都是新 type，会让整棵子树重挂。
  */
 const components = { source: (): null => null };
+
+/**
+ * 本地路径可点（聊天页提供了 FileLinksContext 时）：
+ * - 行内代码里像路径的（`docs/plan.md`、`src/a.ts:12`）→ 打开文件预览，以 `/` 结尾的打开目录；
+ * - 没有协议的链接（`[方案](docs/plan.md)`）→ 同上。预览 markdown 文件时（FileBaseContext）
+ *   相对链接按**该文件所在目录**解析，否则相对会话 cwd。
+ * 其余链接照常（新标签打开）。
+ */
+function FileAwareInlineCode({ children, className, node: _node, ...props }: React.ComponentProps<'code'> & { node?: unknown }): React.JSX.Element {
+  const links = useFileLinks();
+  const text = typeof children === 'string' ? children : Array.isArray(children) && children.every((c) => typeof c === 'string') ? children.join('') : undefined;
+  const detected = links === null || text === undefined ? undefined : detectPath(text);
+  const codeEl = (
+    <code {...props} data-streamdown="inline-code" className={cn('rounded bg-muted px-1.5 py-0.5 font-mono text-sm', className)}>
+      {children}
+    </code>
+  );
+  if (links === null || detected === undefined) return codeEl;
+  return (
+    <button
+      type="button"
+      data-testid="file-link"
+      data-path={detected.path}
+      title={detected.dir ? `浏览目录 ${detected.path}` : `预览 ${detected.path}`}
+      onClick={() => (detected.dir ? links.browse(detected.path) : links.open(detected.path))}
+      className="cursor-pointer align-baseline decoration-dotted underline-offset-2 hover:underline"
+    >
+      {codeEl}
+    </button>
+  );
+}
+
+function FileAwareLink({
+  href,
+  children,
+  className,
+  node: _node,
+  'data-file-href': fileHref,
+  ...props
+}: React.ComponentProps<'a'> & { node?: unknown; 'data-file-href'?: string }): React.JSX.Element {
+  const links = useFileLinks();
+  const base = useContext(FileBaseContext);
+  if (links !== null && typeof fileHref === 'string') {
+    const target = base === undefined ? fileHref : resolveRelative(base, fileHref);
+    // 聊天里只认像路径的（`[x](foo)` 这种裸词不算）；文件里的相对链接都当文件
+    const detected = base === undefined ? detectPath(target) : { path: target.replace(/[?#].*$/, ''), dir: target.endsWith('/') };
+    if (detected !== undefined) {
+      return (
+        <button
+          type="button"
+          data-testid="file-link"
+          data-path={detected.path}
+          title={detected.path}
+          onClick={() => (detected.dir ? links.browse(detected.path) : links.open(detected.path))}
+          className={cn('text-brand-ink cursor-pointer text-left underline', className)}
+        >
+          {children}
+        </button>
+      );
+    }
+    return <span className={className}>{children}</span>;
+  }
+  return (
+    <a {...props} href={href} target="_blank" rel="noopener noreferrer" className={cn('wrap-anywhere font-medium underline', className)}>
+      {children}
+    </a>
+  );
+}
+
+/** 预览 markdown 文件时的图片：不加载（同源相对路径会打到 web 服务），给一个打开该图片的按钮 */
+function FileDocImage({
+  alt,
+  'data-file-href': fileHref,
+}: React.ComponentProps<'img'> & { node?: unknown; 'data-file-href'?: string }): React.JSX.Element | null {
+  const links = useFileLinks();
+  const base = useContext(FileBaseContext);
+  // 外部图片一律不显示（零远端资源）；本地图片只给按钮
+  if (links === null || base === undefined || typeof fileHref !== 'string') return null;
+  const target = resolveRelative(base, fileHref);
+  return (
+    <button
+      type="button"
+      data-testid="file-doc-image"
+      data-path={target}
+      onClick={() => links.open(target)}
+      className="border-border bg-surface-2 text-text-2 hover:text-text inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[12px]"
+    >
+      <ImageIcon className="size-3.5" />
+      {alt !== undefined && alt !== '' ? alt : target.slice(target.lastIndexOf('/') + 1)}
+    </button>
+  );
+}
+
+const fileComponents = { source: (): null => null, inlineCode: FileAwareInlineCode, a: FileAwareLink };
+const fileDocComponents = { ...fileComponents, img: FileDocImage };
+
+interface HastNode {
+  type: string;
+  tagName?: string;
+  properties?: Record<string, unknown>;
+  children?: HastNode[];
+}
+
+/**
+ * 在 harden 之前把本地链接（以及文件预览里的本地图片）的**原始**地址存进 `data-file-href`，
+ * 地址本身换成占位 `/`：harden 会把 `../x.md` 归一成 `/x.md`、把 `docs/a.md` 这种裸相对路径
+ * 直接拦成 [blocked]，组件拿不到原文就没法按文件目录解析。放在 sanitize 之后，自定义属性不会被剥。
+ */
+function stashLocalUrls(tree: HastNode, images: boolean): void {
+  const props = tree.properties;
+  if (tree.type === 'element' && props !== undefined) {
+    if (tree.tagName === 'a' && typeof props['href'] === 'string' && isLocalHref(props['href'])) {
+      props['dataFileHref'] = props['href'];
+      props['href'] = '/'; // harden 认得的同源路径（`#`、裸相对路径会被它拦掉）；组件不用它
+    } else if (images && tree.tagName === 'img' && typeof props['src'] === 'string' && isLocalHref(props['src'])) {
+      props['dataFileHref'] = props['src'];
+      props['src'] = '/';
+    }
+  }
+  for (const child of tree.children ?? []) stashLocalUrls(child, images);
+}
+
+// 两个插件必须是**不同名**的具名函数：streamdown 按插件函数名缓存 unified 处理器，
+// 同名（或都是匿名箭头函数）会让聊天与文件预览共用同一个处理器
+function rehypeStashFileLinks() {
+  return (tree: HastNode): void => stashLocalUrls(tree, false);
+}
+function rehypeStashFileLinksAndImages() {
+  return (tree: HastNode): void => stashLocalUrls(tree, true);
+}
+
+type Pluggable = NonNullable<StreamdownProps['rehypePlugins']>[number];
+const { raw, sanitize, harden } = defaultRehypePlugins as Record<'raw' | 'sanitize' | 'harden', Pluggable>;
+const fileRehypePlugins: Pluggable[] = [raw, sanitize, rehypeStashFileLinks, harden];
+const fileDocRehypePlugins: Pluggable[] = [raw, sanitize, rehypeStashFileLinksAndImages, harden];
 
 /**
  * 扩展给的详情文本（`restricted`）更严：图片一律不渲染（同源相对图片也会把文本带进请求 URL、
@@ -103,6 +241,7 @@ export const Markdown = memo(function Markdown({
   streaming,
   className,
   restricted = false,
+  fileBase,
 }: {
   text: string;
   /** 还在流式接收：开 streaming 模式（增量解析 + 未闭合语法修补） */
@@ -110,8 +249,13 @@ export const Markdown = memo(function Markdown({
   className?: string;
   /** 扩展输出：禁图、链接只留 https（见 restrictedComponents） */
   restricted?: boolean;
+  /** 预览中的 markdown 文件路径：相对链接与图片相对它解析（见 FileBaseContext） */
+  fileBase?: string;
 }): React.JSX.Element {
-  return (
+  const links = useFileLinks();
+  const mode = restricted || links === null ? 'plain' : fileBase === undefined ? 'chat' : 'doc';
+  const chosen = restricted ? restrictedComponents : mode === 'chat' ? fileComponents : mode === 'doc' ? fileDocComponents : components;
+  const body = (
     <Streamdown
       mode={streaming ? 'streaming' : 'static'}
       parseIncompleteMarkdown={streaming}
@@ -119,7 +263,8 @@ export const Markdown = memo(function Markdown({
       // 零远端资源：外域图片一律不请求（streamdown 默认放行 '*'，见文件头 M4）
       urlTransform={restricted ? restrictedUrlTransform : safeUrlTransform}
       // `<source srcset>` 绕过 urlTransform（见文件头 N1）：整个不渲染
-      components={restricted ? restrictedComponents : components}
+      components={chosen}
+      {...(mode === 'chat' ? { rehypePlugins: fileRehypePlugins } : mode === 'doc' ? { rehypePlugins: fileDocRehypePlugins } : {})}
       shikiTheme={['github-light', 'github-dark']}
       // 代码块只留复制（下载会触发浏览器下载，远程场景意义不大）
       controls={{ code: { copy: true, download: false }, table: { copy: true, download: false } }}
@@ -147,4 +292,5 @@ export const Markdown = memo(function Markdown({
       {text}
     </Streamdown>
   );
+  return fileBase === undefined ? body : <FileBaseContext.Provider value={fileBase}>{body}</FileBaseContext.Provider>;
 });

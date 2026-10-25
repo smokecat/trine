@@ -16,7 +16,7 @@ import { createInvitation } from '../../../server/src/auth/invitations.ts';
  * @trine/agent / @trine/server 以 devDependency 引入（无 exports 字段，直接引源文件路径）。
  */
 import { afterEach, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
-import { rmSync } from 'node:fs';
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -39,7 +39,7 @@ import { DEFAULT_LIST_QUERY, filterSessions } from '../components/list/filtering
 // 会话 cwd 在系统临时目录下（测试约定），默认会被当成临时会话隐藏
 const LIST_QUERY = { ...DEFAULT_LIST_QUERY, showTemp: true };
 import { supportsSessionMutations } from '../components/list/session-actions.ts';
-import { SessionMutateError, TrineClient } from './client.ts';
+import { FsRequestError, SessionMutateError, TrineClient } from './client.ts';
 import { LeaderElector } from './leader.ts';
 import { shouldAutoLoadHistory, type PermissionEntry, type TimelineEntry, type UserEntry } from './reducer.ts';
 import { KV_PEER, type PeerState } from './storage.ts';
@@ -1010,6 +1010,46 @@ describe('web lib · 附件 e2e', () => {
     expect(userEntry(sid, id)?.failReason).toContain('附件');
     expect(userEntry(sid, id)?.attachments).toEqual([ref]);
   });
+});
+
+describe('web lib · 文件查看 e2e', () => {
+  test('列会话目录 → 打开 markdown（经 relay blob 解密）→ 范围外 / 密钥类被拒；refresh 读到新内容', async () => {
+    await pair();
+    await waitFor(() => client.machine('mbp')?.info?.files !== undefined, 'machine.info.files');
+    const ws = await mkdtemp(join(tmpdir(), 'trine-web-e2e-ws-'));
+    try {
+      mkdirSync(join(ws, 'docs'));
+      writeFileSync(join(ws, 'docs', 'plan.md'), '# 方案\n\n合成内容');
+      writeFileSync(join(ws, '.env'), 'TOKEN=synthetic');
+      const meta = await client.createSession('mbp', { cwd: ws, model: 'test-model', permissionMode: 'default' });
+      const sid = meta.sessionId;
+
+      const listing = await client.listFiles('mbp', sid);
+      expect(listing.root).toBe(ws);
+      expect(listing.entries.map((e) => [e.name, e.type, e.denied === true])).toEqual([
+        ['docs', 'dir', false],
+        ['.env', 'file', true],
+      ]);
+
+      const opened = await client.openFile('mbp', sid, 'docs/plan.md');
+      expect([opened.file.kind, opened.file.path, opened.file.root]).toEqual(['markdown', join(ws, 'docs', 'plan.md'), ws]);
+      expect(await opened.blob.text()).toBe('# 方案\n\n合成内容');
+      // 第二次走缓存，不再请求 agent
+      expect(await client.openFile('mbp', sid, 'docs/plan.md')).toBe(opened);
+
+      writeFileSync(join(ws, 'docs', 'plan.md'), '# 方案 v2');
+      const fresh = await client.openFile('mbp', sid, 'docs/plan.md', { refresh: true });
+      expect(await fresh.blob.text()).toBe('# 方案 v2');
+
+      const codeOf = (p: Promise<unknown>) => p.then(() => 'ok', (e: unknown) => (e instanceof FsRequestError ? e.code : String(e)));
+      expect(await codeOf(client.openFile('mbp', sid, '.env'))).toBe('denied');
+      expect(await codeOf(client.openFile('mbp', sid, join(home, 'identity.json')))).toBe('denied');
+      expect(await codeOf(client.listFiles('mbp', sid, '/'))).toBe('denied');
+      expect(await codeOf(client.openFile('mbp', sid, 'docs/missing.md'))).toBe('not_found');
+    } finally {
+      await rm(ws, { recursive: true, force: true });
+    }
+  }, 20_000);
 });
 
 describe('web lib · 扩展（ext.*）', () => {

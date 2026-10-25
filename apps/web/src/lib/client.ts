@@ -27,6 +27,9 @@ import { encryptFile, maybeCompressImage, xhrUpload, type UploadFn } from './att
 import type {
   AgentToClientEvent,
   AttachmentRef,
+  FsEntry,
+  FsErrorCode,
+  FsFile,
   PermissionMode,
   RewindErrorCode,
   RewindMode,
@@ -285,6 +288,9 @@ export class TrineClient {
   readonly #attachmentUrls = new Map<string, string>();
   /** 附件加载的在途请求：key = timelineKey + 条目 id + 下标 */
   readonly #attachmentInflight = new Map<string, Promise<string>>();
+  /** 文件预览缓存：`machine#session#请求路径` → 已下载的文件（刷新时替换并释放旧 URL） */
+  readonly #files = new Map<string, OpenedFile>();
+  readonly #fileInflight = new Map<string, Promise<OpenedFile>>();
   #blobClient: BlobClient | null = null;
   #blobConfig: Promise<BlobConfig> | null = null;
   readonly #listeners = new Map<keyof ClientEvents, Set<Listener>>();
@@ -1118,6 +1124,61 @@ export class TrineClient {
     if (url === undefined) throw new Error('当前环境无法显示附件');
     this.#attachmentUrls.set(ref.blobId, url);
     return url;
+  }
+
+  /**
+   * 列目录（fs.list，agent ≥ 0.20.0，machine.info.files 存在才支持）。`path` 省略 = 会话 cwd。
+   * agent 拒绝（不在范围内 / 不存在…）抛 `FsRequestError`。
+   */
+  async listFiles(machineId: string, sessionId: string, path?: string): Promise<FsListing> {
+    const res = await this.request<Extract<OutboundBody, { type: 'fs.list.request' }>>(machineId, {
+      type: 'fs.list.request',
+      sessionId,
+      ...(path === undefined ? {} : { path }),
+    });
+    if (res.type !== 'fs.list.response') throw new Error(`意外的应答 ${res.type}`);
+    if (!res.ok || res.path === undefined || res.root === undefined || res.entries === undefined) {
+      throw new FsRequestError(res.error?.code ?? 'io', res.error?.message ?? '读取目录失败');
+    }
+    return { path: res.path, root: res.root, entries: res.entries, truncated: res.truncated === true };
+  }
+
+  /**
+   * 打开文件预览（fs.read）：agent 读文件、加密上传 blob，这里下载解密。同一路径默认用缓存，
+   * `refresh` 时重新向 agent 要（旧的对象 URL 释放）。
+   */
+  openFile(machineId: string, sessionId: string, path: string, options: { refresh?: boolean } = {}): Promise<OpenedFile> {
+    const key = `${machineId}#${sessionId}#${path}`;
+    const cached = this.#files.get(key);
+    if (cached !== undefined && options.refresh !== true) return Promise.resolve(cached);
+    const inflight = this.#fileInflight.get(key);
+    if (inflight !== undefined) return inflight;
+    const task = (async () => {
+      const res = await this.request<Extract<OutboundBody, { type: 'fs.read.request' }>>(
+        machineId,
+        { type: 'fs.read.request', sessionId, path },
+        { timeoutMs: Math.max(this.#requestTimeoutMs, 60_000) },
+      );
+      if (res.type !== 'fs.read.response') throw new Error(`意外的应答 ${res.type}`);
+      if (!res.ok || res.file === undefined) throw new FsRequestError(res.error?.code ?? 'io', res.error?.message ?? '读取文件失败');
+      const file = res.file;
+      const parts: Uint8Array[] = [];
+      await this.#blobs().downloadDecrypted(file.blobId, file.key, (chunk) => {
+        parts.push(chunk);
+      }, { maxBytes: file.size });
+      const blob = new Blob(parts as BlobPart[], { type: file.mime === '' ? 'application/octet-stream' : file.mime });
+      const url = createObjectUrl(blob);
+      if (url === undefined) throw new Error('当前环境无法显示文件');
+      const opened: OpenedFile = { file, blob, url };
+      const old = this.#files.get(key);
+      if (old !== undefined && old.url !== url) URL.revokeObjectURL(old.url);
+      this.#files.set(key, opened);
+      return opened;
+    })().finally(() => {
+      this.#fileInflight.delete(key);
+    });
+    this.#fileInflight.set(key, task);
+    return task;
   }
 
   #blobs(): BlobClient {
@@ -2118,6 +2179,31 @@ function uploadErrorText(status: number, payload: { error?: unknown; maxBytes?: 
   if (status === 503) return '服务端没有启用附件';
   if (status === 401) return '认证失败，请稍后重试';
   return `上传失败：HTTP ${status}${typeof payload.error === 'string' ? ` ${payload.error}` : ''}`;
+}
+
+/** 一次目录列表 */
+export interface FsListing {
+  path: string;
+  root: string;
+  entries: FsEntry[];
+  truncated: boolean;
+}
+
+/** 已下载解密的文件：url 是对象 URL（client 持有，刷新时释放） */
+export interface OpenedFile {
+  file: FsFile;
+  blob: Blob;
+  url: string;
+}
+
+/** agent 拒绝了文件查看请求（code 见协议 FsErrorCode） */
+export class FsRequestError extends Error {
+  readonly code: FsErrorCode;
+  constructor(code: FsErrorCode, message: string) {
+    super(message);
+    this.name = 'FsRequestError';
+    this.code = code;
+  }
 }
 
 function createObjectUrl(blob: Blob): string | undefined {

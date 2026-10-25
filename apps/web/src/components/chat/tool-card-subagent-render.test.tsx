@@ -35,7 +35,7 @@ const click = (el: HTMLElement | null): void => {
   if (el === null) throw new Error('元素不存在');
   act(() => el.dispatchEvent(new MouseEvent('click', { bubbles: true })));
 };
-const header = (el: ParentNode): HTMLElement => el.querySelector('[data-testid="entry-tool"] > button') as HTMLElement;
+const header = (el: ParentNode): HTMLElement => el.querySelector('[data-testid="entry-tool"] [data-testid="tool-header"]') as HTMLElement;
 
 const child = (id: string, toolName: string, argSummary: string, done = true): ToolEntry => ({
   kind: 'tool',

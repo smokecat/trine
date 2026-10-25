@@ -85,7 +85,8 @@ const API_PREFIXES = ['/auth', '/ws', '/healthz', '/devices', '/blobs'] as const
  *   `wss:`——通配等于允许页面往任意主机发数据，与零知识的取向相悖。
  *   分离部署（SPA 在别处）时页面不由本服务发出，本头也管不到它。
  * - `img-src`/`media-src` 的 blob: 给本地生成的图片/音视频预览留口子；
- *   `worker-src blob:` 给打包器产出的 worker。
+ *   `worker-src blob:` 给打包器产出的 worker；`frame-src blob:` 给文件预览里的 PDF
+ *   （浏览器内置阅读器；web 只往 frame 里放强制成 application/pdf 的 Blob）。
  * - `object-src 'none'` / `base-uri 'self'` / `frame-ancestors 'none'`：
  *   分别堵掉插件、<base> 劫持相对路径、被第三方页面内嵌点击劫持。
  */
@@ -98,6 +99,7 @@ const STATIC_SECURITY_HEADERS: Record<string, string> = {
     "connect-src 'self'",
     "media-src 'self' blob:",
     "worker-src 'self' blob:",
+    "frame-src 'self' blob:",
     "object-src 'none'",
     "base-uri 'self'",
     "frame-ancestors 'none'",

@@ -338,6 +338,7 @@ describe('SPA 静态托管（TRINE_WEB_DIST）', () => {
       // Tailwind/shadcn 的运行时内联样式
       expect(csp).toContain("style-src 'self' 'unsafe-inline'");
       expect(csp).toContain("frame-ancestors 'none'");
+      expect(csp).toContain("frame-src 'self' blob:");
       // connect-src 收紧到同源，不放通配 wss:
       expect(csp).toContain("connect-src 'self'");
       expect(csp).not.toContain('wss:');

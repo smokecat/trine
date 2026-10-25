@@ -94,6 +94,9 @@ import { timelineKey } from '@/lib/storage.ts';
 import { formatCost } from '@/lib/format.ts';
 import { waitingForOfTool } from '@/lib/waiting.ts';
 import { ExtHeadEntry, ExtPanelSheet } from '@/components/ext/ExtPanel.tsx';
+import { FilePanel } from '@/components/files/FilePanel.tsx';
+import { FileLinksContext, type FileLinks } from '@/components/files/file-links.ts';
+import { useFilePanelRoute } from '@/components/files/use-file-panel.ts';
 import { composerPickerLabel, ExtComposerPicker, useComposerExtensions } from '@/components/ext/ExtComposerPicker.tsx';
 import { useExtRecords } from '@/components/ext/use-ext.ts';
 
@@ -142,6 +145,21 @@ export function ChatView(): React.JSX.Element {
   // 换了会话（例如扩展的「新会话接续」跳过来）：面板不跟过去
   useEffect(() => setExtOpen(false), [machineId, sessionId]);
   const composerExts = useComposerExtensions(machineId);
+  // 文件查看（agent ≥ 0.20.0，按 machine.info.files 判断）：工具卡与消息里的路径可点，
+  // 头部菜单「浏览文件」；面板状态在 URL 里（返回键逐级退回）
+  const filesSupported = machine?.info?.files != null;
+  const filePanel = useFilePanelRoute();
+  const openFilePanel = filePanel.open;
+  const fileLinks = useMemo<FileLinks | null>(
+    () =>
+      filesSupported
+        ? {
+            open: (path) => openFilePanel({ kind: 'file', path }),
+            browse: (dir) => openFilePanel(dir === undefined ? { kind: 'dir' } : { kind: 'dir', path: dir }),
+          }
+        : null,
+    [filesSupported, openFilePanel],
+  );
   const extRecords = useExtRecords(machineId, sessionId);
   const [renameBusy, setRenameBusy] = useState(false);
   const [now, setNow] = useState(() => Date.now());
@@ -629,7 +647,7 @@ export function ChatView(): React.JSX.Element {
         : { kind: 'none' };
 
   return (
-    <>
+    <FileLinksContext.Provider value={fileLinks}>
       <AppHead
         back={backTo}
         title={meta?.title !== undefined && meta.title !== '' ? meta.title : sessionId.slice(0, 8)}
@@ -674,6 +692,7 @@ export function ChatView(): React.JSX.Element {
               meta={meta}
               actions={sessionActions}
               onRequestRename={() => setRenameOpen(true)}
+              {...(fileLinks === null ? {} : { onBrowseFiles: () => fileLinks.browse() })}
             />
           </div>
         }
@@ -781,6 +800,16 @@ export function ChatView(): React.JSX.Element {
         </div>
       )}
 
+      {filesSupported && (
+        <FilePanel
+          machineId={machineId}
+          sessionId={sessionId}
+          view={filePanel.view}
+          onNavigate={filePanel.open}
+          onClose={filePanel.close}
+        />
+      )}
+
       <ExtPanelSheet
         open={extOpen}
         onOpenChange={setExtOpen}
@@ -836,7 +865,7 @@ export function ChatView(): React.JSX.Element {
           }}
         />
       )}
-    </>
+    </FileLinksContext.Provider>
   );
 }
 

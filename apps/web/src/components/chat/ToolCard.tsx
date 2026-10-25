@@ -18,6 +18,8 @@
  *   （版本不够时调用方不给这个回调）；加载中 / 失败 / 空结果都有一行提示。
  */
 import { useState } from 'react';
+import { FileSearchIcon } from 'lucide-react';
+import { useFileLinks } from '@/components/files/file-links.ts';
 import type { ToolEntry } from '@/lib/reducer.ts';
 import { formatClockSeconds, formatDuration, formatSeconds } from '@/lib/format.ts';
 import { childTotal, currentChild, isSubagentTool } from '@/lib/tool-tree.ts';
@@ -115,6 +117,8 @@ export function ToolCard({
 }): React.JSX.Element {
   const [open, setOpen] = useState(false);
   const [load, setLoad] = useState<LoadState>('idle');
+  const fileLinks = useFileLinks();
+  const filePath = fileLinks === null ? undefined : entry.filePath;
   const status = entry.status;
   const hasPreview = entry.outputPreview !== undefined && entry.outputPreview !== '';
   const sub = isSubagentTool(entry.toolName);
@@ -153,42 +157,58 @@ export function ToolCard({
         depth === 0 ? 'border-border bg-surface' : 'border-border bg-surface-2',
       )}
     >
-      <button
-        type="button"
-        disabled={!expandable}
-        aria-expanded={expandable ? open : undefined}
-        className={cn(
-          'flex w-full items-center gap-2 px-3 py-2 text-left',
-          expandable ? 'cursor-pointer' : 'cursor-default',
-        )}
-        onClick={toggle}
-      >
-        <span aria-hidden className="w-[18px] shrink-0 text-center">
-          {toolIcon(entry.toolName)}
-        </span>
-        <span className="shrink-0 font-semibold">{entry.toolName}</span>
-        <span className="text-text-2 min-w-0 flex-1 truncate font-mono text-[12px]">
-          {entry.argSummary}
-        </span>
-        {status === undefined ? (
-          <span title={toolTimeTitle(entry)} className="text-brand tabular shrink-0 font-mono text-[12px]">
-            <span aria-hidden className="mr-1 inline-block motion-safe:animate-spin">
-              ◠
+      <div className="flex items-center">
+        <button
+          type="button"
+          data-testid="tool-header"
+          disabled={!expandable}
+          aria-expanded={expandable ? open : undefined}
+          className={cn(
+            'flex min-w-0 flex-1 items-center gap-2 py-2 pl-3 text-left',
+            filePath === undefined ? 'pr-3' : 'pr-1',
+            expandable ? 'cursor-pointer' : 'cursor-default',
+          )}
+          onClick={toggle}
+        >
+          <span aria-hidden className="w-[18px] shrink-0 text-center">
+            {toolIcon(entry.toolName)}
+          </span>
+          <span className="shrink-0 font-semibold">{entry.toolName}</span>
+          <span className="text-text-2 min-w-0 flex-1 truncate font-mono text-[12px]">
+            {entry.argSummary}
+          </span>
+          {status === undefined ? (
+            <span title={toolTimeTitle(entry)} className="text-brand tabular shrink-0 font-mono text-[12px]">
+              <span aria-hidden className="mr-1 inline-block motion-safe:animate-spin">
+                ◠
+              </span>
+              {/* 已耗时取自心跳里的 currentTool.elapsedMs（agent 自己算的）+ 本地插值：
+                  entry.ts 是 agent 时钟，直接拿本地 now 去减会被两端时钟差打歪 */}
+              {runningElapsedMs === null ? '运行中' : formatSeconds(runningElapsedMs)}
             </span>
-            {/* 已耗时取自心跳里的 currentTool.elapsedMs（agent 自己算的）+ 本地插值：
-                entry.ts 是 agent 时钟，直接拿本地 now 去减会被两端时钟差打歪 */}
-            {runningElapsedMs === null ? '运行中' : formatSeconds(runningElapsedMs)}
-          </span>
-        ) : (
-          <span
-            data-testid="tool-result"
-            title={toolTimeTitle(entry)}
-            className={cn('tabular shrink-0 font-mono text-[12px]', STATUS_CLASS[status])}
+          ) : (
+            <span
+              data-testid="tool-result"
+              title={toolTimeTitle(entry)}
+              className={cn('tabular shrink-0 font-mono text-[12px]', STATUS_CLASS[status])}
+            >
+              {resultText(entry, status)}
+            </span>
+          )}
+        </button>
+        {filePath !== undefined && (
+          <button
+            type="button"
+            data-testid="tool-open-file"
+            title={`预览 ${filePath}`}
+            aria-label={`预览 ${filePath}`}
+            onClick={() => fileLinks?.open(filePath)}
+            className="text-text-3 hover:text-text shrink-0 self-stretch px-2.5"
           >
-            {resultText(entry, status)}
-          </span>
+            <FileSearchIcon className="size-3.5" />
+          </button>
         )}
-      </button>
+      </div>
       {progress !== null && !open && (
         <div
           data-testid="tool-subagent-progress"

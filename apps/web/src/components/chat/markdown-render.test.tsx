@@ -15,6 +15,7 @@
 import { describe, expect, test } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { Markdown } from './Markdown.tsx';
+import { FileLinksContext, type FileLinks } from '@/components/files/file-links.ts';
 
 const EVIL = 'evil.example';
 
@@ -106,5 +107,50 @@ describe('Markdown restricted（扩展详情）：更严的一档', () => {
     expect(renderRestricted('[a](https://example.com/x)')).toContain('data-streamdown="link"');
     expect(renderRestricted('[a](http://example.com/plain)')).not.toContain('example.com/plain');
     expect(renderRestricted('[a](/relative/path)')).not.toContain('/relative/path');
+  });
+});
+
+describe('Markdown 文件链接（FileLinksContext）：路径可点，外连拦截不变', () => {
+  const links: FileLinks = { open: () => {}, browse: () => {} };
+  const renderLinked = (text: string, fileBase?: string): string =>
+    renderToStaticMarkup(
+      <FileLinksContext.Provider value={links}>
+        <Markdown text={text} streaming={false} {...(fileBase === undefined ? {} : { fileBase })} />
+      </FileLinksContext.Provider>,
+    );
+
+  test.each(PAYLOADS)('聊天：%s', (_name, text) => {
+    expect(renderLinked(text)).not.toContain(EVIL);
+  });
+
+  test.each(PAYLOADS)('文件预览：%s', (_name, text) => {
+    expect(renderLinked(text, '/w/repo/docs/a.md')).not.toContain(EVIL);
+  });
+
+  test('行内代码里的路径变成按钮；不像路径的照旧', () => {
+    const html = renderLinked('看 `docs/plan.md:12` 和 `src/` 以及 `0.20.0`、`npm i`');
+    expect(html).toContain('data-path="docs/plan.md"');
+    expect(html).toContain('data-path="src/"');
+    expect(html.match(/data-testid="file-link"/g)).toHaveLength(2);
+    expect(html).toContain('<code data-streamdown="inline-code"');
+  });
+
+  test('相对链接：聊天里相对 cwd，文件里相对该文件目录；http 链接照常新标签打开', () => {
+    expect(renderLinked('[方案](docs/plan.md)')).toContain('data-path="docs/plan.md"');
+    expect(renderLinked('[设计](../design/x.md#top)', '/w/repo/docs/a.md')).toContain('data-path="/w/repo/design/x.md"');
+    const http = renderLinked('[站点](https://example.com/x)');
+    expect(http).toContain('href="https://example.com/x"');
+    expect(http).toContain('target="_blank"');
+    expect(http).not.toContain('file-link');
+  });
+
+  test('文件预览里的相对图片不加载，给打开按钮', () => {
+    const html = renderLinked('![架构图](./img/arch.png)', '/w/repo/docs/a.md');
+    expect(html).not.toContain('<img');
+    expect(html).toContain('data-path="/w/repo/docs/img/arch.png"');
+  });
+
+  test('没有 provider：不出现文件链接', () => {
+    expect(render('`docs/plan.md` [x](docs/a.md)')).not.toContain('file-link');
   });
 });

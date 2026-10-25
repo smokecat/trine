@@ -1,5 +1,5 @@
 /**
- * 聊天页头部的「⋯」会话菜单（session-list-v2 §4.4 末句）：复制工作目录、重命名、
+ * 聊天页头部的「⋯」会话菜单（session-list-v2 §4.4 末句）：浏览文件、复制工作目录、重命名、
  * 归档 / 取消归档。
  *
  * 动作与列表行菜单同源（`useSessionActions(machineId)`），缺哪个回调隐藏哪项，
@@ -27,6 +27,7 @@ export function SessionHeadMenu({
   meta,
   actions,
   onRequestRename,
+  onBrowseFiles,
 }: {
   machineId: string;
   sessionId: string;
@@ -34,13 +35,16 @@ export function SessionHeadMenu({
   meta: SessionMeta | undefined;
   actions: SessionRowActions;
   onRequestRename: () => void;
+  /** 打开文件浏览器；agent 不支持文件查看时不给 */
+  onBrowseFiles?: (() => void) | undefined;
 }): React.JSX.Element | null {
   const canRename = actions.onRename !== undefined;
   const canArchive = actions.onArchive !== undefined && meta !== undefined;
   const cwd = meta?.cwd ?? '';
   const canCopyCwd = actions.onCopyCwd !== undefined && cwd !== '';
   const canLink = actions.onLink !== undefined && (actions.supportsLinks === undefined || actions.supportsLinks(machineId));
-  if (!canRename && !canArchive && !canCopyCwd && !canLink) return null;
+  const canBrowse = onBrowseFiles !== undefined;
+  if (!canRename && !canArchive && !canCopyCwd && !canLink && !canBrowse) return null;
   const archived = meta?.archived === true;
   const busy = meta !== undefined && archiveLikelyBusy(meta);
   const swallow = (r: void | Promise<unknown>): void => {
@@ -61,6 +65,12 @@ export function SessionHeadMenu({
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-auto min-w-36" data-testid="session-head-menu-content">
+        {canBrowse && (
+          <DropdownMenuItem data-testid="head-menu-browse-files" onSelect={onBrowseFiles}>
+            浏览文件
+          </DropdownMenuItem>
+        )}
+        {canBrowse && !canCopyCwd && (canRename || canArchive || canLink) && <DropdownMenuSeparator />}
         {canCopyCwd && (
           <DropdownMenuItem data-testid="head-menu-copy-cwd" title={cwd} onSelect={() => swallow(actions.onCopyCwd?.(cwd))}>
             复制工作目录
