@@ -242,6 +242,7 @@ export const Markdown = memo(function Markdown({
   className,
   restricted = false,
   fileBase,
+  fullHeightCode = false,
 }: {
   text: string;
   /** 还在流式接收：开 streaming 模式（增量解析 + 未闭合语法修补） */
@@ -251,6 +252,8 @@ export const Markdown = memo(function Markdown({
   restricted?: boolean;
   /** 预览中的 markdown 文件路径：相对链接与图片相对它解析（见 FileBaseContext） */
   fileBase?: string;
+  /** 代码块不限高（文件预览整页看源码）；默认 400px 内滚动 */
+  fullHeightCode?: boolean;
 }): React.JSX.Element {
   const links = useFileLinks();
   const mode = restricted || links === null ? 'plain' : fileBase === undefined ? 'chat' : 'doc';
@@ -266,6 +269,7 @@ export const Markdown = memo(function Markdown({
       components={chosen}
       {...(mode === 'chat' ? { rehypePlugins: fileRehypePlugins } : mode === 'doc' ? { rehypePlugins: fileDocRehypePlugins } : {})}
       shikiTheme={['github-light', 'github-dark']}
+      {...(fullHeightCode ? { codeBlockMaxHeight: 0 } : {})}
       // 代码块只留复制（下载会触发浏览器下载，远程场景意义不大）
       controls={{ code: { copy: true, download: false }, table: { copy: true, download: false } }}
       lineNumbers={false}

@@ -91,8 +91,17 @@ function TextBody({ opened, mode, wrap }: { opened: OpenedFile; mode: 'rendered'
   }
   if (fenced !== undefined && !wrap) {
     return (
-      <div data-testid="file-code" className="[&_pre]:!my-0 [&_pre]:!rounded-none [&_pre]:!border-0 px-0 py-0">
-        <Markdown text={fenced} streaming={false} />
+      // 整页源码：去掉聊天代码块的标题栏 / 复制按钮 / 外框与限高
+      <div
+        data-testid="file-code"
+        className={cn(
+          '[&_[data-streamdown=code-block-header]]:hidden [&_div:has(>[data-streamdown=code-block-actions])]:hidden',
+          '[&_[data-streamdown=code-block]]:my-0 [&_[data-streamdown=code-block]]:rounded-none [&_[data-streamdown=code-block]]:border-0 [&_[data-streamdown=code-block]]:p-0',
+          '[&_[data-streamdown=code-block-body]]:rounded-none [&_[data-streamdown=code-block-body]]:border-0 [&_[data-streamdown=code-block-body]]:bg-transparent [&_[data-streamdown=code-block-body]]:p-0',
+          '[&_pre]:!m-0 [&_pre]:!rounded-none [&_pre]:!border-0 [&_pre]:px-4 [&_pre]:py-3',
+        )}
+      >
+        <Markdown text={fenced} streaming={false} fullHeightCode />
       </div>
     );
   }

@@ -35,7 +35,6 @@ type Load<T> = { state: 'loading' } | { state: 'ok'; value: T } | { state: 'erro
 export function fileErrorText(err: unknown): string {
   if (err instanceof FsRequestError) {
     if (err.code === 'unavailable') return `${err.message}（agent 设置了 TRINE_FILES=off，或还没连上 relay）`;
-    if (err.code === 'denied') return `${err.message}。会话目录之外的路径需要在 agent 的 TRINE_FILES_ALLOW 里加白名单`;
     return err.message;
   }
   if (err instanceof RequestTimeoutError) return 'agent 没有应答（可能离线或版本过旧）';
@@ -84,7 +83,13 @@ export function FilePanel({
         side="right"
         showCloseButton={false}
         data-testid="file-panel"
-        className={cn('gap-0', desktop ? 'w-[min(56rem,92vw)] sm:max-w-none' : 'w-full max-w-none border-l-0 sm:max-w-none')}
+        // Sheet 自带 data-[side=right]:w-3/4 / sm:max-w-sm，要用同样的 data 变体才压得住
+        className={cn(
+          'gap-0',
+          desktop
+            ? 'data-[side=right]:w-[min(56rem,92vw)] data-[side=right]:sm:max-w-none'
+            : 'data-[side=right]:w-full data-[side=right]:max-w-none data-[side=right]:border-l-0 data-[side=right]:sm:max-w-none',
+        )}
       >
         {view?.kind === 'file' && (
           <FilePane key={view.path} machineId={machineId} sessionId={sessionId} path={view.path} onNavigate={onNavigate} onClose={onClose} />
