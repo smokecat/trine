@@ -27,6 +27,28 @@ import { Breadcrumbs, FileList } from './FileBrowser.tsx';
 import { FileBody } from './FileViewer.tsx';
 import { displayPath, parentDir } from './file-model.ts';
 
+/**
+ * 点开头的条目默认显示：`.local`、`.claude` 这类目录正是在 trine 里常看的；
+ * 用户关掉后记在本设备（localStorage），下次打开沿用。
+ */
+const SHOW_HIDDEN_KEY = 'trine.files.showHidden';
+
+function readShowHidden(): boolean {
+  try {
+    return globalThis.localStorage?.getItem(SHOW_HIDDEN_KEY) !== '0';
+  } catch {
+    return true;
+  }
+}
+
+function writeShowHidden(value: boolean): void {
+  try {
+    globalThis.localStorage?.setItem(SHOW_HIDDEN_KEY, value ? '1' : '0');
+  } catch {
+    // 隐私模式等写不了：只影响下次的默认值
+  }
+}
+
 export type FileView = { kind: 'dir'; path?: string } | { kind: 'file'; path: string };
 
 type Load<T> = { state: 'loading' } | { state: 'ok'; value: T } | { state: 'error'; message: string };
@@ -249,7 +271,12 @@ function DirPane({
   onClose: () => void;
 }): React.JSX.Element {
   const client = useClient();
-  const [showHidden, setShowHidden] = useState(false);
+  const [showHidden, setShowHidden] = useState(readShowHidden);
+  const toggleHidden = (): void =>
+    setShowHidden((v) => {
+      writeShowHidden(!v);
+      return !v;
+    });
   const [load, reload] = useLoad<FsListing>(
     client === null ? null : () => client.listFiles(machineId, sessionId, path),
     [client, machineId, sessionId, path],
@@ -276,15 +303,16 @@ function DirPane({
         onClose={onClose}
       >
         <Button
-          size="icon-sm"
+          size="sm"
           variant="ghost"
           data-testid="file-toggle-hidden"
           aria-pressed={showHidden}
-          title={showHidden ? '隐藏点开头的文件' : '显示点开头的文件'}
-          onClick={() => setShowHidden((v) => !v)}
-          className={cn(showHidden && 'text-brand')}
+          title={showHidden ? '不显示点开头的文件和目录（.git、.env 等）' : '显示点开头的文件和目录'}
+          onClick={toggleHidden}
+          className="text-text-2 h-7 gap-1 px-2 text-[12px]"
         >
           {showHidden ? <EyeIcon /> : <EyeOffIcon />}
+          {showHidden ? '隐藏 .文件' : '显示 .文件'}
         </Button>
         <Button size="icon-sm" variant="ghost" title="刷新" aria-label="刷新" onClick={reload} disabled={load.state === 'loading'}>
           <RefreshCwIcon className={cn(load.state === 'loading' && 'motion-safe:animate-spin')} />

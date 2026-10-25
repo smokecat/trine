@@ -1,6 +1,6 @@
 /**
  * 文件浏览器正文：面包屑 + 目录列表（目录在前）。被 agent 拒绝的条目（密钥类、指向范围外的
- * 符号链接）带锁、不能点。默认隐藏点开头的条目。
+ * 符号链接）带锁、不能点。点开头的条目是否显示由面板的开关决定（默认显示）。
  */
 import { FileIcon, FileTextIcon, FolderIcon, ImageIcon, LockIcon } from 'lucide-react';
 import type { FsEntry } from '@trine/core';
