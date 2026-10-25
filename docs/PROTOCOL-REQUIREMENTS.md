@@ -134,14 +134,16 @@
 - `fs.list.request { reqId, path? }` → `fs.list.response { reqId, ok, path?, root?, entries?, truncated?, error? }`
   - `path` 省略 = 会话 cwd；可以是绝对路径、`~` 开头或相对 cwd 的路径。`path` 是解析后的绝对路径，`root` 是命中的根目录
   - `entries: [{ name, type: file|dir|other, size?, mtime?, denied? }]`，目录在前、按名字排，至多 2000 条（超出置 `truncated`）。
-    符号链接按目标报类型；`denied` = 列出但不能打开（密钥类文件、指向范围外的链接、断链）
+    符号链接按目标报类型；`denied` = 列出但不能打开：密钥类条目不带 size / mtime，指向范围外的链接与断链只给名字（type `other`）
 - `fs.read.request { reqId, path }` → `fs.read.response { reqId, ok, file?, error? }`
   - `file: { path, root, name, size, mtime, mime, kind: markdown|text|pdf|image|binary, blobId, key }`：内容同附件（§1.9），
     agent 用一次性 key 加密后上传 relay blob，引用随应答返回；单文件上限 20MiB（`machine.info.files.maxBytes`）
   - kind 先看扩展名，文本类扩展名与未知扩展名再嗅探前 8KB（无 NUL 且是合法 UTF-8 → text，否则 binary）
 - 错误码：`not_found | denied | too_large | is_dir | not_dir | io | unavailable`
 - 范围：会话 cwd 及其子目录，加上 agent 环境变量 `TRINE_FILES_ALLOW`（`:` 分隔的绝对路径或 `~` 开头的路径）。请求路径先按字面判断范围
-  （范围外直接 `denied`，不碰文件系统，避免泄露范围外文件是否存在），再按 realpath 判断一次（挡符号链接逃逸）。
+  （范围外直接 `denied`，不碰文件系统），再按 realpath 判断一次（挡符号链接逃逸）；不存在的路径要最深的已存在祖先在范围内才回
+  `not_found`，否则也是 `denied`（不能经指向范围外的链接探测文件是否存在）。密钥类判断对字面路径与真实路径都做，目录名不分大小写。
+  读文件用 `O_NONBLOCK | O_NOFOLLOW` 打开（命名管道不会挂住），打开后再解析一次路径、比对 inode，检查之后被换掉的回 `denied`。
   密钥类文件始终拒绝，不能配置放开：`.env` / `.env.*`（`.env.example` 等模板除外）、`*.pem` / `*.key` / `*.p12` / `*.pfx` 等、
   `id_rsa` 等 SSH 私钥、`.netrc` / `.npmrc` / `.pypirc` / `.pgpass` / `.git-credentials`、`credentials*.json`，
   路径中任一段是 `.ssh` / `.gnupg` / `.aws` / `.git` / `.docker` / `.kube` 的，以及 agent 自己的 home
