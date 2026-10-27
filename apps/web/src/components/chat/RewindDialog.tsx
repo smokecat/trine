@@ -94,7 +94,7 @@ export function RewindDialog({
 
         <blockquote
           data-testid="rewind-dialog-text"
-          className="bg-user-bubble line-clamp-3 rounded-[10px] px-3 py-2 text-[13px] whitespace-pre-wrap"
+          className="bg-user-bubble line-clamp-3 rounded-[10px] px-3 py-2 text-[13px] wrap-anywhere whitespace-pre-wrap"
         >
           {text}
         </blockquote>

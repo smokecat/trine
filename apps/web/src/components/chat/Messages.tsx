@@ -70,7 +70,7 @@ export function UserMessage({
       )}
       {entry.text !== '' && (
         <div
-          className="bg-user-bubble rounded-[14px] rounded-br-[4px] px-3 py-2 text-[14px] whitespace-pre-wrap"
+          className="bg-user-bubble rounded-[14px] rounded-br-[4px] px-3 py-2 text-[14px] wrap-anywhere whitespace-pre-wrap"
           onClick={onRewind === undefined ? undefined : () => setRevealed((v) => !v)}
         >
           {entry.text}
