@@ -147,7 +147,7 @@ function PanelHeader({
   onClose: () => void;
 }): React.JSX.Element {
   return (
-    <div className="border-border flex shrink-0 items-start gap-2 border-b px-3 pt-[max(0.75rem,env(safe-area-inset-top))] pb-2">
+    <div className="border-border flex shrink-0 flex-wrap items-start gap-x-2 gap-y-1 border-b px-3 pt-[max(0.75rem,env(safe-area-inset-top))] pb-2">
       {onBack !== undefined && (
         <Button size="icon-sm" variant="ghost" aria-label={backTitle} title={backTitle} onClick={onBack} data-testid="file-panel-up">
           <ArrowLeftIcon />
@@ -155,9 +155,6 @@ function PanelHeader({
       )}
       <div className="min-w-0 flex-1 pt-0.5">
         <SheetTitle className="truncate text-[14px] font-semibold">{title}</SheetTitle>
-        <SheetDescription asChild>
-          <div className="text-text-3 mt-0.5 text-[12px]">{description}</div>
-        </SheetDescription>
       </div>
       <div className="flex shrink-0 items-center gap-0.5">
         {children}
@@ -165,6 +162,9 @@ function PanelHeader({
           <XIcon />
         </Button>
       </div>
+      <SheetDescription asChild>
+        <div className="text-text-3 min-w-0 basis-full text-[12px]">{description}</div>
+      </SheetDescription>
     </div>
   );
 }
@@ -232,6 +232,7 @@ function FilePane({
             size="icon-sm"
             variant="ghost"
             data-testid="file-toggle-source"
+            aria-label={mode === 'rendered' ? '查看源码' : '查看渲染效果'}
             aria-pressed={mode === 'source'}
             title={mode === 'rendered' ? '查看源码' : '查看渲染效果'}
             onClick={() => setMode((m) => (m === 'rendered' ? 'source' : 'rendered'))}
@@ -335,6 +336,7 @@ function DirPane({
           size="sm"
           variant="ghost"
           data-testid="file-toggle-hidden"
+          aria-label={showHidden ? '隐藏点文件' : '显示点文件'}
           aria-pressed={showHidden}
           title={showHidden ? '不显示点开头的文件和目录（.git、.env 等）' : '显示点开头的文件和目录'}
           onClick={toggleHidden}

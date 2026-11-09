@@ -5,7 +5,7 @@
  * See docs/DESIGN.md for layout and component conventions.
  */
 import { useMemo } from 'react';
-import { NavLink, useNavigate } from 'react-router';
+import { NavLink } from 'react-router';
 import { MonitorIcon, PlusIcon, RefreshCwIcon, SettingsIcon } from 'lucide-react';
 import { Button } from '@/components/ui/button.tsx';
 import { ScrollArea } from '@/components/ui/scroll-area.tsx';
@@ -18,7 +18,7 @@ import { useEngineFilter, useListGroupBy, useListQuery, useListShowTemp } from '
 import { useSessionActions } from '@/components/list/use-session-actions.ts';
 import { useListFilters } from '@/app/Layout.tsx';
 import { useNow, useSessionRefresh } from '@/components/list/use-session-refresh.ts';
-import { NewSessionSheetRoute } from '@/components/sheets/new-session-route.tsx';
+import { NewSessionSheetRoute, useNewSessionSheet } from '@/components/sheets/new-session-route.tsx';
 import { PlanUsageStrip } from '@/components/usage/PlanUsage.tsx';
 import { useTrine } from '@/app/runtime.ts';
 import { cn } from '@/lib/utils.ts';
@@ -156,7 +156,7 @@ export function Sidebar({
   filter: string | null;
   onFilterChange: (machineId: string | null) => void;
 }): React.JSX.Element {
-  const navigate = useNavigate();
+  const [, setNewOpen] = useNewSessionSheet();
   // PC 上列表页从不挂载（`/` 渲染 EmptyMain），刷新入口只能在侧栏（评审 M1）
   const { refresh, refreshing, canRefresh } = useSessionRefresh();
   return (
@@ -166,7 +166,7 @@ export function Sidebar({
     >
       <Brand />
       <div className="px-3 pb-4">
-        <Button className="w-full justify-start" data-testid="sidebar-new" onClick={() => navigate('/?new=1')}>
+        <Button className="w-full justify-start" data-testid="sidebar-new" onClick={() => setNewOpen(true)}>
           <PlusIcon />新建会话
         </Button>
       </div>

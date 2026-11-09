@@ -35,7 +35,7 @@ export function Breadcrumbs({
 }): React.JSX.Element {
   const crumbs = pathCrumbs(path, root);
   return (
-    <nav data-testid="file-breadcrumbs" className={cn('flex min-w-0 flex-wrap items-center gap-0.5 font-mono text-[12px]', className)}>
+    <nav aria-label="文件路径" data-testid="file-breadcrumbs" className={cn('flex min-w-0 flex-wrap items-center gap-0.5 font-mono text-[12px]', className)}>
       {crumbs.map((c, i) => {
         const last = i === crumbs.length - 1;
         return (
@@ -47,9 +47,10 @@ export function Breadcrumbs({
               data-in-scope={c.inScope || undefined}
               onClick={() => onBrowse(c.path)}
               disabled={last}
+              aria-current={last ? 'location' : undefined}
               title={c.inScope ? c.path : `${c.path}（会话目录与信任目录之外）`}
               className={cn(
-                'max-w-[14rem] truncate rounded px-0.5',
+                'max-w-[min(14rem,100%)] truncate rounded px-1 py-1 pointer-coarse:min-h-11',
                 last ? 'text-text' : c.inScope ? 'text-text-2 hover:text-text hover:underline' : 'text-text-3 hover:text-text-2 hover:underline',
                 c.path === root && !last && 'font-medium',
               )}
@@ -101,7 +102,7 @@ export function FileList({
                 title={e.denied === true ? '不提供查看（密钥类文件或范围外的链接）' : path}
                 onClick={() => (e.type === 'dir' ? onBrowse(path) : onOpen(path))}
                 className={cn(
-                  'flex w-full items-center gap-2.5 px-4 py-2 text-left text-[13px]',
+                  'flex min-h-11 w-full items-center gap-2.5 px-4 py-2 text-left text-[13px]',
                   clickable ? 'hover:bg-surface-2 cursor-pointer' : 'text-text-3 cursor-default',
                 )}
               >

@@ -99,7 +99,7 @@ export function TrustDirDialog({
   };
   return (
     <Dialog open={open} onOpenChange={change}>
-      <DialogContent data-testid="trust-dir-dialog" className="max-w-[min(30rem,calc(100vw-2rem))]">
+      <DialogContent data-testid="trust-dir-dialog" className="max-h-[calc(100dvh-2rem)] max-w-[min(30rem,calc(100vw-2rem))] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>信任这个目录？</DialogTitle>
           <DialogDescription asChild>

@@ -252,7 +252,7 @@ export function NewSessionSheet({
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent side="bottom" className="max-h-[88dvh] overflow-y-auto" data-testid="new-session-sheet">
+      <SheetContent side="bottom" className="max-h-[88dvh] overflow-y-auto min-[900px]:mx-auto min-[900px]:max-w-2xl" data-testid="new-session-sheet">
         <SheetHeader>
           <SheetTitle>新建会话</SheetTitle>
           <SheetDescription>全部字段有默认值——两击可建。</SheetDescription>

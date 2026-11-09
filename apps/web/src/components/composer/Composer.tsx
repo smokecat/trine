@@ -368,6 +368,7 @@ export function Composer({
     <textarea
       ref={textareaRef}
       data-testid="composer"
+      aria-label="消息"
       rows={1}
       // 软键盘右下角显示「换行」而不是「发送 / 前往」
       enterKeyHint="enter"
@@ -377,7 +378,7 @@ export function Composer({
         desktop
           ? 'block w-full bg-transparent px-3.5 pt-3 pb-1'
           : cn(
-              'border-border-strong bg-surface min-h-[38px] flex-1 rounded-xl border px-3 py-2',
+              'border-border-strong bg-surface min-h-[38px] min-w-0 flex-1 rounded-xl border px-3 py-2',
               'focus-visible:border-brand-border',
             ),
       )}

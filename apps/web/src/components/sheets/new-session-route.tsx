@@ -2,9 +2,9 @@
  * 新建会话 sheet 的「URL 开关」：`?new=1` 打开。
  *
  * 为什么挂 URL 而不是组件 state：这个 sheet 有两个入口，而它们在两套布局里
- * 分属不同的组件树——移动端是列表页的 FAB，PC 是常驻侧栏底部的「+ 新建」
+ * 分属不同的组件树——移动端是列表页的 FAB，PC 是常驻侧栏顶部的「+ 新建」
  * （侧栏在 `/machines`、`/settings` 等路由下也在，而列表页此时根本没挂载）。
- * 用 search param 当开关，两个入口都只是 `navigate('/?new=1')` 或 setParams，
+ * 用 search param 当开关，侧栏与列表入口都通过 setParams 保留当前路由，
  * 不需要跨树传 state，返回键也能关掉 sheet。
  *
  * 同一时刻只会有一处挂载 `<NewSessionSheetRoute>`：移动端在列表页，PC 在侧栏
