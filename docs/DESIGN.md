@@ -71,6 +71,14 @@ Trine 是供长时间使用的远程 AI 工作台。设计以任务连续性、�
 
 本轮在隔离 relay 与 echo agent 上验证配对、新建、发送、授权期间排队、批准后继续、返回后的草稿，以及文件预览、上级目录、范围外信任和位置菜单；不使用真实模型和账户。
 
+## 移动可见视口与键盘
+
+移动外壳使用 VisualViewport 的高度及顶部偏移，避免 Safari 在键盘弹出后仍按完整布局视口排列内容。底部 sheet、左右文件面板和居中 dialog 共享可见视口变量，限制在键盘上方并允许内容内部滚动。浏览器不支持 VisualViewport 时回退到 CSS 动态视口；双指缩放期间不强制按缩小后的可见区域重排，以保留浏览器原生缩放。
+
+2026-11 在 iPhone 17 / iOS 27.2 模拟器 Safari 中使用实际外壳、Composer 和 Sheet 合成页面，复现并修正键盘遮挡输入区和页头被推离的问题；检查键盘收起后恢复。回归测试覆盖键盘 resize、视口平移、缩放恢复与卸载解绑。此项不代表物理设备、所有输入法及主屏 PWA 已完成验收。
+
+实现依据：[MDN VisualViewport](https://developer.mozilla.org/en-US/docs/Web/API/VisualViewport)。
+
 ## 参考依据
 
 采用原则并按 Trine 的任务结构调整，并未复制组件源码：

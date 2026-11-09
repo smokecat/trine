@@ -281,3 +281,28 @@
   }
   [data-slot='button'][data-size^='icon'] { min-width: 44px; }
 }
+
+/* Safari keeps the layout viewport tall while its keyboard reduces the visual viewport. */
+.mobile-shell {
+  position: fixed;
+  inset-inline: 0;
+  top: var(--app-viewport-top, 0px);
+  height: var(--app-viewport-height, 100dvh);
+}
+@media (pointer: coarse) {
+  [data-slot='sheet-content'][data-side='bottom'] {
+    bottom: var(--app-viewport-bottom, 0px);
+    max-height: calc(var(--app-viewport-height, 100dvh) * 0.88);
+  }
+  [data-slot='sheet-content'][data-side='right'],
+  [data-slot='sheet-content'][data-side='left'] {
+    top: var(--app-viewport-top, 0px);
+    bottom: auto;
+    height: var(--app-viewport-height, 100dvh);
+  }
+  [data-slot='dialog-content'] {
+    top: calc(var(--app-viewport-top, 0px) + var(--app-viewport-height, 100dvh) / 2);
+    max-height: calc(var(--app-viewport-height, 100dvh) - 2rem);
+    overflow-y: auto;
+  }
+}

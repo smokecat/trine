@@ -1,15 +1,26 @@
-import { afterEach, expect, test } from 'bun:test';
+import { afterEach, beforeEach, expect, test } from 'bun:test';
 import type { Root } from 'react-dom/client';
 import '@/lib/dom-test-env.ts';
 const { act } = await import('react');
 const { createRoot } = await import('react-dom/client');
 const { MemoryRouter, useLocation } = await import('react-router');
 const { Sidebar } = await import('./Sidebar.tsx');
+const { store, runtimeState } = await import('@/app/runtime.ts');
+let savedState: ReturnType<typeof store.getState>;
+let savedRuntime: ReturnType<typeof runtimeState.getState>;
+beforeEach(() => {
+  savedState = store.getState();
+  savedRuntime = runtimeState.getState();
+  store.setState({ machines: {}, sessions: {}, capabilities: {} });
+  runtimeState.setState({ client: null });
+});
 let root: Root | undefined;
 let host: HTMLDivElement | undefined;
 afterEach(() => {
   act(() => root?.unmount());
   host?.remove();
+  store.setState(savedState, true);
+  runtimeState.setState(savedRuntime, true);
 });
 function Location() {
   const location = useLocation();

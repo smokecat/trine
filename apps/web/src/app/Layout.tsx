@@ -19,8 +19,9 @@
  * booting / error / follower 三态整页接管，不渲染外壳——这些状态下没有
  * client，侧栏的数据源也不存在。
  */
-import { createContext, useContext, useMemo, useState } from 'react';
+import { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import { Outlet, useLocation, useNavigate } from 'react-router';
+import { trackVisualViewport } from './viewport.ts';
 import { Toaster } from '@/components/ui/sonner.tsx';
 import { ExtDialogsHost } from '@/components/ext/ExtDialogs.tsx';
 import { TooltipProvider } from '@/components/ui/tooltip.tsx';
@@ -130,6 +131,7 @@ function EmptyMain(): React.JSX.Element {
 }
 
 export function Layout(): React.JSX.Element {
+  useEffect(() => trackVisualViewport(window, document.documentElement), []);
   // 会话列表的自动拉取挂在这一层，两套布局共享：PC 的 `/` 渲染的是
   // EmptyMain 不是 SessionListView，挂在视图里 PC 上就永远不会发（评审 M1）
   useSessionListAutoRefresh();
@@ -187,7 +189,7 @@ export function Layout(): React.JSX.Element {
               </div>
             </div>
           ) : (
-            <div className="mx-auto flex h-dvh max-w-[560px] flex-col overflow-hidden">{content}</div>
+            <div className="mobile-shell mx-auto flex h-dvh max-w-[560px] flex-col overflow-hidden">{content}</div>
           )}
         </ListFiltersContext>
       </MachineFilterContext>
