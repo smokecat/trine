@@ -1,20 +1,8 @@
 /**
- * PC（≥900px）常驻左侧栏，300px 固定宽——原型 `.desk-side`。
- *
- * 结构（自上而下，照原型）：
- *   brand「◈ trine」+ 连接状态 chip
- *   机器过滤 chip 行          ← components/list/MachineFilterChips
- *   搜索框 + 「筛选」弹出层    ← components/list/ListControls（SidebarListControls）
- *   会话列表                   ← components/list/SessionList（compact 变体）
- *   底部「+ 新建 / 机器 / 设置」
- *
- * ## 中间两块与列表页共用同一套组件（2b 已接上）
- *
- * 方案要求侧栏与列表页复用同一套组件，所以这里的两个 Slot 只是薄封装：
- * 从 store 取数据、传给 `components/list/**`，紧凑变体对应原型的
- * `.desk-side .sess{padding:9px 11px}`。过滤选中态由 Layout 持有
- * （`useMachineFilter()`），列表页选了机器侧栏跟着变。
- * 本文件的骨架、300px 宽度、底部入口保持 2a 定稿不动。
+ * Desktop workspace navigation (900px+).
+ * Brand / create / workspace filters / sessions / maintenance actions.
+ * Session data and filtering are shared with the mobile list view.
+ * See docs/DESIGN.md for layout and component conventions.
  */
 import { useMemo } from 'react';
 import { NavLink, useNavigate } from 'react-router';
@@ -60,7 +48,7 @@ export function useConnectionChip(): { tone: 'on' | 'off' | 'wait' | 'err'; labe
 export function Brand(): React.JSX.Element {
   const chip = useConnectionChip();
   return (
-    <div className="flex items-center gap-2 px-4 pt-3.5 pb-2.5 text-[15px] font-semibold">
+    <div className="flex items-center gap-2.5 px-4 pt-5 pb-4 text-[17px] font-semibold">
       <span className="text-brand font-mono" aria-hidden>
         ◈
       </span>
@@ -153,7 +141,7 @@ function SessionListSlot(): React.JSX.Element {
       />
       {/*
         新建会话 sheet 的挂载点（PC）。它是 portal，对侧栏布局零影响；挂在这里
-        是因为 PC 上唤起它的「+ 新建」在侧栏底部，而列表页此刻并没有挂载
+        是因为 PC 上唤起它的「+ 新建」在侧栏顶部，而列表页此刻并没有挂载
         （PC 的 `/` 主区是空态）。移动端反过来——不渲染侧栏，由列表页挂载。
       */}
       <NewSessionSheetRoute />
@@ -174,25 +162,23 @@ export function Sidebar({
   return (
     <aside
       data-testid="sidebar"
-      className="border-border bg-surface flex w-[300px] shrink-0 flex-col border-r"
+      className="border-border bg-background flex w-[300px] shrink-0 flex-col border-r min-[1100px]:w-[320px] min-[1100px]:border-r-0"
     >
       <Brand />
+      <div className="px-3 pb-4">
+        <Button className="w-full justify-start" data-testid="sidebar-new" onClick={() => navigate('/?new=1')}>
+          <PlusIcon />新建会话
+        </Button>
+      </div>
+      <div className="text-text-3 px-4 pb-2 text-[11px] font-medium tracking-wider">工作空间</div>
       <MachineFilterSlot selected={filter} onSelect={onFilterChange} />
       <PlanUsageSlot filter={filter} />
       <ListControlsSlot filter={filter} />
+      <div className="text-text-3 px-4 pt-2 pb-2 text-[11px] font-medium tracking-wider">会话</div>
       <ScrollArea className="min-h-0 flex-1">
         <SessionListSlot />
       </ScrollArea>
-      <div className="border-border flex items-center gap-1 border-t px-2.5 py-2">
-        <Button
-          size="sm"
-          className="flex-1"
-          data-testid="sidebar-new"
-          onClick={() => navigate('/?new=1')}
-        >
-          <PlusIcon />
-          新建
-        </Button>
+      <div className="border-border flex items-center gap-2 border-t px-3 py-3">
         <Button
           size="icon-sm"
           variant="ghost"

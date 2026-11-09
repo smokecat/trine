@@ -87,7 +87,7 @@ export function SessionRow({
       data-selected={selected || undefined}
       aria-selected={selected || undefined}
       className={cn(
-        'border-border bg-surface hover:border-border-strong relative rounded-[14px] border transition-colors',
+        'border-border bg-surface hover:border-border-strong relative rounded-xl border transition-colors',
         // 等待批准：amber 描边 + 软底（原型 .sess.attn）
         attn && 'border-amber-border bg-amber-soft',
         active && 'border-brand-border bg-brand-soft',

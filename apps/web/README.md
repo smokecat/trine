@@ -20,6 +20,8 @@ The dev/preview proxy forwards `/auth`, `/ws`, `/healthz`, `/devices` and `/blob
 5173; use the same origin in the browser and the agent's `--server` argument.
 Production output is `dist/`; configure `TRINE_WEB_DIST` on the relay to serve it.
 
+Design and interaction conventions: [product design system](../../docs/DESIGN.md).
+
 ## Structure
 
 - `app/`: routing, runtime, lifecycle and theme.

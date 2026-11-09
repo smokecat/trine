@@ -47,7 +47,7 @@ export function AppHead({
     <header
       data-testid="app-head"
       className={cn(
-        'border-border bg-background flex shrink-0 items-center gap-2.5 border-b px-3.5 pt-3 pb-2.5',
+        'border-border bg-surface flex shrink-0 items-center gap-2.5 border-b px-3.5 pt-3 pb-2.5 min-[900px]:px-6 min-[900px]:py-4',
         className,
       )}
     >
@@ -55,14 +55,14 @@ export function AppHead({
         <NavLink
           to={back}
           aria-label={backLabel}
-          className="text-text-2 hover:text-text -ml-1 shrink-0 rounded p-0.5 transition-colors"
+          className="text-text-2 hover:text-text -ml-1 shrink-0 flex size-11 items-center justify-center rounded-lg transition-colors"
         >
           <ChevronLeftIcon className="size-5" />
         </NavLink>
       )}
       <div className="min-w-0 flex-1">
         <div className="truncate text-[15px] font-semibold">{title}</div>
-        {meta !== undefined && <div className="text-text-3 truncate font-mono text-[11.5px]">{meta}</div>}
+        {meta !== undefined && <div className="text-text-2 truncate font-mono text-[11.5px]">{meta}</div>}
       </div>
       {right}
     </header>

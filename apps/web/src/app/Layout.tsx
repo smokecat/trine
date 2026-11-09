@@ -7,7 +7,7 @@
  *   自带的 `AppHead back=…`。**底部没有 tab bar**（原型如此：会话是主任务，
  *   机器/设置是低频入口，塞进列表页头部与侧栏底部即可）。
  * - **PC（≥900px）**：左 300px 常驻侧栏 + 右主区。侧栏里的机器过滤与会话
- *   列表将来复用列表页的同一套组件（2b shell 组），此刻是占位实现。
+ *   列表复用列表页的同一套组件。1100px 起增加面板外边距与 320px 侧栏。
  *
  * PC 上路由到 `/` 时主区显示什么？照原型：主区是**聊天**，侧栏才是列表。
  * 但还没选中会话时聊天区没内容，所以 `/` 在 PC 上主区给一个空态提示，
@@ -20,7 +20,7 @@
  * client，侧栏的数据源也不存在。
  */
 import { createContext, useContext, useMemo, useState } from 'react';
-import { Outlet, useLocation } from 'react-router';
+import { Outlet, useLocation, useNavigate } from 'react-router';
 import { Toaster } from '@/components/ui/sonner.tsx';
 import { ExtDialogsHost } from '@/components/ext/ExtDialogs.tsx';
 import { TooltipProvider } from '@/components/ui/tooltip.tsx';
@@ -116,12 +116,15 @@ export function useListFilters(): ListFilters {
 
 /** PC 上 `/` 的主区空态——侧栏已经是列表了，主区等着选会话 */
 function EmptyMain(): React.JSX.Element {
+  const navigate = useNavigate();
   return (
-    <div className="text-text-3 flex flex-1 flex-col items-center justify-center gap-2 p-10 text-center text-sm">
-      <span className="text-brand/40 font-mono text-4xl" aria-hidden>
-        ◈
-      </span>
-      从左侧选一个会话，或新建一个
+    <div className="workspace-welcome flex flex-1 flex-col items-center justify-center p-8 text-center">
+      <div className="bg-brand-soft border-brand-border text-brand-ink mb-6 flex size-16 items-center justify-center rounded-2xl border font-mono text-3xl" aria-hidden>◈</div>
+      <p className="text-text-2 mb-3 font-mono text-xs tracking-[0.18em]">TRINE / WORKSPACE</p>
+      <h1 className="text-text text-2xl font-semibold tracking-tight">让工作，从这里继续</h1>
+      <p className="text-text-2 mt-3 max-w-sm text-sm leading-7">从左侧选择会话，接续正在进行的任务；或新建会话，开始下一次探索。</p>
+      <Button className="mt-7" size="lg" onClick={() => navigate('/?new=1')}>新建会话</Button>
+      <p className="text-text-3 mt-5 text-xs">跨机器协作 · 端到端加密</p>
     </div>
   );
 }
@@ -178,7 +181,7 @@ export function Layout(): React.JSX.Element {
               <BannerStack persistent={runtime.persistent} />
               <div className="flex min-h-0 flex-1">
                 <Sidebar filter={machineFilter} onFilterChange={setMachineFilter} />
-                <div className="flex min-w-0 flex-1 flex-col">
+                <div className="workspace-panel flex min-w-0 flex-1 flex-col overflow-hidden min-[1100px]:my-3 min-[1100px]:mr-3 min-[1100px]:rounded-2xl min-[1100px]:border min-[1100px]:border-border">
                   {location.pathname === '/' ? <EmptyMain /> : <Outlet />}
                 </div>
               </div>

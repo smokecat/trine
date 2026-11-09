@@ -1,31 +1,4 @@
-/**
- * 设计 token 与主题。
- *
- * 集中定义配色、字体和组件语义变量
- * 头部那组 CSS 变量——这里做的是**迁移**而不是重新设计：同名 token 的色值
- * 逐个照抄，只把承载方式换成 Tailwind 4 的 `@theme` + shadcn 约定的语义变量。
- *
- * 三层结构：
- *   1. `:root` / `.dark` 里的**原始 token**（`--surface` `--accent` …）——
- *      与原型一一对应，是唯一的事实来源；
- *   2. 同一块里的**shadcn 语义变量**（`--background` `--primary` …）——全部
- *      引用第 1 层，shadcn 组件因此自动长成 trine 的样子，不需要逐个改组件；
- *   3. `@theme inline` 把两层都暴露成 Tailwind 工具类（`bg-surface`
- *      `text-text-2` `border-border` `bg-primary` …）。
- *
- * 深色模式三态（system / light / dark，跟原型一致）：
- *   - `:root` 定义完整浅色；
- *   - `@media (prefers-color-scheme: dark)` 里 `:root:not([data-theme='light'])`
- *     覆盖为深色 —— 即「跟随系统」且未被手动锁成浅色时生效；
- *   - `[data-theme='dark']` 再覆盖一次 —— 手动选深色在任何系统设置下都赢。
- *   `.dark` 类与 `[data-theme='dark']` 同时挂，shadcn 生态里按 `.dark`
- *   选择器写的东西（如 tw-animate-css / 第三方组件）也能跟上。
- *   挂载逻辑见 `src/app/theme.ts`。
- *
- * 字体：@fontsource 本地打包（latin 子集，只要原型用到的字重），**不引
- * Google Fonts**——方案 §4.1 的零第三方脚本/CDN 约束。中文走系统字体回落，
- * 与原型的 font stack 一致。
- */
+/** Trine design tokens. See docs/DESIGN.md for component and interaction rules. */
 @import 'tailwindcss';
 
 /* IBM Plex Sans 400/500/600 + Mono 400/500，latin 子集，本地文件 */
@@ -48,19 +21,19 @@
    ============================================================ */
 :root {
   /* --- 原型原始 token --- */
-  --phone-bg: #f7f9fa;
+  --phone-bg: #f4f6f8;
   --surface: #ffffff;
-  --surface-2: #eef2f5;
-  --surface-3: #e4eaef;
-  --border-c: #dce3e9;
+  --surface-2: #edf1f5;
+  --surface-3: #e3e9ef;
+  --border-c: #dce2e9;
   --border-strong: #c4ced6;
   --text: #1b2530;
   --text-2: #5d6b78;
-  --text-3: #8c99a6;
-  --accent: #0fa089;
-  --accent-ink: #0b7d6b;
-  --accent-soft: rgba(15, 160, 137, 0.1);
-  --accent-border: rgba(15, 160, 137, 0.35);
+  --text-3: #687888;
+  --accent: #087f82;
+  --accent-ink: #066b70;
+  --accent-soft: rgba(8, 127, 130, 0.08);
+  --accent-border: rgba(8, 127, 130, 0.3);
   /* accent 底上的前景色：浅色主题下 accent 是深青，配白字 */
   --accent-fg: #ffffff;
   --amber: #b97d10;
@@ -72,7 +45,7 @@
   --green-soft: rgba(46, 143, 85, 0.12);
   --blue: #3d6fb4;
   --blue-soft: rgba(61, 111, 180, 0.1);
-  --user-bubble: #dcefea;
+  --user-bubble: #e0efef;
   --code-bg: #f0f3f6;
   --shadow-card: 0 1px 3px rgba(27, 37, 48, 0.08), 0 4px 16px rgba(27, 37, 48, 0.06);
 
@@ -102,19 +75,19 @@
 /* 跟随系统 + 未手动锁浅色 → 深色 */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme='light']) {
-    --phone-bg: #12181f;
-    --surface: #1a222b;
-    --surface-2: #222c36;
-    --surface-3: #2a3642;
+    --phone-bg: #11161d;
+    --surface: #181f28;
+    --surface-2: #202a35;
+    --surface-3: #293541;
     --border-c: #2b3844;
     --border-strong: #3b4a58;
     --text: #e8edf2;
     --text-2: #9aa7b4;
-    --text-3: #68788a;
-    --accent: #35c9ae;
-    --accent-ink: #5fd9c2;
-    --accent-soft: rgba(53, 201, 174, 0.12);
-    --accent-border: rgba(53, 201, 174, 0.38);
+    --text-3: #8998aa;
+    --accent: #63d4cf;
+    --accent-ink: #7cddd7;
+    --accent-soft: rgba(99, 212, 207, 0.1);
+    --accent-border: rgba(99, 212, 207, 0.32);
     /* 深色下 accent 是亮青，白字对比度不够，原型用的是深青底色文字 */
     --accent-fg: #08211c;
     --amber: #e8a83e;
@@ -126,7 +99,7 @@
     --green-soft: rgba(87, 199, 126, 0.13);
     --blue: #6fa3e0;
     --blue-soft: rgba(111, 163, 224, 0.12);
-    --user-bubble: #1e3b35;
+    --user-bubble: #1d343a;
     --code-bg: #141b22;
     --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.35), 0 4px 18px rgba(0, 0, 0, 0.28);
     --destructive-foreground: #ffffff;
@@ -136,19 +109,19 @@
 /* 手动选深色：任何系统设置下都赢 */
 :root[data-theme='dark'],
 :root.dark {
-  --phone-bg: #12181f;
-  --surface: #1a222b;
-  --surface-2: #222c36;
-  --surface-3: #2a3642;
+  --phone-bg: #11161d;
+  --surface: #181f28;
+  --surface-2: #202a35;
+  --surface-3: #293541;
   --border-c: #2b3844;
   --border-strong: #3b4a58;
   --text: #e8edf2;
   --text-2: #9aa7b4;
-  --text-3: #68788a;
-  --accent: #35c9ae;
-  --accent-ink: #5fd9c2;
-  --accent-soft: rgba(53, 201, 174, 0.12);
-  --accent-border: rgba(53, 201, 174, 0.38);
+  --text-3: #8998aa;
+  --accent: #63d4cf;
+  --accent-ink: #7cddd7;
+  --accent-soft: rgba(99, 212, 207, 0.1);
+  --accent-border: rgba(99, 212, 207, 0.32);
   --accent-fg: #08211c;
   --amber: #e8a83e;
   --amber-soft: rgba(232, 168, 62, 0.13);
@@ -159,7 +132,7 @@
   --green-soft: rgba(87, 199, 126, 0.13);
   --blue: #6fa3e0;
   --blue-soft: rgba(111, 163, 224, 0.12);
-  --user-bubble: #1e3b35;
+  --user-bubble: #1d343a;
   --code-bg: #141b22;
   --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.35), 0 4px 18px rgba(0, 0, 0, 0.28);
   --destructive-foreground: #ffffff;
@@ -286,4 +259,23 @@
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
+}
+
+/* Shared interaction details; component-specific layout stays with the component. */
+@layer base {
+  ::selection { background: var(--accent-soft); color: var(--text); }
+  button, a, input, textarea { -webkit-tap-highlight-color: transparent; }
+  * { scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
+}
+@layer components {
+  .workspace-panel { background: var(--surface); }
+  .workspace-welcome {
+    background: radial-gradient(ellipse at 50% 35%, var(--accent-soft), transparent 65%);
+  }
+}
+@media (pointer: coarse) {
+  [data-slot='button'], [data-slot='dropdown-menu-item'], [data-slot='select-trigger'] {
+    min-height: 44px;
+  }
+  [data-slot='button'][data-size^='icon'] { min-width: 44px; }
 }

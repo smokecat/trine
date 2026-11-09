@@ -475,7 +475,7 @@ export function Composer({
     return (
       <div
         ref={rootRef}
-        className="bg-background relative shrink-0 px-4 pt-1 pb-[max(1rem,env(safe-area-inset-bottom))]"
+        className="bg-surface relative shrink-0 px-[max(1.5rem,calc((100%_-_960px)/2))] pt-2 pb-[max(1rem,env(safe-area-inset-bottom))]"
       >
         {panels}
         {offline}

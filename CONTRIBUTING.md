@@ -23,6 +23,11 @@ replay handling and rendering. Avoid assertions that merely mirror implementatio
 text. New fixtures must be synthetic: no real conversations, request IDs, user
 paths, credentials, pairing payloads or production hostnames.
 
+## Product design
+
+UI changes follow [the product design system](docs/DESIGN.md), including semantic
+tokens, adaptive navigation, component states and accessibility checks.
+
 ## Repository layout
 
 See [docs/STRUCTURE.md](docs/STRUCTURE.md). Shared protocol changes belong in

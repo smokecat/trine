@@ -377,7 +377,7 @@ export function emptyText(
   switch (reason) {
     case 'no-sessions':
       return opts.compact
-        ? '还没有会话，点下方「新建」开一个。'
+        ? '还没有会话，点「新建」开一个。'
         : '还没有会话，点右下角「+」新建一个。';
     case 'machine-empty':
       return '这台机器上还没有会话。';
