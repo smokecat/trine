@@ -25,7 +25,14 @@ import { Sheet, SheetContent, SheetDescription, SheetTitle } from '@/components/
 import { useIsDesktop } from '@/components/shell/use-media-query.ts';
 import { Breadcrumbs, FileList } from './FileBrowser.tsx';
 import { FileBody } from './FileViewer.tsx';
-import { displayPath, parentDir } from './file-model.ts';
+import { parentDir } from './file-model.ts';
+import { LocationMenu, OutOfScopeNotice, TrustDirDialog, useFilesInfo } from './TrustDir.tsx';
+
+/** 范围外（可以去信任）：新 agent 带 reason，旧 agent 的 denied 只能看 message 猜，按范围外处理 */
+function isOutOfScope(err: unknown): boolean {
+  if (!(err instanceof FsRequestError) || err.code !== 'denied') return false;
+  return err.reason === undefined ? err.message.includes('范围') : err.reason === 'out_of_scope';
+}
 
 /**
  * 点开头的条目默认显示：`.local`、`.claude` 这类目录正是在 trine 里常看的；
@@ -51,7 +58,7 @@ function writeShowHidden(value: boolean): void {
 
 export type FileView = { kind: 'dir'; path?: string } | { kind: 'file'; path: string };
 
-type Load<T> = { state: 'loading' } | { state: 'ok'; value: T } | { state: 'error'; message: string };
+type Load<T> = { state: 'loading' } | { state: 'ok'; value: T } | { state: 'error'; message: string; error: unknown };
 
 /** 错误给人看的话：agent 的原话已经是中文，补上该怎么办 */
 export function fileErrorText(err: unknown): string {
@@ -73,7 +80,7 @@ function useLoad<T>(fn: (() => Promise<T>) | null, deps: readonly unknown[]): [L
     setLoad({ state: 'loading' });
     fn().then(
       (value) => alive && setLoad({ state: 'ok', value }),
-      (err: unknown) => alive && setLoad({ state: 'error', message: fileErrorText(err) }),
+      (err: unknown) => alive && setLoad({ state: 'error', message: fileErrorText(err), error: err }),
     );
     return () => {
       alive = false;
@@ -165,7 +172,7 @@ function PanelHeader({
 function ErrorBox({ message, onRetry }: { message: string; onRetry: () => void }): React.JSX.Element {
   return (
     <div data-testid="file-error" className="flex flex-col items-center gap-3 p-10 text-center text-[13px]">
-      <div className="text-danger">{message}</div>
+      <div className="text-red">{message}</div>
       <Button size="sm" variant="outline" onClick={onRetry}>
         重试
       </Button>
@@ -271,7 +278,9 @@ function DirPane({
   onClose: () => void;
 }): React.JSX.Element {
   const client = useClient();
+  const roots = useFilesInfo(machineId)?.roots;
   const [showHidden, setShowHidden] = useState(readShowHidden);
+  const [trustPath, setTrustPath] = useState<string | null>(null);
   const toggleHidden = (): void =>
     setShowHidden((v) => {
       writeShowHidden(!v);
@@ -282,26 +291,46 @@ function DirPane({
     [client, machineId, sessionId, path],
   );
   const listing = load.state === 'ok' ? load.value : undefined;
-  const atRoot = listing === undefined || listing.path === listing.root;
+  // 范围外：只认绝对路径（相对路径是相对会话 cwd 的，展示和信任都说不清）
+  const outOfScope = load.state === 'error' && isOutOfScope(load.error) && path?.startsWith('/') === true ? path : undefined;
+  // 当前所在的目录：加载成功取 agent 解析后的路径，范围外取请求路径
+  const here = listing?.path ?? outOfScope;
+  // 会话目录：root 不是任何信任目录时就是会话 cwd
+  const sessionDir = listing !== undefined && !(roots ?? []).some((r) => r.path === listing.root) ? listing.root : undefined;
+  const browse = (dir: string | undefined): void => onNavigate({ kind: 'dir', ...(dir === undefined ? {} : { path: dir }) });
+  const title =
+    listing !== undefined
+      ? listing.path === sessionDir
+        ? '会话目录'
+        : listing.path.slice(listing.path.lastIndexOf('/') + 1) || '/'
+      : outOfScope !== undefined
+        ? outOfScope.slice(outOfScope.lastIndexOf('/') + 1) || '/'
+        : '文件';
   return (
     <>
       <PanelHeader
         title={
           <span className="flex items-center gap-1.5">
             <FolderOpenIcon className="text-brand size-4" />
-            {listing === undefined ? '文件' : displayPath(listing.path, listing.root) === '.' ? '会话目录' : listing.path.slice(listing.path.lastIndexOf('/') + 1)}
+            {title}
+            {listing !== undefined && listing.root !== sessionDir && listing.path === listing.root && (
+              <span className="text-text-3 bg-surface-2 rounded px-1.5 py-px text-[11px] font-normal">信任目录</span>
+            )}
           </span>
         }
         description={
-          listing === undefined ? (
+          here === undefined ? (
             <span className="font-mono break-all">{path ?? '会话目录'}</span>
           ) : (
-            <Breadcrumbs path={listing.path} root={listing.root} onBrowse={(dir) => onNavigate({ kind: 'dir', path: dir })} />
+            <Breadcrumbs path={here} root={listing?.root} onBrowse={browse} />
           )
         }
-        {...(atRoot || listing === undefined ? {} : { onBack: () => onNavigate({ kind: 'dir', path: parentDir(listing.path) }), backTitle: '上一级' })}
+        {...(here === undefined || here === '/' ? {} : { onBack: () => browse(parentDir(here)), backTitle: '上一级' })}
         onClose={onClose}
       >
+        {roots !== undefined && (
+          <LocationMenu machineId={machineId} roots={roots} current={here} sessionDir={sessionDir} onBrowse={browse} onTrustCurrent={setTrustPath} />
+        )}
         <Button
           size="sm"
           variant="ghost"
@@ -312,7 +341,7 @@ function DirPane({
           className="text-text-2 h-7 gap-1 px-2 text-[12px]"
         >
           {showHidden ? <EyeIcon /> : <EyeOffIcon />}
-          {showHidden ? '隐藏 .文件' : '显示 .文件'}
+          <span className="hidden sm:inline">{showHidden ? '隐藏 .文件' : '显示 .文件'}</span>
         </Button>
         <Button size="icon-sm" variant="ghost" title="刷新" aria-label="刷新" onClick={reload} disabled={load.state === 'loading'}>
           <RefreshCwIcon className={cn(load.state === 'loading' && 'motion-safe:animate-spin')} />
@@ -320,16 +349,28 @@ function DirPane({
       </PanelHeader>
       <div className="min-h-0 flex-1 overflow-auto pb-[env(safe-area-inset-bottom)]">
         {load.state === 'loading' && <div className="text-text-3 p-6 text-[13px]">正在读取…</div>}
-        {load.state === 'error' && <ErrorBox message={load.message} onRetry={reload} />}
+        {outOfScope !== undefined && (
+          <OutOfScopeNotice path={outOfScope} canTrust={roots !== undefined && outOfScope !== '/'} onTrust={() => setTrustPath(outOfScope)} onSessionDir={() => browse(undefined)} />
+        )}
+        {load.state === 'error' && outOfScope === undefined && <ErrorBox message={load.message} onRetry={reload} />}
         {listing !== undefined && (
           <FileList
             listing={listing}
             showHidden={showHidden}
-            onBrowse={(dir) => onNavigate({ kind: 'dir', path: dir })}
+            onBrowse={(dir) => browse(dir)}
             onOpen={(p) => onNavigate({ kind: 'file', path: p })}
           />
         )}
       </div>
+      {trustPath !== null && (
+        <TrustDirDialog
+          machineId={machineId}
+          path={trustPath}
+          open
+          onOpenChange={(open) => !open && setTrustPath(null)}
+          onTrusted={() => reload()}
+        />
+      )}
     </>
   );
 }

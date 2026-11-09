@@ -568,8 +568,8 @@ export const AttachmentFetchResponseSchema = z.object({
 /**
  * 在会话上下文里浏览 / 预览 agent 机器上的文件（只读）。
  *
- * 范围由 agent 决定：会话 cwd 及其子目录，加上 agent 环境变量 `TRINE_FILES_ALLOW`
- * 列出的目录；符号链接按真实路径判断；密钥类文件（`.env`、私钥、`.ssh`、`.git` 内部、
+ * 范围由 agent 决定：会话 cwd 及其子目录，加上信任目录（agent 环境变量 `TRINE_FILES_ALLOW`
+ * 与可远程增删的 `files.trust.*` 列表）；符号链接按真实路径判断；密钥类文件（`.env`、私钥、`.ssh`、`.git` 内部、
  * trine 自己的 home）一律拒绝。与 attachment.fetch 一样**不拉起会话进程**，只定向回请求方。
  *
  * `path` 可以是绝对路径、`~` 开头，或相对会话 cwd 的相对路径。
@@ -583,7 +583,15 @@ export const FS_READ_DEFAULT_MAX_BYTES = 20 * 1024 * 1024;
 export const FsErrorCodeSchema = z.enum(['not_found', 'denied', 'too_large', 'is_dir', 'not_dir', 'io', 'unavailable']);
 export type FsErrorCode = z.infer<typeof FsErrorCodeSchema>;
 
-const FsErrorSchema = z.object({ code: FsErrorCodeSchema, message: z.string().max(500) });
+/**
+ * `denied` 的细分（trusted-browse-dirs，agent ≥ 0.24.0；旧 agent 不带）：
+ * - `out_of_scope` 不在会话目录 / 信任目录之内（client 可以提供「信任此目录」入口）
+ * - `sensitive`    密钥类路径、系统伪文件系统等不可覆盖的拒绝（不提供信任入口）
+ */
+export const FsDeniedReasonSchema = z.enum(['out_of_scope', 'sensitive']);
+export type FsDeniedReason = z.infer<typeof FsDeniedReasonSchema>;
+
+const FsErrorSchema = z.object({ code: FsErrorCodeSchema, message: z.string().max(500), reason: FsDeniedReasonSchema.optional() });
 
 /** 预览方式：markdown 渲染 / 文本（含源码）/ pdf / 图片 / 其他（只能下载） */
 export const FsFileKindSchema = z.enum(['markdown', 'text', 'pdf', 'image', 'binary']);
@@ -615,7 +623,10 @@ export const FsListResponseSchema = z.object({
   ok: z.boolean(),
   /** 解析后的绝对路径 */
   path: z.string().max(FS_PATH_MAX).optional(),
-  /** 命中的根目录（会话 cwd 或白名单里的一项）；面包屑从这里开始，不能往上 */
+  /**
+   * 命中的根目录（会话 cwd、TRINE_FILES_ALLOW 或信任目录里的一项）。根之上能不能浏览由 agent
+   * 按请求判断（往上走到范围外回 denied + reason out_of_scope）。
+   */
   root: z.string().max(FS_PATH_MAX).optional(),
   entries: z.array(FsEntrySchema).max(FS_LIST_MAX_ENTRIES).optional(),
   truncated: z.boolean().optional(),
@@ -651,6 +662,52 @@ export const FsReadResponseSchema = z.object({
   ok: z.boolean(),
   file: FsFileSchema.optional(),
   error: FsErrorSchema.optional(),
+});
+
+/**
+ * 信任目录（trusted-browse-dirs，agent ≥ 0.24.0，client 按 machine.info.files.roots 有无判断）：
+ * 机器级、agent 端持久化的目录列表，除会话 cwd 外这些目录及其子目录也可浏览（密钥类照样拒绝）。
+ * 对这台机器的所有会话、所有已配对设备生效。增删成功后 agent 重发 `machine.info`。
+ *
+ * `path` 须为绝对路径或 `~` 开头；agent 校验存在且是目录、不是 `/`、不在密钥类路径里。
+ * remove 按 add 时存下的路径（machine.info.files.roots[].path）匹配。
+ */
+export const FILES_TRUSTED_MAX = 64;
+
+export const FilesTrustAddSchema = z.object({
+  type: z.literal('files.trust.add'),
+  ...c2aBase,
+  reqId: ReqIdSchema,
+  path: z.string().min(1).max(FS_PATH_MAX),
+});
+
+export const FilesTrustRemoveSchema = z.object({
+  type: z.literal('files.trust.remove'),
+  ...c2aBase,
+  reqId: ReqIdSchema,
+  path: z.string().min(1).max(FS_PATH_MAX),
+});
+
+/**
+ * 失败原因：
+ * - `invalid`   路径格式不对（相对路径、含 NUL）
+ * - `not_found` 不存在或不是目录
+ * - `denied`    `/`、密钥类路径、trine home 之内
+ * - `limit`     已到上限 FILES_TRUSTED_MAX
+ * - `not_trusted` remove 时不在列表里（含 TRINE_FILES_ALLOW 来源，网页不能删）
+ * - `failed`    其他错误（写文件失败）
+ */
+export const FilesTrustErrorCodeSchema = z.enum(['invalid', 'not_found', 'denied', 'limit', 'not_trusted', 'failed']);
+export type FilesTrustErrorCode = z.infer<typeof FilesTrustErrorCodeSchema>;
+
+export const FilesTrustResponseSchema = z.object({
+  type: z.literal('files.trust.response'),
+  ...a2cBase,
+  reqId: ReqIdSchema,
+  ok: z.boolean(),
+  /** 成功时：实际存下的路径（resolve 过、`~` 已展开） */
+  path: z.string().max(FS_PATH_MAX).optional(),
+  error: z.object({ code: FilesTrustErrorCodeSchema, message: z.string().max(500) }).optional(),
 });
 
 // ---------------------------------------------------------------------------
@@ -1724,6 +1781,7 @@ export const AgentToClientEventSchema = z.discriminatedUnion('type', [
   AttachmentFetchResponseSchema,
   FsListResponseSchema,
   FsReadResponseSchema,
+  FilesTrustResponseSchema,
   SessionCapabilitiesSchema,
   MachineInfoEventSchema,
   MachineClaudeUpdateResponseSchema,
@@ -1777,6 +1835,8 @@ export const ClientToAgentEventSchema = z.discriminatedUnion('type', [
   AttachmentFetchRequestSchema,
   FsListRequestSchema,
   FsReadRequestSchema,
+  FilesTrustAddSchema,
+  FilesTrustRemoveSchema,
   MachineRenameSchema,
   MachineUnpairSchema,
   MachineClaudeUpdateRequestSchema,

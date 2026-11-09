@@ -39,7 +39,7 @@ import { DEFAULT_LIST_QUERY, filterSessions } from '../components/list/filtering
 // 会话 cwd 在系统临时目录下（测试约定），默认会被当成临时会话隐藏
 const LIST_QUERY = { ...DEFAULT_LIST_QUERY, showTemp: true };
 import { supportsSessionMutations } from '../components/list/session-actions.ts';
-import { FsRequestError, SessionMutateError, TrineClient } from './client.ts';
+import { FilesTrustError, FsRequestError, SessionMutateError, TrineClient } from './client.ts';
 import { LeaderElector } from './leader.ts';
 import { shouldAutoLoadHistory, type PermissionEntry, type TimelineEntry, type UserEntry } from './reducer.ts';
 import { KV_PEER, type PeerState } from './storage.ts';
@@ -1048,6 +1048,40 @@ describe('web lib · 文件查看 e2e', () => {
       expect(await codeOf(client.openFile('mbp', sid, 'docs/missing.md'))).toBe('not_found');
     } finally {
       await rm(ws, { recursive: true, force: true });
+    }
+  }, 20_000);
+});
+
+describe('web lib · 信任目录 e2e', () => {
+  test('往上走被拒（out_of_scope）→ 信任上级 → machine.info 带上 roots、可以浏览同级 → 取消信任后又被拒', async () => {
+    await pair();
+    await waitFor(() => client.machine('mbp')?.info?.files?.roots !== undefined, 'machine.info.files.roots');
+    const parent = await mkdtemp(join(tmpdir(), 'trine-web-e2e-trust-'));
+    try {
+      const ws = join(parent, 'repo');
+      mkdirSync(ws);
+      mkdirSync(join(parent, 'sibling'));
+      writeFileSync(join(parent, 'sibling', 'note.md'), '合成');
+      const meta = await client.createSession('mbp', { cwd: ws, model: 'test-model', permissionMode: 'default' });
+      const sid = meta.sessionId;
+      const reasonOf = (p: Promise<unknown>) =>
+        p.then(() => 'ok', (e: unknown) => (e instanceof FsRequestError ? `${e.code}:${e.reason ?? '-'}` : String(e)));
+
+      expect(await reasonOf(client.listFiles('mbp', sid, parent))).toBe('denied:out_of_scope');
+      expect(await client.setDirTrusted('mbp', parent, true)).toBe(parent);
+      await waitFor(() => client.machine('mbp')?.info?.files?.roots?.some((r) => r.path === parent) === true, 'roots 更新');
+      const up = await client.listFiles('mbp', sid, parent);
+      expect([up.root, up.entries.map((e) => e.name)]).toEqual([parent, ['repo', 'sibling']]);
+      expect((await client.listFiles('mbp', sid, join(parent, 'sibling'))).entries.map((e) => e.name)).toEqual(['note.md']);
+
+      const err = await client.setDirTrusted('mbp', '/', true).then(() => undefined, (e: unknown) => e);
+      expect(err instanceof FilesTrustError ? err.code : String(err)).toBe('denied');
+
+      await client.setDirTrusted('mbp', parent, false);
+      await waitFor(() => client.machine('mbp')?.info?.files?.roots?.length === 0, 'roots 清空');
+      expect(await reasonOf(client.listFiles('mbp', sid, parent))).toBe('denied:out_of_scope');
+    } finally {
+      await rm(parent, { recursive: true, force: true });
     }
   }, 20_000);
 });

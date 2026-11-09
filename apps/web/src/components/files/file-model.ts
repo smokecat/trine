@@ -88,18 +88,60 @@ export function displayPath(path: string, root: string | undefined): string {
   return path.startsWith(prefix) ? path.slice(prefix.length) : path;
 }
 
-/** 面包屑：从根开始逐级（根本身显示为其目录名） */
-export function breadcrumbs(path: string, root: string): { label: string; path: string }[] {
-  const rootName = root.slice(root.lastIndexOf('/') + 1) || root;
-  const out = [{ label: rootName, path: root }];
-  const rel = displayPath(path, root);
-  if (rel === '.' || rel === path) return out;
-  let cur = root;
-  for (const seg of rel.split('/')) {
-    cur = `${cur.endsWith('/') ? cur : `${cur}/`}${seg}`;
-    out.push({ label: seg, path: cur });
+/**
+ * 完整面包屑：从 `/` 开始逐级。`root`（命中的根）及其之下的段 `inScope`；之上的段照样能点，
+ * 由 agent 判断能不能看（范围外回 denied + out_of_scope，面板给出信任入口）。
+ * `root` 省略 = 当前路径本身就不在范围内，全部段都不是 inScope。
+ */
+export function pathCrumbs(path: string, root?: string): { label: string; path: string; inScope: boolean }[] {
+  const inScope = (p: string): boolean => root !== undefined && isUnder(p, root);
+  const out = [{ label: '/', path: '/', inScope: inScope('/') }];
+  let cur = '';
+  for (const seg of path.split('/')) {
+    if (seg === '') continue;
+    cur = `${cur}/${seg}`;
+    out.push({ label: seg, path: cur, inScope: inScope(cur) });
   }
   return out;
+}
+
+/** path 是 dir 本身或在 dir 之下（按路径段比较） */
+export function isUnder(path: string, dir: string): boolean {
+  if (path === dir) return true;
+  const prefix = dir.endsWith('/') ? dir : `${dir}/`;
+  return path.startsWith(prefix);
+}
+
+/**
+ * 把用户输入的目录规范成 agent 会存下的样子：`~` 按 agent 的 home 展开，去掉 `.`、`..`、
+ * 重复和末尾的 `/`。不是绝对路径（或 `~` 开头但不知道 home）返回 undefined。
+ * 风险提示必须看规范化后的路径：`~/..`、`/home/u/` 实际信任的是 home 的上级 / home 本身。
+ */
+export function normalizeDirInput(input: string, home: string | undefined): string | undefined {
+  const text = input.trim();
+  let abs: string;
+  if (text === '~' || text.startsWith('~/')) {
+    if (home === undefined || home === '') return undefined;
+    abs = `${home}${text.slice(1)}`;
+  } else if (text.startsWith('/')) abs = text;
+  else return undefined;
+  const parts: string[] = [];
+  for (const seg of abs.split('/')) {
+    if (seg === '' || seg === '.') continue;
+    if (seg === '..') parts.pop();
+    else parts.push(seg);
+  }
+  return `/${parts.join('/')}`;
+}
+
+/**
+ * 信任一个目录的风险等级：home 本身、home 的上级（含 `/` 之下的 `/home`、`/Users`）要加强提示。
+ * 不知道 home（旧 agent）时返回 undefined。
+ */
+export function trustRisk(path: string, home: string | undefined): 'home' | 'above-home' | undefined {
+  if (home === undefined || home === '') return undefined;
+  if (path === home) return 'home';
+  return isUnder(home, path) ? 'above-home' : undefined;
 }
 
 export function parentDir(path: string): string {

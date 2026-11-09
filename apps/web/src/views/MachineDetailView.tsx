@@ -41,6 +41,7 @@ import { useSessionActions } from '@/components/list/use-session-actions.ts';
 import { useListShowTemp } from '@/components/list/use-list-query.ts';
 import { useClient, useTrine } from '@/app/runtime.ts';
 import { MachineStatsSection } from '@/components/machines/MachineStats.tsx';
+import { TrustedDirsSection } from '@/components/files/TrustedDirsSection.tsx';
 import { DETAIL_STATS_INTERVAL_MS, supportsMachineStats } from '@/components/machines/stats-model.ts';
 import { useListStatsInterval, useMachineStatsWatch } from '@/components/machines/use-machine-stats.ts';
 
@@ -237,6 +238,13 @@ export function MachineDetailView(): React.JSX.Element {
               restart={machine.info.restart}
               request={(action) => client.restartAgent(machine.machineId, action)}
             />
+          </>
+        )}
+
+        {machine.info?.files?.roots !== undefined && (
+          <>
+            <Separator />
+            <TrustedDirsSection machineId={machine.machineId} online={machine.online === true} roots={machine.info.files.roots} />
           </>
         )}
 

@@ -99,6 +99,7 @@ import { getSessionMessages, type SessionMessage, type SlashCommand as SdkSlashC
 import type {
   AgentToClientEvent,
   ClientToAgentEvent,
+  FsDeniedReason,
   FsErrorCode,
   HistoryItem,
   MachineInfo,
@@ -111,7 +112,7 @@ import { CLAUDE_ENGINE_ID } from '@trine/core';
 import { CODEX_DEFAULT_MODEL, CODEX_ENGINE_ID } from '../engine/codex/ids.ts';
 import { AttachmentError, type AttachmentStore, type PreparedInput } from '../bridge/attachments.ts';
 import { FileAccessError } from '../files/access.ts';
-import type { FileService } from '../files/service.ts';
+import { TrustError, type FileService } from '../files/service.ts';
 import type { EventEmitter } from '../bridge/emitter.ts';
 import {
   cutAtRewind,
@@ -180,6 +181,8 @@ const MACHINE_LEVEL_TYPES = new Set<ClientToAgentEvent['type']>([
   'cwd.remove',
   'cwd.setDefault',
   'cwd.pin',
+  'files.trust.add',
+  'files.trust.remove',
   'ext.catalog.request',
   'ext.read',
   'ext.action.prepare',
@@ -954,10 +957,12 @@ export class Router {
   ): Promise<void> {
     const files = this.#deps.files;
     const cwd = this.#deps.state.sessionParams(sessionId)?.cwd ?? this.#deps.manager.metaOf(sessionId)?.cwd;
-    const fail = (code: FsErrorCode, message: string): EventBody =>
-      event.type === 'fs.list.request'
-        ? { type: 'fs.list.response', reqId: event.reqId, ok: false, error: { code, message } }
-        : { type: 'fs.read.response', reqId: event.reqId, ok: false, error: { code, message } };
+    const fail = (code: FsErrorCode, message: string, reason?: FsDeniedReason): EventBody => {
+      const error = { code, message, ...(reason === undefined ? {} : { reason }) };
+      return event.type === 'fs.list.request'
+        ? { type: 'fs.list.response', reqId: event.reqId, ok: false, error }
+        : { type: 'fs.read.response', reqId: event.reqId, ok: false, error };
+    };
     let body: EventBody;
     if (files === undefined) {
       body = fail('unavailable', '这台 agent 关闭了文件查看');
@@ -973,10 +978,33 @@ export class Router {
         const code = err instanceof FileAccessError ? err.code : 'io';
         const message = err instanceof Error ? err.message : String(err);
         if (code === 'io') this.#log(`[router] 文件查看失败 session=${sessionId}: ${message}`);
-        body = fail(code, message.slice(0, 300));
+        body = fail(code, message.slice(0, 300), err instanceof FileAccessError ? err.reason : undefined);
       }
     }
     this.#deps.emitter.emit(body, sessionId, { to: sender.deviceId });
+  }
+
+  /** 信任目录增删（机器级链上串行：都写 files.json）。成功后重发 machine.info，应答只给请求方 */
+  async #filesTrust(event: Extract<ClientToAgentEvent, { type: 'files.trust.add' | 'files.trust.remove' }>, sender: Recipient): Promise<void> {
+    const files = this.#deps.files;
+    let body: EventBody;
+    if (files?.roots() === undefined) {
+      body = { type: 'files.trust.response', reqId: event.reqId, ok: false, error: { code: 'failed', message: '这台 agent 关闭了文件查看' } };
+    } else {
+      try {
+        let path = event.path;
+        if (event.type === 'files.trust.add') path = await files.trust(event.path);
+        else await files.untrust(event.path);
+        this.#log(`[files] ${event.type === 'files.trust.add' ? '信任' : '取消信任'} ${path}（设备 ${sender.deviceId}）`);
+        body = { type: 'files.trust.response', reqId: event.reqId, ok: true, path };
+        this.#emitMachine({ type: 'machine.info', info: this.#deps.machineInfo() });
+      } catch (err) {
+        const code = err instanceof TrustError ? err.code : 'failed';
+        const message = (err instanceof Error ? err.message : String(err)).slice(0, 300);
+        body = { type: 'files.trust.response', reqId: event.reqId, ok: false, error: { code, message } };
+      }
+    }
+    this.#deps.emitter.emit(body, null, { to: sender.deviceId });
   }
 
   /**
@@ -1484,6 +1512,10 @@ export class Router {
         await cwdStore.setPinned(event.path, event.pinned, this.#now());
         // 幂等的重复请求也广播：发起端可能是因为本地状态过期才重发
         this.#emitMachine({ type: 'cwd.updated', ...cwdStore.snapshot() });
+        return;
+      case 'files.trust.add':
+      case 'files.trust.remove':
+        await this.#filesTrust(event, sender);
         return;
       case 'machine.rename':
         await this.#deps.renameMachine(event.name);

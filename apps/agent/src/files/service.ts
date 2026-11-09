@@ -7,17 +7,38 @@
 import { constants } from 'node:fs';
 import { open, readdir, realpath, stat } from 'node:fs/promises';
 import { basename, join } from 'node:path';
-import { FS_LIST_MAX_ENTRIES, type FsEntry, type FsFile } from '@trine/core';
+import {
+  FILES_ROOTS_MAX,
+  FILES_TRUSTED_MAX,
+  FS_LIST_MAX_ENTRIES,
+  type FilesRoot,
+  type FilesTrustErrorCode,
+  type FsEntry,
+  type FsFile,
+} from '@trine/core';
 import { encryptBlob, generateBlobKey } from '@trine/core/crypto';
 import type { BlobTransport } from '../bridge/attachments.ts';
 import { FileAccess, FileAccessError, isWithin, type Root } from './access.ts';
 import { detectKind, SNIFF_BYTES } from './kind.ts';
+import type { TrustStore } from './trust-store.ts';
+
+export class TrustError extends Error {
+  readonly code: FilesTrustErrorCode;
+  constructor(code: FilesTrustErrorCode, message: string) {
+    super(message);
+    this.name = 'TrustError';
+    this.code = code;
+  }
+}
 
 export interface FileServiceOptions {
   access: FileAccess;
   /** 单个文件字节上限 */
   maxBytes: number;
   blobs: () => BlobTransport | undefined;
+  /** 信任目录；缺省 = 不支持远程增删（machine.info 不带 roots） */
+  trust?: TrustStore;
+  now?: () => number;
 }
 
 export interface ListResult {
@@ -34,11 +55,85 @@ export class FileService {
   readonly maxBytes: number;
   readonly #access: FileAccess;
   readonly #blobs: () => BlobTransport | undefined;
+  readonly #trust: TrustStore | undefined;
+  readonly #now: () => number;
 
   constructor(options: FileServiceOptions) {
     this.#access = options.access;
     this.maxBytes = options.maxBytes;
     this.#blobs = options.blobs;
+    this.#trust = options.trust;
+    this.#now = options.now ?? Date.now;
+  }
+
+  /** machine.info.files.roots：TRINE_FILES_ALLOW 在前；不支持信任目录时返回 undefined */
+  roots(): FilesRoot[] | undefined {
+    if (this.#trust === undefined) return undefined;
+    const env = this.#access.allow.map((path): FilesRoot => ({ path, source: 'env' }));
+    const seen = new Set(env.map((r) => r.path));
+    const trusted = this.#trust
+      .list()
+      .filter((d) => !seen.has(d.path))
+      .map((d): FilesRoot => ({ path: d.path, source: 'trusted', addedAt: d.addedAt }));
+    // 协议上限：信任目录最多 FILES_TRUSTED_MAX 个，超出部分只可能来自过长的 TRINE_FILES_ALLOW，从 env 那头截
+    const room = Math.max(0, FILES_ROOTS_MAX - trusted.length);
+    return [...env.slice(0, room), ...trusted];
+  }
+
+  /** agent 的 home（web 用来提示「信任 home 及其上级」的风险） */
+  get osHome(): string {
+    return this.#access.osHome;
+  }
+
+  /**
+   * 加入信任目录。校验：绝对路径或 `~`、存在且是目录、不是 `/`（字面与真实路径都查）、
+   * 不是密钥类 / trine home 之内 / 系统伪文件系统。已在列表（含 TRINE_FILES_ALLOW）里算成功。
+   * @returns 存下的路径
+   */
+  async trust(input: string): Promise<string> {
+    const store = this.#trust;
+    if (store === undefined) throw new TrustError('failed', '这台 agent 不支持信任目录');
+    if (input.includes('\0')) throw new TrustError('invalid', '路径不合法');
+    const path = this.#access.absolute(input.trim(), undefined);
+    if (path === undefined) throw new TrustError('invalid', '必须是绝对路径或以 ~ 开头');
+    if (path === '/') throw new TrustError('denied', '不能信任根目录 /');
+    let real: string;
+    try {
+      real = await realpath(path);
+      if (!(await stat(real)).isDirectory()) throw new TrustError('not_found', '不是目录');
+    } catch (err) {
+      if (err instanceof TrustError) throw err;
+      throw new TrustError('not_found', '目录不存在或无法访问');
+    }
+    if (real === '/') throw new TrustError('denied', '不能信任根目录 /（这个路径指向 /）');
+    if ((await this.#access.isSensitivePath(path)) || (await this.#access.isSensitivePath(real))) {
+      throw new TrustError('denied', '密钥类目录、trine 自己的目录和系统目录不能信任');
+    }
+    if (this.#access.allow.includes(path) || store.has(path)) return path;
+    if (store.size >= FILES_TRUSTED_MAX) throw new TrustError('limit', `信任目录最多 ${FILES_TRUSTED_MAX} 个`);
+    try {
+      await store.add(path, this.#now());
+    } catch (err) {
+      throw new TrustError('failed', `保存失败：${err instanceof Error ? err.message : String(err)}`);
+    }
+    return path;
+  }
+
+  /** 移除信任目录（按存下的路径匹配）。TRINE_FILES_ALLOW 来源的不能删 */
+  async untrust(path: string): Promise<void> {
+    const store = this.#trust;
+    if (store === undefined) throw new TrustError('failed', '这台 agent 不支持信任目录');
+    if (!store.has(path)) {
+      throw new TrustError(
+        'not_trusted',
+        this.#access.allow.includes(path) ? '这个目录来自 TRINE_FILES_ALLOW，要在机器上改环境变量' : '不在信任目录里',
+      );
+    }
+    try {
+      await store.remove(path);
+    } catch (err) {
+      throw new TrustError('failed', `保存失败：${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   async list(cwd: string | undefined, input: string | undefined): Promise<ListResult> {

@@ -20,6 +20,7 @@ import { sodiumReady } from '@trine/core/crypto';
 import { AttachmentStore, type PreparedInput } from '../bridge/attachments.ts';
 import { FileAccess } from '../files/access.ts';
 import { FileService } from '../files/service.ts';
+import { TrustStore } from '../files/trust-store.ts';
 import { EventEmitter } from '../bridge/emitter.ts';
 import { SessionManager, type CreateSessionArgs } from '../bridge/manager.ts';
 import type { PendingPermissionSnapshot, PermissionVerdict } from '../bridge/permission.ts';
@@ -2566,15 +2567,47 @@ describe('Router · 文件查看', () => {
     const repo = join(dir, 'repo');
     mkdirSync(join(repo, 'docs'), { recursive: true });
     writeFileSync(join(repo, 'docs', 'a.md'), '# a');
+    const trust = TrustStore.memory();
     const files = new FileService({
-      access: new FileAccess({ allow: [], osHome: dir, trineHome: join(dir, 'trine-home') }),
+      access: new FileAccess({ allow: [], trusted: () => trust.list().map((d) => d.path), osHome: dir, trineHome: join(dir, 'trine-home') }),
       maxBytes: 1024,
       blobs: () => blobs,
+      trust,
     });
     const h = await makeHarness(withFiles ? { files } : {});
     h.state.rememberSession('s1', { ...params, cwd: repo });
-    return { ...h, repo, blobs };
+    return { ...h, repo, blobs, trust };
   }
+
+  test('往上走到范围外：denied 带 reason；files.trust.add 后可浏览，应答只回请求方并重发 machine.info', async () => {
+    const h = await setup();
+    await h.router.handle({ type: 'fs.list.request', ...c2a('s1'), reqId: 'l1', path: '..' }, phone);
+    await h.router.idle();
+    expect(h.byType('fs.list.response')[0]).toMatchObject({ ok: false, error: { code: 'denied', reason: 'out_of_scope' } });
+
+    await h.router.handle({ type: 'files.trust.add', ...c2a(), reqId: 't1', path: dir }, phone);
+    await h.router.idle();
+    const resp = h.events.find((e) => e.event.type === 'files.trust.response')!;
+    expect(resp.to).toBe('phone');
+    expect(resp.event).toMatchObject({ reqId: 't1', ok: true, path: dir });
+    expect(h.byType('machine.info')).toHaveLength(1);
+    expect(h.trust.list().map((d) => d.path)).toEqual([dir]);
+
+    await h.router.handle({ type: 'fs.list.request', ...c2a('s1'), reqId: 'l2', path: '..' }, phone);
+    await h.router.idle();
+    expect(h.byType('fs.list.response')[1]).toMatchObject({ ok: true, path: dir, root: dir });
+
+    await h.router.handle({ type: 'files.trust.add', ...c2a(), reqId: 't2', path: '/' }, phone);
+    await h.router.handle({ type: 'files.trust.remove', ...c2a(), reqId: 't3', path: '/nope' }, phone);
+    await h.router.handle({ type: 'files.trust.remove', ...c2a(), reqId: 't4', path: dir }, phone);
+    await h.router.idle();
+    const r = (reqId: string) => h.byType('files.trust.response').find((e) => 'reqId' in e && e.reqId === reqId);
+    expect(r('t2')).toMatchObject({ ok: false, error: { code: 'denied' } });
+    expect(r('t3')).toMatchObject({ ok: false, error: { code: 'not_trusted' } });
+    expect(r('t4')).toMatchObject({ ok: true });
+    expect(h.byType('machine.info')).toHaveLength(2);
+    expect(h.trust.list()).toEqual([]);
+  });
 
   test('fs.list / fs.read：范围是会话 cwd，只回请求方，不拉起会话', async () => {
     const h = await setup();

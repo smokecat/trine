@@ -28,6 +28,8 @@ import type {
   AgentToClientEvent,
   AttachmentRef,
   FsEntry,
+  FilesTrustErrorCode,
+  FsDeniedReason,
   FsErrorCode,
   FsFile,
   PermissionMode,
@@ -1145,7 +1147,7 @@ export class TrineClient {
     });
     if (res.type !== 'fs.list.response') throw new Error(`意外的应答 ${res.type}`);
     if (!res.ok || res.path === undefined || res.root === undefined || res.entries === undefined) {
-      throw new FsRequestError(res.error?.code ?? 'io', res.error?.message ?? '读取目录失败');
+      throw new FsRequestError(res.error?.code ?? 'io', res.error?.message ?? '读取目录失败', res.error?.reason);
     }
     return { path: res.path, root: res.root, entries: res.entries, truncated: res.truncated === true };
   }
@@ -1172,7 +1174,9 @@ export class TrineClient {
         { timeoutMs: Math.max(this.#requestTimeoutMs, 60_000) },
       );
       if (res.type !== 'fs.read.response') throw new Error(`意外的应答 ${res.type}`);
-      if (!res.ok || res.file === undefined) throw new FsRequestError(res.error?.code ?? 'io', res.error?.message ?? '读取文件失败');
+      if (!res.ok || res.file === undefined) {
+        throw new FsRequestError(res.error?.code ?? 'io', res.error?.message ?? '读取文件失败', res.error?.reason);
+      }
       const file = res.file;
       const parts: Uint8Array[] = [];
       await this.#blobs().downloadDecrypted(file.blobId, file.key, (chunk) => {
@@ -1858,6 +1862,20 @@ export class TrineClient {
   }
 
   /**
+   * 增删信任目录（agent ≥ 0.24.0，machine.info.files.roots 存在才支持）。成功后 agent 重发
+   * machine.info（列表以那里为准）；add 返回 agent 实际存下的路径。被拒抛 `FilesTrustError`。
+   */
+  async setDirTrusted(machineId: string, path: string, trusted: boolean): Promise<string> {
+    const res = await this.request<Extract<OutboundBody, { type: 'files.trust.add' | 'files.trust.remove' }>>(machineId, {
+      type: trusted ? 'files.trust.add' : 'files.trust.remove',
+      path,
+    });
+    if (res.type !== 'files.trust.response') throw new Error(`意外的应答 ${res.type}`);
+    if (!res.ok) throw new FilesTrustError(res.error?.code ?? 'failed', res.error?.message ?? '操作失败');
+    return res.path ?? path;
+  }
+
+  /**
    * 重启 agent（machine.info.restart 存在才支持，调用方先做能力探测）：`schedule` 等会话空闲后重启，
    * `now` 立即重启，`cancel` 取消。应答在预检结束后到达；排空进度随 machine.info.restart 广播。
    * 业务失败不抛，发不出去 / 超时才抛。
@@ -2270,9 +2288,22 @@ export interface OpenedFile {
 /** agent 拒绝了文件查看请求（code 见协议 FsErrorCode） */
 export class FsRequestError extends Error {
   readonly code: FsErrorCode;
-  constructor(code: FsErrorCode, message: string) {
+  /** denied 的细分（agent ≥ 0.24.0）：out_of_scope 可以去信任，sensitive 不行；旧 agent 不带 */
+  readonly reason: FsDeniedReason | undefined;
+  constructor(code: FsErrorCode, message: string, reason?: FsDeniedReason) {
     super(message);
     this.name = 'FsRequestError';
+    this.code = code;
+    this.reason = reason;
+  }
+}
+
+/** agent 拒绝了信任目录的增删（code 见协议 FilesTrustErrorCode） */
+export class FilesTrustError extends Error {
+  readonly code: FilesTrustErrorCode;
+  constructor(code: FilesTrustErrorCode, message: string) {
+    super(message);
+    this.name = 'FilesTrustError';
     this.code = code;
   }
 }

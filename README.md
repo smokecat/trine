@@ -27,8 +27,11 @@ the agent runs on your own computer.
   clickable paths in messages, and "浏览文件" in the session menu to browse the session's
   working directory. Markdown is rendered (relative links open the linked file), text and code
   are highlighted, PDFs open in the browser's viewer, images are shown, anything else can be
-  downloaded. Read-only; limited to the session directory plus `TRINE_FILES_ALLOW`, and key
-  material such as `.env` and private keys is always refused. Requires agent 0.20.0 or later.
+  downloaded. Read-only; limited to the session directory plus the machine's trusted
+  directories, and key material such as `.env` and private keys is always refused. The browser
+  can go up past the session directory: a directory outside the scope shows what trusting it
+  means and offers to trust it, and a "位置" menu jumps to the session directory or any trusted
+  directory. Requires agent 0.20.0 or later (trusted directories: 0.24.0).
 - Keeps reusable prompt snippets on the device: edit and copy them in Settings, and insert one at
   the cursor (or copy it) from the prompt button next to the paperclip. On phones, attachments and
   snippets live behind a `+` button so the input keeps its width.
@@ -182,12 +185,17 @@ the agent to upload it again from its copy under `<home>/uploads`. Images up to 
 3.75 MB and 2000 px are given to Claude inline; larger images and other files are listed
 by path for Claude to read. Requires agent 0.11.0 or later.
 
-File viewing: any paired device can list and read files in a session's working directory.
-`TRINE_FILES_ALLOW` on the agent adds more directories (`:`-separated, absolute or starting
-with `~`); `TRINE_FILES=off` turns the feature off. Symlinks are followed only if the target is
+File viewing: any paired device can list and read files in a session's working directory and in
+the machine's trusted directories. Trusted directories come from two places: `TRINE_FILES_ALLOW`
+on the agent (`:`-separated, absolute or starting with `~`; read-only in the browser), and the
+list kept in `<home>/files.json`, which any paired device can change from the file panel or the
+machine page (agent 0.24.0 or later). Trusting applies to every session and every paired device of
+that machine. `/` cannot be trusted, and the browser warns before trusting the home directory or
+one of its parents. `TRINE_FILES=off` turns the feature off. Symlinks are followed only if the target is
 in scope, and key material is always refused: `.env` files (templates such as `.env.example`
 are allowed), private keys and certificates, `.netrc`/`.npmrc`/`.pypirc`, anything under
-`.ssh`, `.gnupg`, `.aws`, `.git`, `.docker` or `.kube`, and the agent's own home. Files up to
+`.ssh`, `.gnupg`, `.aws`, `.git`, `.docker` or `.kube`, the agent's own home, and `/proc`, `/sys`
+and `/dev` (agent 0.24.0 or later). Files up to
 20 MiB are encrypted by the agent and passed through the relay like attachments (same
 `TRINE_BLOB_TTL_MS`). Requires agent 0.20.0 or later.
 

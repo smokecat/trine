@@ -66,7 +66,9 @@ import type {
 //   支持 machine.engine.update.request / machine.engine.check.request
 // - 0.23.0 起引擎由 Homebrew、apt 安装时更新和版本检查走包管理器；MachineInfo.claudeLatest、
 //   EngineSummary 带 install（实际的更新命令）
-export const AGENT_VERSION = '0.23.0';
+// - 0.24.0 起支持信任目录（files.trust.add / remove，`~/.trine/files.json`）：MachineInfo.files 带
+//   roots / home（web 按 roots 有无判断）；fs.* 的 denied 带 reason；/proc /sys /dev 一律拒绝
+export const AGENT_VERSION = '0.24.0';
 
 export function buildMachineInfo(input: {
   name: string;

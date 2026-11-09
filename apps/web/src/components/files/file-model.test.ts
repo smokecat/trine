@@ -1,6 +1,9 @@
 import { describe, expect, test } from 'bun:test';
 import {
-  breadcrumbs,
+  isUnder,
+  normalizeDirInput,
+  pathCrumbs,
+  trustRisk,
   detectPath,
   displayPath,
   fenceCode,
@@ -76,18 +79,43 @@ describe('链接与路径', () => {
     expect(resolveRelative('/w/repo/docs/a.md', '~/x.md')).toBe('~/x.md');
   });
 
-  test('displayPath / breadcrumbs / parentDir', () => {
+  test('displayPath / pathCrumbs / parentDir', () => {
     expect(displayPath('/w/repo/docs/a.md', '/w/repo')).toBe('docs/a.md');
     expect(displayPath('/w/repo', '/w/repo')).toBe('.');
     expect(displayPath('/w/repo2/a', '/w/repo')).toBe('/w/repo2/a');
-    expect(breadcrumbs('/w/repo/docs/design', '/w/repo')).toEqual([
-      { label: 'repo', path: '/w/repo' },
-      { label: 'docs', path: '/w/repo/docs' },
-      { label: 'design', path: '/w/repo/docs/design' },
+    expect(pathCrumbs('/w/repo/docs', '/w/repo')).toEqual([
+      { label: '/', path: '/', inScope: false },
+      { label: 'w', path: '/w', inScope: false },
+      { label: 'repo', path: '/w/repo', inScope: true },
+      { label: 'docs', path: '/w/repo/docs', inScope: true },
     ]);
-    expect(breadcrumbs('/w/repo', '/w/repo')).toEqual([{ label: 'repo', path: '/w/repo' }]);
+    expect(pathCrumbs('/w/x')).toEqual([
+      { label: '/', path: '/', inScope: false },
+      { label: 'w', path: '/w', inScope: false },
+      { label: 'x', path: '/w/x', inScope: false },
+    ]);
+    expect(pathCrumbs('/', '/')).toEqual([{ label: '/', path: '/', inScope: true }]);
     expect(parentDir('/w/repo/a.md')).toBe('/w/repo');
     expect(parentDir('/a')).toBe('/');
+  });
+
+  test('normalizeDirInput', () => {
+    expect(normalizeDirInput('~', '/home/u')).toBe('/home/u');
+    expect(normalizeDirInput('~/..', '/home/u')).toBe('/home');
+    expect(normalizeDirInput('/home/u/./w//', '/home/u')).toBe('/home/u/w');
+    expect(normalizeDirInput('/..', undefined)).toBe('/');
+    expect(normalizeDirInput('~/x', undefined)).toBeUndefined();
+    expect(normalizeDirInput('rel', '/home/u')).toBeUndefined();
+  });
+
+  test('isUnder 按路径段；trustRisk', () => {
+    expect(isUnder('/a/b', '/a')).toBe(true);
+    expect(isUnder('/a/bc', '/a/b')).toBe(false);
+    expect(isUnder('/a', '/')).toBe(true);
+    expect(trustRisk('/home/u', '/home/u')).toBe('home');
+    expect(trustRisk('/home', '/home/u')).toBe('above-home');
+    expect(trustRisk('/home/u/w', '/home/u')).toBeUndefined();
+    expect(trustRisk('/home/u', undefined)).toBeUndefined();
   });
 
   test('visibleEntries 默认藏点开头的', () => {

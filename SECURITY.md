@@ -51,10 +51,15 @@ is not a substitute for those controls, backups or TLS.
   (deleted with the session) and lets Claude read that session's folder without an
   approval prompt. Any paired controller can place files there.
 - File viewing (agent 0.20.0+) lets any paired device read files in a session's
-  working directory, plus directories listed in the agent's `TRINE_FILES_ALLOW`.
+  working directory, plus the machine's trusted directories: those listed in the agent's
+  `TRINE_FILES_ALLOW`, and (agent 0.24.0+) those in `<home>/files.json`, which any paired
+  device can add or remove. This does not give a paired device more than it already has (it can
+  start a session in any directory), but a trusted directory stays readable for every session
+  and device until removed. `/` cannot be trusted.
   File contents travel like attachments (encrypted relay blobs). The agent always
   refuses key material (`.env*` except templates, private keys and certificates,
-  `.ssh`, `.gnupg`, `.aws`, `.git` internals, `.netrc`/`.npmrc`, the agent's own home)
+  `.ssh`, `.gnupg`, `.aws`, `.git` internals, `.netrc`/`.npmrc`, the agent's own home, and
+  from 0.24.0 `/proc`, `/sys` and `/dev`, where process environments can hold tokens)
   and checks symlink targets, but anything else in scope is readable. Set
   `TRINE_FILES=off` on the agent to disable it.
 - A compromised frontend host can replace JavaScript and steal browser keys or plaintext.

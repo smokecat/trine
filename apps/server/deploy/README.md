@@ -218,7 +218,8 @@ WantedBy=default.target
 
 systemd does not load your shell profile: add `Environment=PATH=...` and any other variables
 your sessions need, including `TRINE_FILES_ALLOW` (extra directories the browser may view
-besides each session's working directory) or `TRINE_FILES=off` (no file viewing).
+besides each session's working directory; more can be trusted from the browser, stored in
+`<home>/files.json`) or `TRINE_FILES=off` (no file viewing).
 
 ## 5. Add machines, revoke invitations and recover
 

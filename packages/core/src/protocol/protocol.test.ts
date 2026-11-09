@@ -246,6 +246,17 @@ describe('E2E 事件帧', () => {
     expect(AgentToClientEventSchema.parse(res).type).toBe('attachment.fetch.response');
   });
 
+  test('files.trust.* 与 fs denied reason（trusted-browse-dirs）', () => {
+    const m = { ts, seq: 1, dir: 'c2a' } as const;
+    expect(ClientToAgentEventSchema.parse({ type: 'files.trust.add', ...m, reqId: 'r', path: '~/w' }).type).toBe('files.trust.add');
+    expect(ClientToAgentEventSchema.safeParse({ type: 'files.trust.remove', ...m, reqId: 'r', path: '' }).success).toBe(false);
+    const res = { type: 'files.trust.response', ts, seq: 1, dir: 'a2c', reqId: 'r', ok: false, error: { code: 'denied', message: 'x' } };
+    expect(AgentToClientEventSchema.parse(res).type).toBe('files.trust.response');
+    const denied = { type: 'fs.list.response', ...a2c, reqId: 'l', ok: false, error: { code: 'denied', message: 'x', reason: 'out_of_scope' } };
+    const parsed = AgentToClientEventSchema.parse(denied);
+    expect(parsed.type === 'fs.list.response' && parsed.error?.reason).toBe('out_of_scope');
+  });
+
   test('fs.list / fs.read 请求与应答', () => {
     const list = { type: 'fs.list.request', ...c2a, reqId: 'r1' };
     expect(ClientToAgentEventSchema.parse(list).type).toBe('fs.list.request');

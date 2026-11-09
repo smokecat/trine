@@ -750,6 +750,7 @@ export function applyEvent(tl: Timeline, event: AgentToClientEvent): Timeline {
     case 'attachment.fetch.response':
     // 文件查看由 client.listFiles / openFile 按 reqId 关联；这里只推进游标
     case 'fs.list.response':
+    case 'files.trust.response':
     case 'fs.read.response':
     // 命令清单由 client.loadCommands 按 reqId 关联后写进 capabilities；这里只推进游标
     case 'session.commands.response':

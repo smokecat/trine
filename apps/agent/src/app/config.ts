@@ -60,6 +60,7 @@ export function agentPaths(home: string): {
   recipients: string;
   state: string;
   cwd: string;
+  filesTrust: string;
   sessions: string;
   uploads: string;
   extensions: string;
@@ -72,6 +73,8 @@ export function agentPaths(home: string): {
     recipients: join(home, 'recipients.json'),
     state: join(home, 'state.json'),
     cwd: join(home, 'cwd.json'),
+    /** 信任目录（文件浏览，见 files/trust-store.ts） */
+    filesTrust: join(home, 'files.json'),
     sessions: join(home, 'sessions.json'),
     /** 用户消息附件（见 bridge/attachments.ts） */
     uploads: join(home, 'uploads'),
@@ -121,7 +124,7 @@ export const USAGE = `用法：trine-agent [--enroll] [--pair] [--server URL] [-
   selfcheck       加载全部代码后退出（重启预检用）
 
 env：TRINE_DEFAULT_MODEL  TRINE_MAX_SESSIONS  TRINE_IDLE_TIMEOUT_MS
-     TRINE_FILES=off（关闭文件查看）  TRINE_FILES_ALLOW=DIR[:DIR...]（会话目录之外允许查看的目录）
+     TRINE_FILES=off（关闭文件查看）  TRINE_FILES_ALLOW=DIR[:DIR...]（会话目录之外允许查看的目录；也可在浏览器里信任，存 files.json）
      TRINE_ENGINES=claude（不启用 Codex；默认 claude,codex）  TRINE_CODEX_BIN=PATH`;
 
 export interface SubcommandInvocation {

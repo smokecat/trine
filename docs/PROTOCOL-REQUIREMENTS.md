@@ -140,14 +140,23 @@
     agent 用一次性 key 加密后上传 relay blob，引用随应答返回；单文件上限 20MiB（`machine.info.files.maxBytes`）
   - kind 先看扩展名，文本类扩展名与未知扩展名再嗅探前 8KB（无 NUL 且是合法 UTF-8 → text，否则 binary）
 - 错误码：`not_found | denied | too_large | is_dir | not_dir | io | unavailable`
-- 范围：会话 cwd 及其子目录，加上 agent 环境变量 `TRINE_FILES_ALLOW`（`:` 分隔的绝对路径或 `~` 开头的路径）。请求路径先按字面判断范围
+- 范围：会话 cwd 及其子目录，加上信任目录：agent 环境变量 `TRINE_FILES_ALLOW`（`:` 分隔的绝对路径或 `~` 开头的路径），
+  以及 `<home>/files.json` 里的列表（agent ≥ 0.24.0，见下文 `files.trust.*`）。往上浏览不另设限制，范围外的请求回 `denied`。请求路径先按字面判断范围
   （范围外直接 `denied`，不碰文件系统），再按 realpath 判断一次（挡符号链接逃逸）；不存在的路径要最深的已存在祖先在范围内才回
   `not_found`，否则也是 `denied`（不能经指向范围外的链接探测文件是否存在）。密钥类判断对字面路径与真实路径都做，目录名不分大小写。
   读文件用 `O_NONBLOCK | O_NOFOLLOW` 打开（命名管道不会挂住），打开后再解析一次路径、比对 inode，检查之后被换掉的回 `denied`。
   密钥类文件始终拒绝，不能配置放开：`.env` / `.env.*`（`.env.example` 等模板除外）、`*.pem` / `*.key` / `*.p12` / `*.pfx` 等、
   `id_rsa` 等 SSH 私钥、`.netrc` / `.npmrc` / `.pypirc` / `.pgpass` / `.git-credentials`、`credentials*.json`，
-  路径中任一段是 `.ssh` / `.gnupg` / `.aws` / `.git` / `.docker` / `.kube` 的，以及 agent 自己的 home
-- `machine.info.files?: { maxBytes }` — 有 = 支持；`TRINE_FILES=off` 时不带，请求回 `unavailable`
+  路径中任一段是 `.ssh` / `.gnupg` / `.aws` / `.git` / `.docker` / `.kube` 的，agent 自己的 home，以及 `/proc` / `/sys` / `/dev`（0.24.0 起）
+- `denied` 的 `error.reason?`（0.24.0 起）：`out_of_scope`（不在会话 cwd / 信任目录之内，client 可提供信任入口）或
+  `sensitive`（上面这些不可覆盖的拒绝）
+- `machine.info.files?: { maxBytes, roots?, home? }` — 有 = 支持；`TRINE_FILES=off` 时不带，请求回 `unavailable`。
+  `roots: { path, source: 'env' | 'trusted', addedAt? }[]`（0.24.0 起，有 = 支持信任目录），`home` 是 agent 用户的 home，
+  client 用来对「信任 home 或其上级」加强提示
+- 信任目录（机器级，0.24.0 起）：`files.trust.add { reqId, path }` / `files.trust.remove { reqId, path }` →
+  `files.trust.response { reqId, ok, path?, error?: { code: invalid | not_found | denied | limit | not_trusted | failed, message } }`，
+  只回请求方；成功后广播 `machine.info`。add 要求绝对路径或 `~` 开头、存在且是目录、不是 `/`（字面与真实路径）、不是密钥类；
+  重复加或已在 `TRINE_FILES_ALLOW` 里算成功；最多 64 个。信任目录每次请求按当前真实路径复查，之后被换成指向 `/` 或密钥类目录的链接就不再当根；`roots` 最多 256 条（过长的 `TRINE_FILES_ALLOW` 截断）。remove 按存下的路径匹配，`TRINE_FILES_ALLOW` 来源的回 `not_trusted`
 - client：入口是工具卡的预览按钮（`filePath`）、消息里像路径的行内代码与相对链接、会话菜单「浏览文件」；按 `machine.info.files` 有无决定显示。
   html 只显示源码；svg 只经 `<img>` 显示；PDF 放进 `<iframe>`（Blob 强制 `application/pdf`，静态响应的 CSP 因此带 `frame-src 'self' blob:`）
 

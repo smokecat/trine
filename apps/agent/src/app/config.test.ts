@@ -70,6 +70,7 @@ describe('loadAgentConfig', () => {
       recipients: '/h/recipients.json',
       state: '/h/state.json',
       cwd: '/h/cwd.json',
+      filesTrust: '/h/files.json',
       sessions: '/h/sessions.json',
       uploads: '/h/uploads',
       extensions: '/h/extensions.json',
