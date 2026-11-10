@@ -35,6 +35,8 @@
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import { PermissionModeSchema, type PermissionMode, type SessionState } from '@trine/core';
 import {
+  isAsyncLaunch,
+  isClaudeSubagentTool,
   outputPreview,
   subagentReportText,
   stripAnsi,
@@ -43,6 +45,7 @@ import {
   toSingleLine,
   withArgDetail,
   withFilePath,
+  withSubagentStart,
 } from './summarize.ts';
 import type { EventBody } from './types.ts';
 
@@ -382,6 +385,7 @@ function toolStarts(messageBody: unknown, ctx: TranslateContext, parentToolUseId
       ...withFilePath(toolName, b['input']),
       ...withArgDetail(toolName, b['input'], argSummary),
       ...(parentToolUseId === undefined ? {} : { parentToolUseId }),
+      ...withSubagentStart(toolName, b['input']),
     });
   }
   return out;
@@ -429,10 +433,12 @@ function translateUser(
     });
 
     // Agent/Task 的预览给报告正文，不给写给模型看的前言与 usage 尾巴
-    const isSubagentTool = toolName === 'Agent' || toolName === 'Task';
+    const isSubagentTool = isClaudeSubagentTool(toolName);
     const preview = outputPreview(isSubagentTool && !isError ? subagentReportText(structured, text) : text);
     // parent 以消息上的为准；消息没带（不该发生）再用 start 时记的
     const parentToolUseId = parent ?? pending?.parentToolUseId;
+    // 启动工具返回 ≠ 子 agent 结束：后台启动的标出来，client 另按后台任务快照显示运行状态
+    const background = isSubagentTool && !isError && isAsyncLaunch(structured, text);
     out.push({
       type: 'tool.end',
       toolUseId,
@@ -441,6 +447,7 @@ function translateUser(
       resultSummary,
       ...(preview === undefined ? {} : { outputPreview: preview }),
       ...(parentToolUseId === undefined ? {} : { parentToolUseId }),
+      ...(background ? { subagent: { background: true } } : {}),
     });
   }
   return out;

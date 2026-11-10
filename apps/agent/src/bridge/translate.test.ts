@@ -672,6 +672,39 @@ describe('translateMessage · 子 agent', () => {
     expect('parentToolUseId' in out[0]!).toBe(false);
   });
 
+  test('Agent 的 tool.start 带 subagent（类型 / 显式后台）与 prompt；后台启动回执的 tool.end 标 background', () => {
+    const state = createTranslateState(0);
+    const start = translateMessage(
+      assistantMessage([
+        { type: 'tool_use', id: PARENT, name: 'Agent', input: { description: 'probe', prompt: 'do x\nthen y', subagent_type: 'Explore' } },
+      ]),
+      ctx(state, 0),
+    );
+    expect(start[0]).toMatchObject({ type: 'tool.start', argDetail: 'do x\nthen y', subagent: { agentType: 'Explore' } });
+    expect((start[0] as { subagent?: { background?: boolean } }).subagent?.background).toBeUndefined();
+    // SDK 下不带 run_in_background 也可能后台跑（spike S1）：以启动结果为准
+    const end = translateMessage(
+      {
+        type: 'user',
+        message: { role: 'user', content: [{ tool_use_id: PARENT, type: 'tool_result', content: [{ type: 'text', text: 'Async agent launched successfully. (internal)' }] }] },
+        parent_tool_use_id: null,
+        tool_use_result: { status: 'async_launched', isAsync: true, agentId: 'a1' },
+      } as unknown as SDKMessage,
+      ctx(state, 100),
+    );
+    expect(end[0]).toMatchObject({ type: 'tool.end', status: 'ok', resultSummary: '✓ 后台子 agent 已启动', subagent: { background: true } });
+    for (const body of [...start, ...end]) {
+      expect(AgentToClientEventSchema.safeParse({ ...body, ts: 1, seq: 1, dir: 'a2c', sessionId: 's1' }).success).toBe(true);
+    }
+  });
+
+  test('前台 Agent 正常结束：tool.end 不带 subagent', () => {
+    const state = createTranslateState(0);
+    translateMessage(assistantMessage([{ type: 'tool_use', id: PARENT, name: 'Agent', input: { description: 'd' } }]), ctx(state, 0));
+    const out = translateMessage(userMessage([{ tool_use_id: PARENT, type: 'tool_result', content: AGENT_RESULT_TEXT }]), ctx(state, 20_000));
+    expect('subagent' in out[0]!).toBe(false);
+  });
+
   test('Agent 结果没有结构化输出（旧 CLI）：从文本的 <usage> 块取，预览剥掉前言与尾巴', () => {
     const state = createTranslateState(0);
     translateMessage(assistantMessage([{ type: 'tool_use', id: PARENT, name: 'Task', input: { description: 'd' } }]), ctx(state, 0));
