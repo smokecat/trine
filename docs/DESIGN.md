@@ -79,6 +79,14 @@ Trine 是供长时间使用的远程 AI 工作台。设计以任务连续性、�
 
 实现依据：[MDN VisualViewport](https://developer.mozilla.org/en-US/docs/Web/API/VisualViewport)。
 
+## 弹层与安全区补充验收
+
+外壳统一预留顶部与横屏两侧的 safe-area，底部 sheet 在内部间距外预留 home indicator 区域。Composer 与文件正文保留各自已有的底部安全区，不在外壳重复累加。
+
+使用实际 NewSessionSheet、TrustDirDialog、FilePanel 进行触屏 Chromium 的确定性几何检查：390×844 下将可见区域缩为 360px、顶部偏移 60px；844×390 下缩为 200px、顶部偏移 20px。六种组合的弹层边界均落在可见区域中，无页面横向溢出；新建与长信任说明可内部滚动。这里注入的是 VisualViewport 事件，不等同原生键盘验证。
+
+模拟器 Safari 的实际新建面板可打开、聚焦、关闭，主屏测试入口也已添加；但系统 WebApp 独立启动只显示空白原生容器，且无界面模拟器的硬件键盘状态仍妨碍稳定重现弹层内屏幕键盘。因此本轮不把主屏模式、弹层内原生键盘及原生旋转列为通过；物理设备仍需检查这三项，并确认状态栏、横屏刘海和 home indicator 不遮挡操作。
+
 ## 参考依据
 
 采用原则并按 Trine 的任务结构调整，并未复制组件源码：
