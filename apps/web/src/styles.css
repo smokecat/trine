@@ -280,6 +280,9 @@
     min-height: 44px;
   }
   [data-slot='button'][data-size^='icon'] { min-width: 44px; }
+  /* Keep settings/pairing overrides from triggering Safari focus zoom. */
+  [data-slot='input'], [data-slot='textarea'] { font-size: 16px; }
+  [data-slot='input'] { min-height: 44px; }
 }
 
 /* Safari keeps the layout viewport tall while its keyboard reduces the visual viewport. */
