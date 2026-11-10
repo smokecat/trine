@@ -45,7 +45,7 @@ function PlanConfirmDialog({ plan }: { plan: ExtPlan | null }): React.JSX.Elemen
   const destructive = plan?.steps.some((s) => s.type === 'invoke' && s.destructive) === true;
   return (
     <Dialog open={plan !== null} onOpenChange={(open) => !open && settleConfirm(false)}>
-      <DialogContent data-testid="ext-confirm" className="max-w-[min(32rem,calc(100vw-2rem))]">
+      <DialogContent data-testid="ext-confirm" resizable="ext-confirm" className="max-w-[min(32rem,calc(100vw-2rem))]">
         {plan !== null && (
           <>
             <DialogHeader>
@@ -142,7 +142,7 @@ function LinkPickerDialog({ request }: { request: LinkPickerRequest }): React.JS
   const ext = pickers.find((e) => e.id === extId) ?? pickers[0];
   return (
     <Dialog open onOpenChange={(open) => !open && closeLinkPicker()}>
-      <DialogContent data-testid="ext-link-picker" className="max-w-[min(30rem,calc(100vw-2rem))]">
+      <DialogContent data-testid="ext-link-picker" resizable="ext-link-picker" className="max-w-[min(30rem,calc(100vw-2rem))]">
         <DialogHeader>
           <DialogTitle>{ext?.contributes.linkPicker?.title ?? '关联'}</DialogTitle>
           <DialogDescription className="text-text-3 text-[12px]">
@@ -266,7 +266,7 @@ function LinkPickerBody({ request, ext, multiple }: { request: LinkPickerRequest
                   {item.badges?.map((b, i) => <ExtBadgeChip key={i} badge={b} />)}
                 </span>
                 {item.subtitle !== undefined && (
-                  <span className="text-text-3 block truncate text-[12px]" title={item.subtitle}>
+                  <span className="text-text-3 line-clamp-2 text-[12px] break-words" title={item.subtitle}>
                     {item.subtitle}
                   </span>
                 )}
