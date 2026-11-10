@@ -248,7 +248,7 @@ export const ToolArgDetailSchema = z.string().min(1).max(TOOL_ARG_DETAIL_MAX + 6
  * 子 agent 的目标状态（与「启动它的那次工具调用」的结果分开表达）。
  *
  * - Claude：后台子 agent 的 running → completed / failed / stopped；历史里拿不到结束证据时
- *   为 `unknown`（状态未知）。
+ *   为 `unknown`（状态未知）；只知道已结束（子转录 meta.json 的 finished）、不知成败时为 `ended`。
  * - Codex：CollabAgentStatus 全部枚举一一对应：pendingInit → pending、running、interrupted、
  *   completed、errored → failed、shutdown、notFound → not_found。
  */
@@ -261,6 +261,7 @@ export const SubagentStateSchema = z.enum([
   'interrupted',
   'shutdown',
   'not_found',
+  'ended',
   'unknown',
 ]);
 export type SubagentState = z.infer<typeof SubagentStateSchema>;

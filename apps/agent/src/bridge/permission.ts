@@ -54,6 +54,8 @@ export interface PendingPermissionSnapshot {
   requestedAt: number;
   suggestions?: unknown[];
   parentToolUseId?: string;
+  /** 来自子 agent 但对不上派生卡（Codex）：子 thread id */
+  subagentId?: string;
   options?: PermissionOption[];
 }
 

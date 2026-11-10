@@ -219,6 +219,7 @@ const AGENT_STATE_LABEL: Record<SubagentState, string> = {
   interrupted: '已中断',
   shutdown: '已关闭',
   not_found: '找不到',
+  ended: '已结束',
   unknown: '状态未知',
 };
 

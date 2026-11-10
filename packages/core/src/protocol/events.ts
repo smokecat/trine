@@ -295,6 +295,11 @@ export const PermissionRequestSchema = z.object({
    * task_started 建的映射查得；查不到就不带。client 据此在卡片上标注来源。
    */
   parentToolUseId: ParentToolUseIdSchema.optional(),
+  /**
+   * 来自子 agent 但对不上派生卡时（Codex 子 thread 经 rootTurnId / thread/read 认亲）：子 thread 的 id，
+   * client 显示「来自子 agent · 短 id」，不让它看起来像父会话自己的审批。可选，旧 client 忽略
+   */
+  subagentId: z.string().min(1).max(128).optional(),
   options: z.array(PermissionOptionSchema).max(8).optional(),
 });
 

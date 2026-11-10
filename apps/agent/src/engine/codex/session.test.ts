@@ -1180,4 +1180,150 @@ describe('CodexSession · 子 agent thread（spike S2）', () => {
     expect(h.replyTo(31)).toMatchObject({ error: { code: -32601 } });
     h.engine.dispose();
   });
+
+  // ---- Codex 评审回归 ----
+
+  test('高1：进程退出作废全部审批（含子 agent 的）；新进程复用同一请求 id 照常出新卡；旧卡点了不生效', async () => {
+    const h = await spawned();
+    h.childRequest(41, 'item/commandExecution/requestApproval', { turnId: 'ct', command: 'a' });
+    await h.flush();
+    const old = h.of('permission.request')[0]!;
+    h.server.handlers!.onExit();
+    await h.flush();
+    expect(h.of('permission.invalidated').map((e) => e.requestId)).toContain(old.requestId);
+    expect(h.session.permissions.snapshot()).toHaveLength(0);
+    // 派生卡随进程收口，不永远「运行中」（中7）
+    expect(h.card().subagent?.state).toBe('unknown');
+    expect(h.session.respondPermission({ requestId: old.requestId, verdict: 'allow' })).toBe(false);
+    // 新进程：同一个请求 id 41 是新请求（归属表已清空，经 thread/read 认亲）
+    h.session.send('c2', 'again');
+    await h.flush();
+    expect(h.server.spawnCount).toBe(2);
+    h.childRequest(41, 'item/commandExecution/requestApproval', { turnId: 'ct2', command: 'b' });
+    await h.flush();
+    await h.flush();
+    const fresh = h.of('permission.request').at(-1)!;
+    expect(fresh.requestId).not.toBe(old.requestId);
+    expect(fresh.input).toMatchObject({ command: 'b' });
+    expect(h.session.respondPermission({ requestId: fresh.requestId, verdict: 'allow' })).toBe(true);
+    expect(h.server.sent.filter((m) => (m as { id?: number; result?: unknown }).id === 41 && 'result' in (m as object))).toHaveLength(1);
+    h.engine.dispose();
+  });
+
+  test('高2：归属未知时先到的 diff 暂存，认亲后回放，改文件卡有 diff', async () => {
+    const h = await spawned({ 'thread-late': { parentThreadId: THREAD } });
+    h.notify('item/started', { threadId: 'thread-late', item: { type: 'fileChange', id: 'fc-9', status: 'inProgress', changes: [{ path: '/w/b.txt', diff: '+y' }] } });
+    h.request(51, 'item/fileChange/requestApproval', { threadId: 'thread-late', turnId: 'lt', itemId: 'fc-9' });
+    await h.flush();
+    await h.flush();
+    const req = h.of('permission.request').at(-1)!;
+    expect(req).toMatchObject({ toolName: 'Edit', input: { file_path: '/w/b.txt', new_string: '+y' }, subagentId: 'thread-late' });
+    expect(req.options?.map((o) => o.id)).toEqual(['accept', 'acceptForSession', 'decline']);
+    h.engine.dispose();
+  });
+
+  test('高2：归属查询期间请求已被撤销 / 子轮已结束：不再出卡', async () => {
+    const h = await spawned({ 'thread-x': { parentThreadId: THREAD }, 'thread-y': { parentThreadId: THREAD } });
+    h.request(61, 'item/commandExecution/requestApproval', { threadId: 'thread-x', turnId: 'xt', command: 'a' });
+    h.notify('serverRequest/resolved', { threadId: 'thread-x', requestId: 61 });
+    h.request(62, 'item/commandExecution/requestApproval', { threadId: 'thread-y', turnId: 'yt', command: 'b' });
+    h.notify('turn/completed', { threadId: 'thread-y', turn: { id: 'yt', status: 'completed' } });
+    await h.flush();
+    await h.flush();
+    expect(h.of('permission.request')).toHaveLength(0);
+    expect(h.session.state).toBe('running');
+    h.engine.dispose();
+  });
+
+  test('高2：改文件审批补不到 diff：卡上说明无法预览、只给拒绝；点批准也按拒绝回', async () => {
+    const h = await spawned();
+    h.childRequest(71, 'item/fileChange/requestApproval', { turnId: 'ct', itemId: 'fc-missing' });
+    await h.flush();
+    await h.flush();
+    const req = h.of('permission.request').at(-1)!;
+    expect(req.options?.map((o) => o.kind)).toEqual(['reject']);
+    expect(String((req.input as { file_path?: unknown }).file_path)).toContain('无法预览');
+    h.session.respondPermission({ requestId: req.requestId, verdict: 'allow' });
+    expect(h.replyTo(71)).toEqual({ id: 71, result: { decision: 'decline' } });
+    h.engine.dispose();
+  });
+
+  test('中3：已处理的请求重放：不出第二张卡，答过的照原样再回，撤销过的不理', async () => {
+    const h = await spawned();
+    h.childRequest(81, 'item/commandExecution/requestApproval', { turnId: 'ct', command: 'a' });
+    await h.flush();
+    const first = h.of('permission.request')[0]!;
+    h.session.respondPermission({ requestId: first.requestId, verdict: 'deny' });
+    h.childRequest(81, 'item/commandExecution/requestApproval', { turnId: 'ct', command: 'a' });
+    await h.flush();
+    expect(h.of('permission.request')).toHaveLength(1);
+    const replies = h.server.sent.filter((m) => (m as { id?: number; result?: unknown }).id === 81 && 'result' in (m as object));
+    expect(replies).toEqual([
+      { id: 81, result: { decision: 'decline' } },
+      { id: 81, result: { decision: 'decline' } },
+    ]);
+    h.childRequest(82, 'item/commandExecution/requestApproval', { turnId: 'ct', command: 'b' });
+    h.child('serverRequest/resolved', { requestId: 82 });
+    h.childRequest(82, 'item/commandExecution/requestApproval', { turnId: 'ct', command: 'b' });
+    await h.flush();
+    expect(h.of('permission.request')).toHaveLength(2);
+    h.engine.dispose();
+  });
+
+  test('中4：父轮结束后点停止：子审批回拒绝并作废，子轮被中断，会话不再忙', async () => {
+    const h = await spawned();
+    h.child('turn/started', { turn: { id: 'ct', rootTurnId: 'turn-1', status: 'inProgress' } });
+    h.childRequest(91, 'item/commandExecution/requestApproval', { turnId: 'ct', command: 'a' });
+    await h.finish();
+    expect(h.session.state).toBe('waiting_permission');
+    await h.session.stop();
+    expect(h.replyTo(91)).toEqual({ id: 91, result: { decision: 'decline' } });
+    expect(h.session.permissions.snapshot()).toHaveLength(0);
+    expect(h.callsOf('turn/interrupt').map((c) => c.params)).toContainEqual({ threadId: CHILD, turnId: 'ct' });
+    expect(h.session.state).toBe('stopped');
+    expect((await h.session.previewThreadRewind('nope')).ok).toBe(false);
+    expect(((await h.session.previewThreadRewind('nope')) as { error: { code: string } }).error.code).not.toBe('busy');
+    h.engine.dispose();
+  });
+
+  test('中8：重连快照保留来源；认亲但对不上派生卡的标子 thread id', async () => {
+    const h = await spawned();
+    h.childRequest(101, 'item/commandExecution/requestApproval', { turnId: 'ct', command: 'a' });
+    h.notify('turn/started', { threadId: 'thread-sib', turn: { id: 'st', rootTurnId: 'turn-1' } });
+    h.request(102, 'item/commandExecution/requestApproval', { threadId: 'thread-sib', turnId: 'st', command: 'b' });
+    await h.flush();
+    const snap = h.session.permissions.snapshot();
+    expect(snap[0]).toMatchObject({ parentToolUseId: 'call_spawn' });
+    expect(snap[1]).toMatchObject({ subagentId: 'thread-sib' });
+    expect(snap[1]!.parentToolUseId).toBeUndefined();
+    h.engine.dispose();
+  });
+
+  test('低10：thread/started 带 parentThreadId 即记下归属，审批不必再查', async () => {
+    const h = await spawned();
+    h.server.handlers!.onLine(JSON.stringify({ method: 'thread/started', params: { thread: { id: 'thread-new', parentThreadId: THREAD } } }));
+    const reads = h.callsOf('thread/read').length;
+    h.request(111, 'item/commandExecution/requestApproval', { threadId: 'thread-new', turnId: 'n', command: 'a' });
+    await h.flush();
+    expect(h.of('permission.request').at(-1)).toMatchObject({ subagentId: 'thread-new' });
+    expect(h.callsOf('thread/read').length).toBe(reads);
+    h.engine.dispose();
+  });
+
+  test('中7：读历史时活跃会话里仍在跑的子 agent 不被判成状态未知', async () => {
+    const h = await spawned();
+    h.server.routes['thread/items/list'] = () => ({
+      data: [{ item: { type: 'subAgentActivity', id: 'call_spawn', kind: 'started', agentThreadId: CHILD, agentPath: '/root/probe' } }],
+      nextCursor: null,
+    });
+    const items = await h.engine.history(THREAD);
+    expect(items[0]).toMatchObject({ subagent: { state: 'running' } });
+    h.child('turn/completed', { turn: { id: 'ct', status: 'completed' } });
+    h.server.routes['thread/items/list'] = () => ({
+      data: [{ item: { type: 'subAgentActivity', id: 'call_spawn', kind: 'started', agentThreadId: CHILD, agentPath: '/root/probe' } }],
+      nextCursor: null,
+    });
+    expect((await h.engine.history(THREAD))[0]).toMatchObject({ subagent: { state: 'completed' } });
+    h.engine.dispose();
+  });
 });

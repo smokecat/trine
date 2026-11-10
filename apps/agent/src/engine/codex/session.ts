@@ -85,6 +85,8 @@ export interface CodexSessionEvents {
   onChildNotification?(childThreadId: string, method: string, params: Rec): void;
   /** turnId 是不是本会话当前的轮（子 turn 的 rootTurnId 认亲用） */
   ownsTurn?(turnId: string): boolean;
+  /** 子 agent 当前状态（读历史时校正派生卡用） */
+  childStates?(): ReadonlyMap<string, SubagentState>;
   onExit(): void;
 }
 
@@ -113,6 +115,10 @@ interface PendingApproval {
   turnId: string | undefined;
   /** 来自子 agent：它的派生卡 id（permission.request 的 parentToolUseId） */
   parentToolUseId: string | undefined;
+  /** 来自子 agent 但对不上派生卡：子 thread id（permission.request 的 subagentId） */
+  subagentId: string | undefined;
+  /** 已了结记录的键（见 #handled） */
+  key: string;
   toolName: string;
   input: Record<string, unknown>;
   requestedAt: number;
@@ -138,7 +144,16 @@ interface RequestOrigin {
   threadId: string;
   turnId: string | undefined;
   parentToolUseId: string | undefined;
+  subagentId: string | undefined;
+  key: string;
 }
+
+/** 已了结请求 / 已结束轮记录的上限 */
+const MAX_HANDLED = 500;
+/** 改文件审批缺 diff 时补读子 thread item 的等待上限 */
+const DIFF_LOOKUP_TIMEOUT_MS = 3_000;
+/** 补不到 diff 时卡上显示的说明（只给拒绝） */
+const NO_PREVIEW = '（无法预览改动内容：没有收到这次改动的详情，只能拒绝）';
 
 const ALLOW_ONCE: PermissionOption = { id: 'accept', label: '批准', kind: 'allow_once' };
 const ALLOW_SESSION: PermissionOption = { id: 'acceptForSession', label: '本会话都批准', kind: 'allow_session' };
@@ -214,6 +229,20 @@ export class CodexSession implements EngineSession, CodexSessionEvents {
   readonly #childAgents = new Map<string, ChildAgent>();
   /** 孙辈及更深的 thread → 它所属的直接子 thread（审批卡的来源标注用） */
   readonly #descendants = new Map<string, string>();
+  /** 子 thread 正在进行的 turn（停止时按它中断；turn/completed 时删） */
+  readonly #childTurns = new Map<string, string>();
+  /**
+   * app-server 进程代际：进程退出加一。请求 id 只在一个连接内唯一，新进程会复用同样的 id，
+   * 所以已处理记录、已结束的轮都按代际隔离（评审 高1 / 中3）
+   */
+  #procGen = 0;
+  /**
+   * 已了结的请求（代际 + thread + 请求 id）→ 当时的回复（被撤销 / 作废的为 null）。同一请求
+   * 再到达（重放）不再进 pending：答过的照原样再回一次，撤销过的不理（评审 中3）
+   */
+  readonly #handled = new Map<string, unknown>();
+  /** 已结束的子 thread 轮（代际 + thread + turn）：之后才到的这一轮的请求 Codex 已不在等 */
+  readonly #endedTurns = new Set<string>();
 
   readonly permissions = {
     snapshot: (): readonly PendingPermissionSnapshot[] =>
@@ -223,6 +252,9 @@ export class CodexSession implements EngineSession, CodexSessionEvents {
         input: p.input,
         requestedAt: p.requestedAt,
         options: p.options,
+        // 重连补发时来源不能丢（评审 中8）
+        ...(p.parentToolUseId === undefined ? {} : { parentToolUseId: p.parentToolUseId }),
+        ...(p.subagentId === undefined ? {} : { subagentId: p.subagentId }),
       })),
   };
 
@@ -508,9 +540,35 @@ export class CodexSession implements EngineSession, CodexSessionEvents {
 
   /** Codex 不再等某个请求了（别处回了 / 撤了）：按 (thread, 请求 id) 找，不跨 thread 误伤 */
   #requestResolved(threadId: string, requestId: unknown): void {
+    const key = this.#requestKey(threadId, requestId);
+    let found = false;
     for (const pending of [...this.#pending.values()]) {
-      if (pending.threadId === threadId && pending.rpcId === requestId) this.#invalidate(pending, 'Codex 已不再等待这个决定');
+      if (pending.key === key) {
+        found = true;
+        this.#invalidate(pending, 'Codex 已不再等待这个决定');
+      }
     }
+    // 请求还没发布（归属 / diff 还在查）就先被撤了：记下，发布前会看到（评审 高2）
+    if (!found) this.#remember(key, null);
+  }
+
+  /** 已了结记录的键：进程代际 + thread + 原始请求 id（请求 id 在一个连接内唯一） */
+  #requestKey(threadId: string, rpcId: unknown): string {
+    return `${this.#procGen}|${threadId}|${JSON.stringify(rpcId) ?? ''}`;
+  }
+
+  #remember(key: string, result: unknown): void {
+    if (this.#handled.has(key)) return;
+    this.#handled.set(key, result);
+    while (this.#handled.size > MAX_HANDLED) {
+      const oldest = this.#handled.keys().next();
+      if (oldest.done === true) break;
+      this.#handled.delete(oldest.value);
+    }
+  }
+
+  #turnKey(threadId: string, turnId: string): string {
+    return `${this.#procGen}|${threadId}|${turnId}`;
   }
 
   ownsTurn(turnId: string): boolean {
@@ -525,13 +583,26 @@ export class CodexSession implements EngineSession, CodexSessionEvents {
   onChildNotification(childThreadId: string, method: string, params: Rec): void {
     const direct = this.#childAgents.has(childThreadId) ? childThreadId : this.#descendants.get(childThreadId);
     switch (method) {
-      case 'turn/started':
+      case 'turn/started': {
+        const turn = params['turn'];
+        const turnId = isRecord(turn) ? str(turn['id']) : undefined;
+        if (turnId !== undefined) this.#childTurns.set(childThreadId, turnId);
         if (direct === childThreadId) this.#setChildState(childThreadId, 'running');
         return;
+      }
       case 'turn/completed': {
         const turn = params['turn'];
         const turnId = isRecord(turn) ? str(turn['id']) : undefined;
         const status = isRecord(turn) ? turn['status'] : undefined;
+        if (turnId !== undefined) {
+          this.#endedTurns.add(this.#turnKey(childThreadId, turnId));
+          while (this.#endedTurns.size > MAX_HANDLED) {
+            const oldest = this.#endedTurns.values().next();
+            if (oldest.done === true) break;
+            this.#endedTurns.delete(oldest.value);
+          }
+        }
+        if (turnId === undefined || this.#childTurns.get(childThreadId) === turnId) this.#childTurns.delete(childThreadId);
         // 这一轮挂着的审批 Codex 不会再要了
         for (const pending of [...this.#pending.values()]) {
           if (pending.threadId === childThreadId && (turnId === undefined || pending.turnId === undefined || pending.turnId === turnId)) {
@@ -812,14 +883,28 @@ export class CodexSession implements EngineSession, CodexSessionEvents {
   onServerRequest(id: unknown, method: string, params: Rec, reply: (result: unknown) => void, childThreadId?: string): boolean {
     if (this.#closed) return false;
     const threadId = childThreadId ?? this.sessionId;
+    const key = this.#requestKey(threadId, id);
     // 重连 / 重放的同一个请求：已有卡片，不再出第二张（回复仍走原来那张卡的 reply）
     for (const pending of this.#pending.values()) {
-      if (pending.threadId === threadId && pending.rpcId === id) return true;
+      if (pending.key === key) return true;
     }
+    if (this.#handled.has(key)) {
+      // 已经了结过：答过的照原样再回一次，被撤销 / 作废的不再理会（评审 中3）
+      const previous = this.#handled.get(key);
+      if (previous !== null && previous !== undefined) reply(previous);
+      return true;
+    }
+    const turnId = str(params['turnId']);
+    // 子 thread 的这一轮已经结束：Codex 不会再等这个请求（评审 高2：归属查询期间轮结束了）
+    if (childThreadId !== undefined && turnId !== undefined && this.#endedTurns.has(this.#turnKey(threadId, turnId))) return true;
+    const card = childThreadId === undefined ? undefined : this.#cardOf(childThreadId);
     const origin: RequestOrigin = {
       threadId,
-      turnId: str(params['turnId']),
-      parentToolUseId: childThreadId === undefined ? undefined : this.#cardOf(childThreadId),
+      turnId,
+      parentToolUseId: card,
+      // 对不上派生卡（rootTurnId / thread/read 认的亲）：仍要标明来自子 agent（评审 中8）
+      subagentId: childThreadId !== undefined && card === undefined ? childThreadId.slice(-128) : undefined,
+      key,
     };
     switch (method) {
       case 'item/commandExecution/requestApproval': {
@@ -837,16 +922,19 @@ export class CodexSession implements EngineSession, CodexSessionEvents {
         // diff 只在 item/started 里：子 thread 的另记一份（不随本会话的轮清掉）
         const itemId = str(params['itemId']) ?? '';
         const item = childThreadId === undefined ? this.#fileChanges.get(itemId) : this.#childFileChanges.get(itemId);
-        const changes = Array.isArray(item?.['changes']) ? (item['changes'] as unknown[]).filter(isRecord) : [];
-        const paths = changes.map((c) => str(c['path'])).filter((p) => p !== undefined);
-        this.#request(origin, id, 'Edit', {
-          file_path: paths.length <= 1 ? (paths[0] ?? '') : `${paths[0]} 等 ${paths.length} 个文件`,
-          new_string: changes.map((c) => str(c['diff']) ?? '').join('\n'),
-          ...(str(params['reason']) === undefined ? {} : { reason: str(params['reason']) }),
-          ...(str(params['grantRoot']) === undefined ? {} : { grantRoot: str(params['grantRoot']) }),
-        }, [ALLOW_ONCE, ALLOW_SESSION, DENY], reply, (verdict, optionId) => ({
-          decision: verdict === 'deny' ? 'decline' : optionId === ALLOW_SESSION.id ? 'acceptForSession' : 'accept',
-        }));
+        if (item !== undefined) {
+          this.#fileChangeRequest(origin, id, params, item, reply);
+          return true;
+        }
+        // 没收到 item/started（归属确定前的通知丢了 / 乱序）：补读一次，补不到也不给可批准的空白卡（评审 高2）
+        const gen = this.#procGen;
+        void this.#lookupFileChange(threadId, itemId).then((found) => {
+          if (gen !== this.#procGen || this.#closed) return;
+          // 补读期间 Codex 可能已撤销、轮已结束或已有卡片：发布前再查一遍
+          if (this.#handled.has(key) || [...this.#pending.values()].some((p) => p.key === key)) return;
+          if (turnId !== undefined && this.#endedTurns.has(this.#turnKey(threadId, turnId))) return;
+          this.#fileChangeRequest(origin, id, params, found, reply);
+        });
         return true;
       }
       case 'item/permissions/requestApproval': {
@@ -875,6 +963,39 @@ export class CodexSession implements EngineSession, CodexSessionEvents {
       }
       default:
         return false;
+    }
+  }
+
+  /** 改文件审批卡；没有 diff（item 为 undefined）时说明无法预览，只给拒绝 */
+  #fileChangeRequest(origin: RequestOrigin, rpcId: unknown, params: Rec, item: Rec | undefined, reply: (result: unknown) => void): void {
+    const changes = Array.isArray(item?.['changes']) ? (item['changes'] as unknown[]).filter(isRecord) : [];
+    const paths = changes.map((c) => str(c['path'])).filter((p) => p !== undefined);
+    const preview = paths.length > 0;
+    this.#request(origin, rpcId, 'Edit', {
+      file_path: !preview ? NO_PREVIEW : paths.length === 1 ? paths[0]! : `${paths[0]} 等 ${paths.length} 个文件`,
+      new_string: changes.map((c) => str(c['diff']) ?? '').join('\n'),
+      ...(str(params['reason']) === undefined ? {} : { reason: str(params['reason']) }),
+      ...(str(params['grantRoot']) === undefined ? {} : { grantRoot: str(params['grantRoot']) }),
+    }, preview ? [ALLOW_ONCE, ALLOW_SESSION, DENY] : [DENY], reply, (verdict, optionId) => ({
+      decision: verdict === 'deny' ? 'decline' : optionId === ALLOW_SESSION.id ? 'acceptForSession' : 'accept',
+    }));
+  }
+
+  /** 从 thread 的 item 里补读改文件的 item（限时）；读不到 undefined */
+  async #lookupFileChange(threadId: string, itemId: string): Promise<Rec | undefined> {
+    if (itemId === '') return undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<undefined>((resolve) => {
+      timer = setTimeout(() => resolve(undefined), DIFF_LOOKUP_TIMEOUT_MS);
+    });
+    try {
+      const items = await Promise.race([this.#client.readItems(threadId), timeout]);
+      const found = items?.find((it) => isRecord(it) && it['id'] === itemId && it['type'] === 'fileChange');
+      return isRecord(found) ? found : undefined;
+    } catch {
+      return undefined;
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
     }
   }
 
@@ -908,6 +1029,7 @@ export class CodexSession implements EngineSession, CodexSessionEvents {
       options,
       // 来自子 agent：client 在卡上标「来自子 agent：<派生卡描述>」
       ...(origin.parentToolUseId === undefined ? {} : { parentToolUseId: origin.parentToolUseId }),
+      ...(origin.subagentId === undefined ? {} : { subagentId: origin.subagentId }),
     });
     this.#setState('waiting_permission');
     // 同状态下新增挂起项也要广播 meta（waitingFor）
@@ -922,13 +1044,17 @@ export class CodexSession implements EngineSession, CodexSessionEvents {
     // Codex 不能改参数后执行。旧版网页可能发来「改了参数的批准」：放行就等于执行用户已经改掉的
     // 原命令，所以按拒绝处理，并说清楚
     const edited = verdict.verdict === 'allow' && verdict.updatedInput !== undefined;
-    const effective = edited ? 'deny' : verdict.verdict;
+    // 卡上只给了拒绝（如改文件看不到 diff）：旧标签页 / 手工帧发来的批准也按拒绝
+    const allowOffered = pending.options.some((o) => o.kind !== 'reject');
+    const effective = edited || !allowOffered ? 'deny' : verdict.verdict;
     if (edited) {
       this.#emit({ type: 'error.transient', attempt: 1, reason: 'Codex 不支持改参数后批准，已拒绝这次请求' });
     }
     // optionId 只能细化「批准」：不认识的选项按单次批准，绝不放宽
     const optionId = pending.options.some((o) => o.id === verdict.optionId) ? verdict.optionId : undefined;
-    pending.reply(pending.decide(effective, optionId));
+    const result = pending.decide(effective, optionId);
+    this.#remember(pending.key, result);
+    pending.reply(result);
     this.#emit({
       type: 'permission.resolved',
       requestId: verdict.requestId,
@@ -941,6 +1067,7 @@ export class CodexSession implements EngineSession, CodexSessionEvents {
 
   #invalidate(pending: PendingApproval, reason: string): void {
     if (!this.#pending.delete(pending.requestId)) return;
+    this.#remember(pending.key, null);
     this.#emit({ type: 'permission.invalidated', requestId: pending.requestId, reason });
     this.#afterPendingChanged();
   }
@@ -962,16 +1089,28 @@ export class CodexSession implements EngineSession, CodexSessionEvents {
       this.#attachments.delete(dropped.clientMsgId);
       this.#emit({ type: 'input.cancelled', clientMsgId: dropped.clientMsgId, reason: 'stopped' });
     }
+    // 先了结全部审批（含子 agent 的）：父轮已结束时子审批可能还挂着（评审 中4）
+    for (const pending of [...this.#pending.values()]) {
+      const result = pending.decide('deny', undefined);
+      this.#remember(pending.key, result);
+      pending.reply(result);
+      this.#invalidate(pending, '用户停止了当前任务');
+    }
+    // 还在跑的子 agent 轮也一并中断（中断父轮不保证带停子 thread）
+    const childTurns = [...this.#childTurns];
+    this.#childTurns.clear();
+    const interrupts = childTurns.map(([threadId, turnId]) =>
+      this.#client.call('turn/interrupt', { threadId, turnId }).catch(() => {
+        // 子 thread 可能已经结束 / 卸载：不打扰用户
+      }),
+    );
     if (!this.#running) {
       this.#setState('stopped');
+      await Promise.all(interrupts);
       return;
     }
     this.#stopping = true;
-    for (const pending of [...this.#pending.values()]) {
-      pending.reply(pending.decide('deny', undefined));
-      this.#invalidate(pending, '用户停止了当前任务');
-    }
-    await this.#interrupt();
+    await Promise.all([this.#interrupt(), ...interrupts]);
   }
 
   async #interrupt(): Promise<void> {
@@ -1081,12 +1220,36 @@ export class CodexSession implements EngineSession, CodexSessionEvents {
     return { ok: true, text: located.text, rewound: { targetMessageIds: located.ids, mode } };
   }
 
-  /** app-server 退出（崩溃或 agent 关停）：thread 要重新加载
-  /** app-server 退出（崩溃或 agent 关停）：thread 要重新加载，下一条消息会 resume */
+  /**
+   * app-server 退出（崩溃或 agent 关停）：thread 要重新加载，下一条消息会 resume。
+   *
+   * 旧进程的一切都作废（评审 高1 / 中7）：挂着的审批（含子 agent 的——它们的 reply 已经回不到
+   * 新进程，新进程又会复用同样的请求 id）、子 thread 的轮与 diff；进程代际加一，已了结记录随之
+   * 隔离。还在跑的子 agent 随进程一起没了，派生卡收口成「状态未知」，不永远转圈。
+   */
   onExit(): void {
     this.#loaded = false;
+    for (const pending of [...this.#pending.values()]) this.#invalidate(pending, 'Codex 进程已退出，这个请求已失效');
+    this.#procGen += 1;
+    this.#handled.clear();
+    this.#endedTurns.clear();
+    this.#childTurns.clear();
+    this.#childFileChanges.clear();
+    this.#descendants.clear();
+    for (const [child, agent] of this.#childAgents) {
+      const state = agent.info.state;
+      if (state === undefined || state === 'running' || state === 'pending') this.#setChildState(child, 'unknown');
+    }
+    this.#childAgents.clear();
     if (this.#running) this.#failTurn('other', 'Codex 进程意外退出，发消息可继续');
     else this.#onMeta?.(this.meta());
+  }
+
+  /** 子 agent 当前状态（子 thread id → 状态）：读历史时让仍在跑的派生卡不被判成「状态未知」 */
+  childStates(): ReadonlyMap<string, SubagentState> {
+    const out = new Map<string, SubagentState>();
+    for (const [child, agent] of this.#childAgents) if (agent.info.state !== undefined) out.set(child, agent.info.state);
+    return out;
   }
 
   async close(_reason?: string, _drainTimeoutMs?: number): Promise<void> {

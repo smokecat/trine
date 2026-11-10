@@ -26,11 +26,12 @@ export const SUBAGENT_STATE_LABEL: Record<SubagentState, string> = {
   interrupted: '已中断',
   shutdown: '已关闭',
   not_found: '找不到',
+  ended: '已结束 · 结果未知',
   unknown: '状态未知',
 };
 
 /** 最终状态：到了就不再从快照派生「运行中」 */
-const FINAL_STATES: ReadonlySet<SubagentState> = new Set(['completed', 'failed', 'stopped', 'interrupted', 'shutdown', 'not_found']);
+export const FINAL_STATES: ReadonlySet<SubagentState> = new Set(['completed', 'failed', 'stopped', 'interrupted', 'shutdown', 'not_found', 'ended']);
 
 /** agent 给参数摘要加的后台前缀（agent summarize.ts 的 BACKGROUND_MARK） */
 const BACKGROUND_MARK = '后台 · ';

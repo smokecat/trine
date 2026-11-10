@@ -32,6 +32,18 @@ const MAX_CHILD_LINKS = 1000;
 const PARENT_LOOKUP_TIMEOUT_MS = 3_000;
 /** 逐级上溯的层数上限 */
 const MAX_SPAWN_DEPTH = 8;
+/** 归属未知的 thread 暂存通知：只要审批相关的，按 thread 限条数、限 thread 数、限时长 */
+const ORPHAN_METHODS: ReadonlySet<string> = new Set([
+  'item/started',
+  'item/completed',
+  'serverRequest/resolved',
+  'turn/started',
+  'turn/completed',
+  'thread/status/changed',
+]);
+const MAX_ORPHAN_NOTES = 50;
+const MAX_ORPHAN_THREADS = 20;
+const ORPHAN_TTL_MS = 60_000;
 /** 读历史时最多给多少个子 agent 查昵称 */
 const HISTORY_DESCRIBE_MAX = 8;
 
@@ -183,6 +195,10 @@ export class CodexEngine implements CodexSessionClient {
   /** 子 thread → 根会话 thread（见「子 thread」一节） */
   readonly #childRoot = new Map<string, string>();
   readonly #resolving = new Map<string, Promise<string | undefined>>();
+  /** 归属还不知道的 thread 的相关通知（有界、限时），归属确定后按序回放给根会话（评审 高2） */
+  readonly #orphans = new Map<string, { at: number; notes: [string, Rec][] }>();
+  /** app-server 进程代际：退出加一，旧进程的异步结果不再生效 */
+  #procGen = 0;
   #models: EngineModel[] = [];
   readonly #now: () => number;
   readonly #log: (line: string) => void;
@@ -213,6 +229,11 @@ export class CodexEngine implements CodexSessionClient {
         onNotification: (method, params) => this.#onNotification(method, params),
         onServerRequest: (id, method, params, reply, fail) => this.#onServerRequest(id, method, params, reply, fail),
         onExit: () => {
+          // 子 thread 随进程一起没了：归属表、在查的归属、暂存的通知都属于旧进程（评审 高1）
+          this.#procGen += 1;
+          this.#childRoot.clear();
+          this.#resolving.clear();
+          this.#orphans.clear();
           for (const session of this.#sessions.values()) session.onExit();
         },
       });
@@ -277,7 +298,35 @@ export class CodexEngine implements CodexSessionClient {
       if (oldest.done === true) break;
       this.#childRoot.delete(oldest.value);
     }
+    // 归属确定前暂存的通知按到达顺序补给根会话（diff、撤销、轮结束都在里面）
+    const buffered = this.#orphans.get(child);
+    if (buffered !== undefined) {
+      this.#orphans.delete(child);
+      if (this.#now() - buffered.at <= ORPHAN_TTL_MS) {
+        const session = this.#sessions.get(root);
+        for (const [method, params] of buffered.notes) session?.onChildNotification?.(child, method, params);
+      }
+    }
     return root;
+  }
+
+  /** 归属未知的 thread 的通知：只暂存审批相关的几类，按 thread 限条数、限 thread 数、限时长 */
+  #stashOrphan(threadId: string, method: string, params: Rec): void {
+    if (!ORPHAN_METHODS.has(method)) return;
+    const now = this.#now();
+    for (const [id, entry] of this.#orphans) if (now - entry.at > ORPHAN_TTL_MS) this.#orphans.delete(id);
+    let entry = this.#orphans.get(threadId);
+    if (entry === undefined) {
+      entry = { at: now, notes: [] };
+      this.#orphans.set(threadId, entry);
+      while (this.#orphans.size > MAX_ORPHAN_THREADS) {
+        const oldest = this.#orphans.keys().next();
+        if (oldest.done === true) break;
+        this.#orphans.delete(oldest.value);
+      }
+    }
+    entry.notes.push([method, params]);
+    if (entry.notes.length > MAX_ORPHAN_NOTES) entry.notes.shift();
   }
 
   /** 这个 thread 归哪个活跃会话（会话自己或它的子孙）；不知道 undefined */
@@ -324,8 +373,12 @@ export class CodexEngine implements CodexSessionClient {
     const root = this.#childRoot.get(threadId);
     if (root !== undefined) return this.#sessions.get(root)?.onServerRequest(id, method, params, reply, threadId) ?? false;
     if (this.#sessions.size === 0) return false;
-    // 归属未知：查过再决定，期间请求挂着（Codex 那边本来就在等用户）
+    // 归属未知：查过再决定，期间请求挂着（Codex 那边本来就在等用户）。查询期间到的撤销 / 轮结束
+    // 暂存在 #orphans，认亲时先回放，会话发布卡片前会看到
+    const gen = this.#procGen;
     void this.#resolveRoot(threadId).then((found) => {
+      // 进程已换：这个请求属于旧连接，回复也送不到了
+      if (gen !== this.#procGen) return;
       const session = found === undefined ? undefined : this.#sessions.get(found);
       const handled = session?.onServerRequest(id, method, params, reply, threadId) ?? false;
       if (!handled) fail(METHOD_NOT_FOUND, 'not supported by this client');
@@ -337,12 +390,13 @@ export class CodexEngine implements CodexSessionClient {
   #resolveRoot(threadId: string): Promise<string | undefined> {
     const running = this.#resolving.get(threadId);
     if (running !== undefined) return running;
+    const gen = this.#procGen;
     const task = (async (): Promise<string | undefined> => {
       const chain: string[] = [threadId];
       let current = threadId;
       for (let depth = 0; depth < MAX_SPAWN_DEPTH; depth++) {
         const parent = await this.#readParent(current);
-        if (parent === undefined) return undefined;
+        if (gen !== this.#procGen || parent === undefined) return undefined;
         const root = this.rootOf(parent);
         if (root !== undefined) {
           // 从上往下记，每一级的 parent 都已在表里
@@ -355,7 +409,9 @@ export class CodexEngine implements CodexSessionClient {
       return undefined;
     })()
       .catch(() => undefined)
-      .finally(() => this.#resolving.delete(threadId));
+      .finally(() => {
+        if (this.#resolving.get(threadId) === task) this.#resolving.delete(threadId);
+      });
     this.#resolving.set(threadId, task);
     return task;
   }
@@ -505,6 +561,13 @@ export class CodexEngine implements CodexSessionClient {
       const name = str(params['threadName']) ?? str(params['name']);
       if (meta !== undefined && name !== undefined) this.#owned.set(threadId, { ...meta, title: name });
     }
+    // thread/started 只带 {thread}，没有顶层 threadId（评审 低10）
+    if (method === 'thread/started') {
+      const thread = params['thread'];
+      const id = isRecord(thread) ? str(thread['id']) : undefined;
+      if (id !== undefined) this.#learnLinks(method, id, params);
+      return;
+    }
     if (threadId === undefined) return;
     this.#learnLinks(method, threadId, params);
     const own = this.#sessions.get(threadId);
@@ -514,7 +577,12 @@ export class CodexEngine implements CodexSessionClient {
     }
     // 子 thread 的通知交给根会话（以前直接丢掉）；它的 turn/completed 不会结束父会话的轮
     const root = this.#childRoot.get(threadId);
-    if (root !== undefined) this.#sessions.get(root)?.onChildNotification?.(threadId, method, params);
+    if (root !== undefined) {
+      this.#sessions.get(root)?.onChildNotification?.(threadId, method, params);
+      return;
+    }
+    // 归属还不知道（多半是等审批时才 thread/read 认亲的那种）：暂存，认亲后回放（评审 高2）
+    if (this.#sessions.size > 0) this.#stashOrphan(threadId, method, params);
   }
 
   /** 更新是稀疏的：只替换这一桶带来的窗口，没带的保留。没见过的桶重读一次拿全 */
@@ -628,6 +696,16 @@ export class CodexEngine implements CodexSessionClient {
     const fallbackTs = this.#owned.get(sessionId)?.createdAt ?? 0;
     const raw = await this.#readItems(sessionId);
     const items = codexItemsToHistory(raw, fallbackTs);
+    // 活跃会话里还在跑的子 agent：历史里没有结束证据，但不是「状态未知」。历史是权威对账来源
+    // （web 会用它修正已有卡片），所以这里要先用实时状态校正（评审 中7）
+    const live = this.#sessions.get(sessionId)?.childStates?.();
+    if (live !== undefined && live.size > 0) {
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i]!;
+        const state = item.kind === 'tool' && item.subagent?.agentId !== undefined ? live.get(item.subagent.agentId) : undefined;
+        if (item.kind === 'tool' && state !== undefined && item.subagent?.state === 'unknown') items[i] = { ...item, subagent: { ...item.subagent, state } };
+      }
+    }
     await this.#describeCards(items);
     return items;
   }

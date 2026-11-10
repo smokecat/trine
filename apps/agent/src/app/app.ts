@@ -853,6 +853,7 @@ export class AgentApp {
             requestedAt: pending.requestedAt,
             ...(pending.suggestions === undefined ? {} : { suggestions: pending.suggestions }),
             ...(pending.parentToolUseId === undefined ? {} : { parentToolUseId: pending.parentToolUseId }),
+            ...(pending.subagentId === undefined ? {} : { subagentId: pending.subagentId }),
             ...(pending.options === undefined ? {} : { options: pending.options }),
           },
           sessionId,
