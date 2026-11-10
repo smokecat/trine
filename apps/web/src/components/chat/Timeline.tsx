@@ -89,10 +89,15 @@ export function toolLabels(entries: readonly TimelineEntry[]): Map<string, strin
   return out;
 }
 
-/** 权限条目的来源标注：主线程 undefined；子 agent 的给父卡描述（找不到父卡 ''） */
+/**
+ * 权限条目的来源标注：主线程 undefined；子 agent 的给父卡描述（找不到父卡 ''）；Codex 子 thread
+ * 对不上派生卡时给 thread 短 id（「来自子 agent：…1234abcd」）
+ */
 export function subagentSourceOf(entry: TimelineEntry, labels: ReadonlyMap<string, string>): string | undefined {
-  if (entry.kind !== 'permission' || entry.parentToolUseId === undefined) return undefined;
-  return labels.get(entry.parentToolUseId) ?? '';
+  if (entry.kind !== 'permission') return undefined;
+  const short = entry.subagentId === undefined ? undefined : `子 thread …${entry.subagentId.slice(-8)}`;
+  if (entry.parentToolUseId === undefined) return short;
+  return labels.get(entry.parentToolUseId) ?? short ?? '';
 }
 
 export function Timeline({

@@ -105,6 +105,8 @@ export function claudeSubagentView(entry: ToolEntry, task: BgTask | undefined, s
   }
   // 启动工具还没返回：仍在启动
   if (entry.status === undefined) return { background, state: 'running' };
+  // 没有任务证据、启动调用本身失败：是启动失败，不是「状态未知」（评审 中9）
+  if (entry.status === 'error' && (info?.state === undefined || info.state === 'unknown')) return { background, state: 'failed' };
   return { background, state: info?.state ?? 'unknown' };
 }
 

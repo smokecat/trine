@@ -252,16 +252,24 @@ async function scanFile(path: string, limit: number): Promise<TranscriptOrigins>
   const decoder = new TextDecoder();
   let rest = '';
   let read = 0;
-  for await (const chunk of Bun.file(path).stream()) {
+  const reader = Bun.file(path).stream().getReader();
+  for (;;) {
+    const { done, value: chunk } = await reader.read();
+    if (done) break;
     read += chunk.byteLength;
-    if (read > limit) break;
-    rest += decoder.decode(chunk, { stream: true });
-    let at = rest.indexOf('\n');
-    while (at >= 0) {
-      scanner.line(rest.slice(0, at));
-      rest = rest.slice(at + 1);
-      at = rest.indexOf('\n');
+    if (read > limit) {
+      await reader.cancel();
+      break;
     }
+    rest += decoder.decode(chunk, { stream: true });
+    let start = 0;
+    let at = rest.indexOf('\n', start);
+    while (at >= 0) {
+      scanner.line(rest.slice(start, at));
+      start = at + 1;
+      at = rest.indexOf('\n', start);
+    }
+    rest = rest.slice(start);
   }
   rest += decoder.decode();
   if (rest !== '') scanner.line(rest);

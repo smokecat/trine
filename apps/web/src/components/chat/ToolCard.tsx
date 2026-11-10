@@ -145,6 +145,7 @@ const STATE_MARK: Partial<Record<SubagentState, string>> = {
   interrupted: '⊘',
   shutdown: '⊘',
   not_found: '?',
+  ended: '⊙',
   unknown: '?',
 };
 
@@ -172,7 +173,12 @@ export function backgroundStatusText(
     return { text: `后台运行中${elapsed}`, tone: 'text-brand', running: true };
   }
   if (state === 'unknown') return { text: '? 状态未知', tone: 'text-text-3', running: false };
-  const fromAgent = entry.subagent?.state === state && entry.resultSummary !== undefined && entry.resultSummary !== '';
+  // 只有收尾帧（completed / failed / stopped）带来的摘要才是子 agent 的结果；启动失败的卡头给失败摘要
+  const fromAgent =
+    ((entry.subagent?.state === state && (state === 'completed' || state === 'failed' || state === 'stopped')) ||
+      (state === 'failed' && entry.status === 'error')) &&
+    entry.resultSummary !== undefined &&
+    entry.resultSummary !== '';
   if (fromAgent) return { text: entry.resultSummary!, tone: stateTone(state), running: false };
   return { text: `${STATE_MARK[state] ?? ''} ${subagentStateLabel(state)}`.trim(), tone: stateTone(state), running: false };
 }

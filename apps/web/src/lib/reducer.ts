@@ -67,6 +67,7 @@ import {
   adoptPending,
   appendChildren,
   dropPending,
+  findTool,
   historyToolEntry,
   pendingFor,
   stashChild,
@@ -220,6 +221,30 @@ export function mergeSubagent(
   return cur === undefined ? next : { ...cur, ...next };
 }
 
+/** 子 agent 的最终状态（到了就不该被「运行中 / 状态未知」改回去） */
+const FINAL_SUBAGENT_STATES: ReadonlySet<string> = new Set(['completed', 'failed', 'stopped', 'interrupted', 'shutdown', 'not_found', 'ended']);
+
+/**
+ * 历史对账已有卡片的子 agent 信息（评审 中7）：历史是 agent 读权威存储得出的，能修正本地
+ * 缓存里因重启 / 掉线而永远「运行中」的卡。规则：缺的字段补上；状态以历史为准，但已经是最终
+ * 状态的不被历史的非最终状态（运行中 / 状态未知）覆盖。没有变化返回 undefined。
+ */
+export function reconcileSubagent(
+  cur: ToolEntry['subagent'],
+  history: NonNullable<ToolEntry['subagent']>,
+): ToolEntry['subagent'] | undefined {
+  const merged = { ...history, ...cur };
+  const curState = cur?.state;
+  const histState = history.state;
+  if (histState !== undefined && curState !== histState && !(curState !== undefined && FINAL_SUBAGENT_STATES.has(curState) && !FINAL_SUBAGENT_STATES.has(histState))) {
+    merged.state = histState;
+  }
+  const before = cur ?? {};
+  const keys = new Set([...Object.keys(before), ...Object.keys(merged)]) as Set<keyof typeof merged>;
+  for (const k of keys) if (before[k] !== merged[k]) return merged;
+  return undefined;
+}
+
 export const PermissionEntrySchema = z.object({
   kind: z.literal('permission'),
   id: z.string().min(1),
@@ -251,6 +276,8 @@ export const PermissionEntrySchema = z.object({
   reason: z.string().optional(),
   /** 子 agent 发起的请求：父 Agent/Task 工具的 toolUseId（agent ≥ 0.8.0；加法字段） */
   parentToolUseId: z.string().optional(),
+  /** 来自子 agent 但对不上派生卡（Codex）：子 thread id（加法字段） */
+  subagentId: z.string().optional(),
   ...entryBase,
 });
 
@@ -638,6 +665,7 @@ export function applyEvent(tl: Timeline, event: AgentToClientEvent): Timeline {
             requestedAt: event.requestedAt,
             state: 'pending',
             ...(event.parentToolUseId === undefined ? {} : { parentToolUseId: event.parentToolUseId }),
+            ...(event.subagentId === undefined ? {} : { subagentId: event.subagentId }),
             ...(event.options === undefined ? {} : { options: event.options }),
             seq,
             ts: event.ts,
@@ -1210,9 +1238,17 @@ export function mergeHistory(
     if (e.kind === 'user' && e.uuid !== undefined) seen.add(`user:${e.uuid}`);
   }
   const fresh: TimelineEntry[] = [];
+  // 已有卡片的子 agent 状态以历史为准对账（agent 重启后实时帧补不回来，评审 中7）
+  let reconciled: TimelineEntry[] | undefined;
   for (const item of page.items) {
-    if (item.ts >= cutoff) continue;
     const key = `${item.kind}:${item.id}`;
+    if (item.kind === 'tool' && item.subagent !== undefined && seen.has(key)) {
+      const base = reconciled ?? tl.entries;
+      const cur = findTool(base, item.id);
+      const subagent = cur === undefined ? undefined : reconcileSubagent(cur.subagent, item.subagent);
+      if (subagent !== undefined) reconciled = updateTool(base, item.id, (t) => ({ ...t, subagent })) ?? reconciled;
+    }
+    if (item.ts >= cutoff) continue;
     if (seen.has(key)) continue;
     seen.add(key);
     fresh.push(historyToEntry(item));
@@ -1223,13 +1259,14 @@ export function mergeHistory(
     ...(page.hasMore && page.nextBefore !== undefined ? { cursor: page.nextBefore } : {}),
   };
   const sameHistory = tl.history?.hasMore === history.hasMore && tl.history.cursor === history.cursor;
-  if (fresh.length === 0 && sameHistory) return tl;
+  if (fresh.length === 0 && sameHistory && reconciled === undefined) return tl;
 
-  let entries = tl.entries;
+  const base = reconciled ?? tl.entries;
+  let entries = base;
   if (fresh.length > 0) {
     let head = 0;
-    while (head < tl.entries.length && isHistoryEntry(tl.entries[head]!)) head++;
-    const existing = tl.entries.slice(0, head);
+    while (head < base.length && isHistoryEntry(base[head]!)) head++;
+    const existing = base.slice(0, head);
     fresh.sort((a, b) => a.ts - b.ts);
     // 稳定归并：同 ts 时已有的在前（它来自更新的一页之前就已在场，顺序已定）
     const merged: TimelineEntry[] = [];
@@ -1239,7 +1276,7 @@ export function mergeHistory(
       if (j >= fresh.length || (i < existing.length && existing[i]!.ts <= fresh[j]!.ts)) merged.push(existing[i++]!);
       else merged.push(fresh[j++]!);
     }
-    entries = [...merged, ...tl.entries.slice(head)];
+    entries = [...merged, ...base.slice(head)];
   }
   // 历史页带进来的 Agent 条目可能正是暂存子条目在等的父
   const adopted = fresh.length > 0 ? adoptPending(entries, tl.pendingChildren) : { entries, pending: tl.pendingChildren };

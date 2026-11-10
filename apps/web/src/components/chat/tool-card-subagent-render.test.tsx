@@ -284,6 +284,24 @@ describe('ToolCard · 前台 / 后台与子任务状态（plan §7）', () => {
     expect($(el, 'tool-subagent-status')).toBeNull();
   });
 
+  test('评审 中9：显式后台但启动就失败 → 卡头显示失败摘要，不是状态未知', () => {
+    const entry = agent({ argSummary: '后台 · probe', status: 'error', resultSummary: '✗ Agent type not found · 0.1s', subagent: { background: true } });
+    const el = mount(<ToolCard entry={entry} runningElapsedMs={null} />);
+    expect($(el, 'tool-subagent-status')?.textContent).toBe('✗ Agent type not found · 0.1s');
+    expect(el.querySelector('[data-testid="entry-tool"]')?.getAttribute('data-subagent-state')).toBe('failed');
+  });
+
+  test('规格缺口：只知道已结束 → 「已结束 · 结果未知」，不显示成功', () => {
+    const entry = agent({ ...launched, subagent: { background: true, state: 'ended' } });
+    const el = mount(<ToolCard entry={entry} runningElapsedMs={null} />);
+    expect($(el, 'tool-subagent-status')?.textContent).toBe('⊙ 已结束 · 结果未知');
+  });
+
+  test('评审 中8：对不上派生卡的子 thread 审批也标来源（短 id）', () => {
+    const perm: TimelineEntry = { kind: 'permission', id: 'p', toolName: 'Shell', input: {}, requestedAt: 1, state: 'pending', subagentId: 'thread-0000abcd1234', seq: 1, ts: 1 };
+    expect(subagentSourceOf(perm, new Map())).toBe('子 thread …abcd1234');
+  });
+
   test('前台：标「前台」，结束照常显示结果摘要', () => {
     const el = mount(<ToolCard entry={agent({ status: 'ok', resultSummary: '✓ 2 次工具调用', subagent: { agentType: 'Plan' } })} runningElapsedMs={null} />);
     expect($(el, 'tool-name')?.textContent).toBe('Agent · Plan · 前台');

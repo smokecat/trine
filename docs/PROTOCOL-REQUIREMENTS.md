@@ -39,7 +39,9 @@
     client 展开工具卡时显示、可复制。history 的 tool 条目同样带。旧 client 忽略
   - subagent（可选，旧 client 忽略）：子 agent 卡的附加信息 `{ agentType?, background?, state?, nickname?, model?, agentId? }`。
     同一 toolUseId 可以重发 tool.start 只为更新它，client 按字段合并、结果与子树保留。state 取值
-    pending / running / completed / failed / stopped / interrupted / shutdown / not_found / unknown（Codex 的 CollabAgentStatus 一一对应）
+    pending / running / completed / failed / stopped / interrupted / shutdown / not_found / ended / unknown（Codex 的 CollabAgentStatus 一一对应；
+    ended = 只知道已结束、不知成败，如子转录 meta.json 的 finished）。历史页对已有卡片的 subagent 状态是对账来源：client 用它修正缓存，
+    但已是最终状态的不被改回运行中 / 状态未知。permission.request 另有可选 `subagentId`：来自子 agent 但对不上派生卡时的子 thread id
 - `tool.end` — `{ toolUseId, status: ok|warn|error, durationMs, resultSummary, outputPreview, subagent? }`
   - resultSummary：单行（`✓ +9 −2` / `⚠ 1 failed · 3.5s` 的数据源：exit code、diff stat、耗时）
   - outputPreview：尾部截断的输出文本（阈值待定，~2KB），展开查看用

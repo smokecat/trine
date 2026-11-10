@@ -24,6 +24,7 @@ import {
   markSendingAsFailed,
   mergeHistory,
   nextParkedExpiry,
+  reconcileSubagent,
   setLocalStatus,
   setUserAttachment,
   transitionLocalStatus,
@@ -127,6 +128,32 @@ describe('reducer · tool / permission 原地更新', () => {
     await saveTimeline(store, 'm/s1', tl);
     const loaded = await loadTimeline(store, 'm/s1');
     expect(loaded?.entries.find((e) => e.id === 'x1')).toMatchObject({ subagent: { state: 'completed', nickname: 'n' } });
+  });
+
+  test('评审 中7：历史对账已有卡片的子 agent 状态（缓存里的运行中被修正）；最终状态不被改回；无变化原样返回', () => {
+    let tl = apply(
+      emptyTimeline(),
+      ev({ type: 'tool.start', ...S, toolUseId: 'x1', toolName: 'SubAgent', argSummary: 't', subagent: { state: 'running', agentId: 'c1' } }),
+      ev({ type: 'tool.start', ...S, toolUseId: 'x2', toolName: 'SubAgent', argSummary: 't', subagent: { state: 'completed' } }),
+    );
+    const page = {
+      items: [
+        { kind: 'tool' as const, id: 'x1', toolName: 'SubAgent', argSummary: 't', subagent: { state: 'unknown' as const, nickname: 'n' }, ts: 1 },
+        { kind: 'tool' as const, id: 'x2', toolName: 'SubAgent', argSummary: 't', subagent: { state: 'unknown' as const }, ts: 1 },
+      ],
+      hasMore: false,
+    };
+    tl = mergeHistory(tl, page);
+    expect(tl.entries[0]).toMatchObject({ subagent: { state: 'unknown', nickname: 'n', agentId: 'c1' } });
+    expect(tl.entries[1]).toMatchObject({ subagent: { state: 'completed' } });
+    expect(mergeHistory(tl, page)).toBe(tl);
+    expect(reconcileSubagent({ state: 'running' }, { state: 'completed' })).toEqual({ state: 'completed' });
+    expect(reconcileSubagent({ state: 'ended' }, { state: 'failed' })).toEqual({ state: 'failed' });
+  });
+
+  test('评审 中8：子 thread 来源（subagentId）进条目', () => {
+    const tl = apply(emptyTimeline(), ev({ type: 'permission.request', ...S, requestId: 'r', toolName: 'Shell', input: {}, requestedAt: 1, subagentId: 'thread-abc12345' }));
+    expect(tl.entries[0]).toMatchObject({ kind: 'permission', subagentId: 'thread-abc12345' });
   });
 
   test('permission.request 同 requestId 幂等；resolved 后重发不回退 pending；invalidated 不覆盖 resolved', () => {
