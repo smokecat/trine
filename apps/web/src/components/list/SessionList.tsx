@@ -339,6 +339,9 @@ export function SessionList({
                 (actions.supportsLinks?.(group.machineId) ?? true)
                   ? { onWorkspace: () => actions.onOpenWorkspace?.(group.machineId, group.cwd) }
                   : {})}
+                {...(actions?.onCopyCwd !== undefined && group.cwd !== ''
+                  ? { onCopyCwd: () => swallowRejection(actions.onCopyCwd?.(group.cwd)) }
+                  : {})}
               >
                 {group.rows.map(renderRow)}
               </GroupSection>
@@ -359,6 +362,7 @@ function GroupSection({
   onToggle,
   onPin,
   onWorkspace,
+  onCopyCwd,
   children,
 }: {
   group: SessionGroup;
@@ -373,6 +377,8 @@ function GroupSection({
   onPin?: (pinned: boolean) => void;
   /** 打开工作区的扩展面板；不给 = 没有这一项 */
   onWorkspace?: () => void;
+  /** 复制工作区目录（不经 agent）；不给 = 没有这一项 */
+  onCopyCwd?: () => void;
   children: React.ReactNode;
 }): React.JSX.Element {
   // 有待批准 / 搜索筛选中强制展开：点了也收不起来，别假装能收（评审 M5 / minor 3）
@@ -425,7 +431,7 @@ function GroupSection({
   const pinLabel = pinned ? '取消置顶工作区' : '置顶工作区';
   return (
     <section data-testid="session-group" data-group-key={group.key} data-expanded={expanded} data-pinned={pinned || undefined} className="flex flex-col gap-2">
-      {onPin === undefined && onWorkspace === undefined ? (
+      {onPin === undefined && onWorkspace === undefined && onCopyCwd === undefined ? (
         header
       ) : (
         // 「⋯」与按钮是兄弟（不嵌套交互元素）；右键整条组头也能出同一个菜单
@@ -441,6 +447,11 @@ function GroupSection({
               {onWorkspace !== undefined && (
                 <ContextMenuItem data-testid="group-menu-workspace" onSelect={onWorkspace}>
                   扩展面板…
+                </ContextMenuItem>
+              )}
+              {onCopyCwd !== undefined && (
+                <ContextMenuItem data-testid="group-menu-copy-cwd" title={group.cwd} onSelect={onCopyCwd}>
+                  复制目录
                 </ContextMenuItem>
               )}
             </ContextMenuContent>
@@ -469,6 +480,11 @@ function GroupSection({
                   扩展面板…
                 </DropdownMenuItem>
               )}
+              {onCopyCwd !== undefined && (
+                <DropdownMenuItem data-testid="group-menu-copy-cwd" title={group.cwd} onSelect={onCopyCwd}>
+                  复制目录
+                </DropdownMenuItem>
+              )}
             </DropdownMenuContent>
           </DropdownMenu>
         </div>
@@ -476,4 +492,9 @@ function GroupSection({
       {expanded && children}
     </section>
   );
+}
+
+/** 回调的 reject 已由回调自己 toast，这里吞掉，不冒成未处理异常 */
+function swallowRejection(result: void | Promise<unknown> | undefined): void {
+  if (result instanceof Promise) result.catch(() => {});
 }

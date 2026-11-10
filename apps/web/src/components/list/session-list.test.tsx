@@ -293,6 +293,17 @@ describe('工作空间分组', () => {
     expect($$('session-group-menu')).toHaveLength(0);
   });
 
+  test('复制目录：组头菜单复制工作区目录（未知目录没有菜单）', () => {
+    const onCopyCwd = mock((_cwd: string) => {});
+    render(sessions, { query: { groupBy: 'workspace' }, actions: { onCopyCwd } });
+    expect($$('session-group-menu')).toHaveLength(2);
+    openMenu($$('session-group-menu')[1]!);
+    expect($('group-menu-pin')).toBeNull();
+    expect($('group-menu-copy-cwd')?.textContent).toBe('复制目录');
+    click($('group-menu-copy-cwd')!);
+    expect(onCopyCwd.mock.calls).toEqual([['/w/two']]);
+  });
+
   test('扩展：关联的会话在行上显示关联标签（多条时 +n）', () => {
     render({
       m: {

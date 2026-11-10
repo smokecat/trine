@@ -32,6 +32,8 @@ import { useClient, useTrine } from '@/app/runtime.ts';
 import { cn } from '@/lib/utils.ts';
 import { ExtNewSessionPicker, useNewSessionExtensions, type NewSessionStart } from '@/components/ext/ExtNewSessionPicker.tsx';
 import { CwdPicker } from './CwdPicker.tsx';
+import { copyText } from '@/lib/clipboard.ts';
+import { buildCopyCwd } from '@/components/list/session-actions.ts';
 import {
   clickEngineMode,
   clickMode,
@@ -47,6 +49,9 @@ import {
 import { EngineIcon } from '@/components/shell/EngineIcon.tsx';
 
 /** 分区标题（原型 `.form-row .lbl`） */
+/** 复制工作目录：与会话列表同一套 toast 文案 */
+const copyCwd = buildCopyCwd(copyText, toast);
+
 function Label({ children }: { children: React.ReactNode }): React.JSX.Element {
   return (
     <div className="text-text-3 mb-1.5 text-[11px] tracking-[0.05em] uppercase">{children}</div>
@@ -303,6 +308,9 @@ export function NewSessionSheet({
                   onAdd={(p) => client?.send(machineId, { type: 'cwd.add', path: p })}
                   onRemove={(p) => client?.send(machineId, { type: 'cwd.remove', path: p })}
                   onSetDefault={(p) => client?.send(machineId, { type: 'cwd.setDefault', path: p })}
+                  onCopy={(p) => {
+                    copyCwd(p).catch(() => {});
+                  }}
                 />
               </section>
 

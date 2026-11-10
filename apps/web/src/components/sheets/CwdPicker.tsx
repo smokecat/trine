@@ -10,7 +10,7 @@
  * （不入收藏），点「+ 收藏」才写 agent 端列表。
  */
 import { useState } from 'react';
-import { PlusIcon, StarIcon, XIcon } from 'lucide-react';
+import { CopyIcon, PlusIcon, StarIcon, XIcon } from 'lucide-react';
 import { Button } from '@/components/ui/button.tsx';
 import { Input } from '@/components/ui/input.tsx';
 import { cn } from '@/lib/utils.ts';
@@ -27,6 +27,24 @@ export interface CwdPickerProps {
   onSetDefault: (path: string) => void;
   /** 还没拿到 cwd.list.response */
   loading?: boolean;
+  /** 复制目录到剪贴板（不经 agent，离线也能用）；不给 = 没有复制按钮 */
+  onCopy?: (path: string) => void;
+}
+
+function CopyButton({ path, onCopy }: { path: string; onCopy: (path: string) => void }): React.JSX.Element {
+  return (
+    <Button
+      size="icon-sm"
+      variant="ghost"
+      type="button"
+      data-testid="cwd-copy"
+      title="复制目录"
+      aria-label={`复制目录 ${path}`}
+      onClick={() => onCopy(path)}
+    >
+      <CopyIcon className="text-text-3" />
+    </Button>
+  );
 }
 
 export function CwdPicker({
@@ -39,6 +57,7 @@ export function CwdPicker({
   onRemove,
   onSetDefault,
   loading = false,
+  onCopy,
 }: CwdPickerProps): React.JSX.Element {
   const [draft, setDraft] = useState('');
   const trimmed = draft.trim();
@@ -72,6 +91,7 @@ export function CwdPicker({
             >
               {path}
             </button>
+            {onCopy !== undefined && <CopyButton path={path} onCopy={onCopy} />}
             <Button
               size="icon-sm"
               variant="ghost"
@@ -99,9 +119,15 @@ export function CwdPicker({
       })}
 
       {custom && (
-        <div className="border-brand-border bg-brand-soft text-brand-ink truncate rounded-[10px] border px-2.5 py-1.5 font-mono text-xs">
-          {value}
-          <span className="text-text-3 ml-1.5 font-sans text-[11px]">（自定义）</span>
+        <div className="flex items-center gap-1">
+          <div
+            data-testid="cwd-custom"
+            className="border-brand-border bg-brand-soft text-brand-ink min-w-0 flex-1 truncate rounded-[10px] border px-2.5 py-1.5 font-mono text-xs"
+          >
+            {value}
+            <span className="text-text-3 ml-1.5 font-sans text-[11px]">（自定义）</span>
+          </div>
+          {onCopy !== undefined && <CopyButton path={value} onCopy={onCopy} />}
         </div>
       )}
 
