@@ -5,7 +5,7 @@
  * 历史失败（同 D15）。工具名沿用 web 已有的词汇（Read / Edit / WebSearch / mcp__…），
  * 文件预览等能力因此不用另接；只有命令用 Shell，因为 Codex 不一定跑在 bash 上。
  */
-import type { HistoryItem, ToolResultStatus } from '@trine/core';
+import { SUBAGENT_LABEL_MAX, type HistoryItem, type SubagentInfo, type SubagentState, type ToolResultStatus } from '@trine/core';
 import { truncateText } from '../../bridge/history.ts';
 import { capArgDetail, detailIfHidden, formatDuration, outputPreview, toSingleLine } from '../../bridge/summarize.ts';
 
@@ -176,19 +176,103 @@ const COLLAB_ACTION: Record<string, string> = {
   listAgents: '列出子 agent',
 };
 
-/** 派生、等待子 agent 等操作：一张卡，不展开子 thread 的过程（没有实测过，字段都按可缺处理） */
+/**
+ * 调用状态（CollabAgentToolCallStatus）的中文。这是「这次 spawn / wait 调用」本身的状态，
+ * 不是子 agent 的状态——wait 调用完成 ≠ 子 agent 完成（plan §7）。
+ */
+export const COLLAB_CALL_LABEL: Record<string, string> = {
+  inProgress: '调用进行中',
+  completed: '调用完成',
+  failed: '调用失败',
+  interrupted: '调用已中断',
+};
+
+/** 子 agent 状态（CollabAgentStatus，全部枚举）→ 协议的 SubagentState */
+export function collabAgentState(raw: unknown): SubagentState | undefined {
+  switch (raw) {
+    case 'pendingInit':
+      return 'pending';
+    case 'running':
+      return 'running';
+    case 'interrupted':
+      return 'interrupted';
+    case 'completed':
+      return 'completed';
+    case 'errored':
+      return 'failed';
+    case 'shutdown':
+      return 'shutdown';
+    case 'notFound':
+      return 'not_found';
+    default:
+      return undefined;
+  }
+}
+
+/** 子 agent 状态的中文（resultSummary 里的计数用；web 有同一份） */
+const AGENT_STATE_LABEL: Record<SubagentState, string> = {
+  pending: '等待启动',
+  running: '运行中',
+  completed: '已完成',
+  failed: '失败',
+  stopped: '已停止',
+  interrupted: '已中断',
+  shutdown: '已关闭',
+  not_found: '找不到',
+  unknown: '状态未知',
+};
+
+/** 限长的子 agent 标签（协议 SUBAGENT_LABEL_MAX） */
+function label(value: string | undefined): string | undefined {
+  const v = value?.trim();
+  return v === undefined || v === '' ? undefined : v.slice(0, SUBAGENT_LABEL_MAX);
+}
+
+/** thread/read 读到的昵称 / 角色 / 模型 → SubagentInfo 字段（限长；角色放 agentType） */
+export function subagentLabels(info: { nickname?: string; role?: string; model?: string }): SubagentInfo {
+  const nickname = label(info.nickname);
+  const role = label(info.role);
+  const model = label(info.model);
+  return {
+    ...(nickname === undefined ? {} : { nickname }),
+    ...(role === undefined ? {} : { agentType: role }),
+    ...(model === undefined ? {} : { model }),
+  };
+}
+
+/** agentPath（`/root/<名>`）的最后一段：没有昵称时的可读名字 */
+export function agentPathName(path: string | undefined): string | undefined {
+  if (path === undefined) return undefined;
+  const last = path.split('/').filter((p) => p !== '').at(-1);
+  return label(last);
+}
+
+/** 派生、等待子 agent 等操作：一张卡；右侧是调用状态，子 agent 的状态放进 subagent */
 function collabItem(item: Rec, id: string, ts: number): HistoryItem {
   const tool = str(item['tool']) ?? '';
   const prompt = str(item['prompt']);
   const action = tool === 'spawnAgent' ? '派生子 agent' : (COLLAB_ACTION[tool] ?? (tool === '' ? '子 agent' : tool));
-  const states = isRecord(item['agentsStates']) ? Object.values(item['agentsStates']).filter(isRecord) : [];
-  const counts = new Map<string, number>();
-  for (const state of states) {
-    const status = str(state['status']);
-    if (status !== undefined) counts.set(status, (counts.get(status) ?? 0) + 1);
+  const entries = isRecord(item['agentsStates']) ? Object.entries(item['agentsStates']).filter((e): e is [string, Rec] => isRecord(e[1])) : [];
+  const counts = new Map<SubagentState, number>();
+  for (const [, state] of entries) {
+    const mapped = collabAgentState(state['status']);
+    if (mapped !== undefined) counts.set(mapped, (counts.get(mapped) ?? 0) + 1);
   }
-  const messages = states.map((s) => str(s['message'])).filter((m): m is string => m !== undefined && m !== '');
-  const failed = (counts.get('errored') ?? 0) + (counts.get('notFound') ?? 0) > 0;
+  const messages = entries.map(([, s]) => str(s['message'])).filter((m): m is string => m !== undefined && m !== '');
+  const failed = (counts.get('failed') ?? 0) + (counts.get('not_found') ?? 0) > 0;
+  const call = COLLAB_CALL_LABEL[str(item['status']) ?? ''];
+  const agents = [...counts].map(([state, n]) => `${AGENT_STATE_LABEL[state]} ${n}`).join(' · ');
+  const summary = [call, agents === '' ? undefined : `子 agent ${agents}`].filter((p) => p !== undefined).join(' · ');
+  // 只有一个目标时，卡上的子 agent 信息就是它的
+  const receivers = Array.isArray(item['receiverThreadIds']) ? item['receiverThreadIds'].filter((r): r is string => typeof r === 'string' && r !== '') : [];
+  const targetId = receivers.length === 1 ? receivers[0] : entries.length === 1 ? entries[0]![0] : undefined;
+  const targetState = targetId === undefined ? undefined : collabAgentState(entries.find(([k]) => k === targetId)?.[1]['status']);
+  const model = label(str(item['model']));
+  const subagent: SubagentInfo = {
+    ...(label(targetId) === undefined ? {} : { agentId: label(targetId)! }),
+    ...(targetState === undefined ? {} : { state: targetState }),
+    ...(model === undefined ? {} : { model }),
+  };
   return {
     kind: 'tool',
     id,
@@ -196,8 +280,9 @@ function collabItem(item: Rec, id: string, ts: number): HistoryItem {
     toolName: 'SubAgent',
     argSummary: toSingleLine(tool === 'spawnAgent' && prompt !== undefined ? prompt : prompt === undefined ? action : `${action}：${prompt}`),
     ...statusOf(item['status'], !failed),
-    ...(counts.size === 0 ? {} : { resultSummary: [...counts].map(([status, n]) => `${status} ${n}`).join(' · ') }),
+    ...(summary === '' ? {} : { resultSummary: summary }),
     ...preview(messages.length > 0 ? messages.join('\n') : undefined),
+    ...(Object.keys(subagent).length === 0 ? {} : { subagent }),
     ts,
   };
 }
@@ -209,17 +294,123 @@ const ACTIVITY_LABEL: Record<string, string> = {
   completed: '子 agent 已完成',
 };
 
+/** subAgentActivity 的 kind → 子 agent 状态 */
+export function activityState(kind: unknown): SubagentState | undefined {
+  switch (kind) {
+    case 'started':
+    case 'interacted':
+      return 'running';
+    case 'interrupted':
+      return 'interrupted';
+    case 'completed':
+      return 'completed';
+    default:
+      return undefined;
+  }
+}
+
+/**
+ * 子 agent 动态。`started` 就是派生（v2 下没有 spawnAgent 的 collabAgentToolCall，spike S2），
+ * 显示成派生卡：右侧「已派生」，子 agent 的 thread / 模型 / 状态放进 subagent；其余 kind
+ * 在能对上派生卡时并进它（见 codexItemsToHistory / 会话的实时路径），对不上才单独成卡。
+ */
 function subAgentActivityItem(item: Rec, id: string, ts: number): HistoryItem {
   const kind = str(item['kind']) ?? '';
   const path = str(item['agentPath']);
+  const agentId = label(str(item['agentThreadId']));
+  const model = label(str(item['model']));
+  const state = activityState(kind);
+  const subagent: SubagentInfo = {
+    ...(agentId === undefined ? {} : { agentId }),
+    ...(model === undefined ? {} : { model }),
+    ...(state === undefined ? {} : { state }),
+  };
+  const spawned = kind === 'started';
+  const name = agentPathName(path);
   return {
     kind: 'tool',
     id,
     toolName: 'SubAgent',
-    argSummary: toSingleLine([ACTIVITY_LABEL[kind] ?? `子 agent：${kind}`, path].filter((p) => p !== undefined).join(' · ')),
+    argSummary: spawned
+      ? toSingleLine(['派生子 agent', name].filter((p) => p !== undefined).join(' · '))
+      : toSingleLine([ACTIVITY_LABEL[kind] ?? `子 agent：${kind}`, path].filter((p) => p !== undefined).join(' · ')),
     status: kind === 'interrupted' ? 'warn' : 'ok',
+    ...(spawned ? { resultSummary: '已派生' } : {}),
+    ...(Object.keys(subagent).length === 0 ? {} : { subagent }),
     ts,
   };
+}
+
+/** 一条 raw item 若是派生，返回子 thread id 与派生卡 id（subAgentActivity started / spawnAgent） */
+export function spawnOf(item: unknown): { childThreadId: string; cardId: string }[] {
+  if (!isRecord(item)) return [];
+  const id = str(item['id']);
+  if (id === undefined || id === '') return [];
+  if (item['type'] === 'subAgentActivity' && item['kind'] === 'started') {
+    const child = str(item['agentThreadId']);
+    return child === undefined || child === '' ? [] : [{ childThreadId: child, cardId: id }];
+  }
+  if (item['type'] === 'collabAgentToolCall' && item['tool'] === 'spawnAgent' && Array.isArray(item['receiverThreadIds'])) {
+    return item['receiverThreadIds']
+      .filter((r): r is string => typeof r === 'string' && r !== '')
+      .map((childThreadId) => ({ childThreadId, cardId: id }));
+  }
+  return [];
+}
+
+/** 某条 raw item 带来的子 agent 状态更新：子 thread id → 状态（派生本身不算） */
+export function childStatesOf(item: unknown): Map<string, SubagentState> {
+  const out = new Map<string, SubagentState>();
+  if (!isRecord(item)) return out;
+  if (item['type'] === 'subAgentActivity' && item['kind'] !== 'started') {
+    const child = str(item['agentThreadId']);
+    const state = activityState(item['kind']);
+    if (child !== undefined && state !== undefined) out.set(child, state);
+  } else if (item['type'] === 'collabAgentToolCall' && isRecord(item['agentsStates'])) {
+    for (const [child, raw] of Object.entries(item['agentsStates'])) {
+      const state = isRecord(raw) ? collabAgentState(raw['status']) : undefined;
+      if (state !== undefined) out.set(child, state);
+    }
+  }
+  return out;
+}
+
+/**
+ * 一个 thread 的 raw items → 历史条目。比逐条 codexItemToHistory 多做一件事：子 agent 的后续
+ * 动态并进它的派生卡（subagent.state），不再各自成卡；没有任何结束证据的派生卡标「状态未知」。
+ */
+export function codexItemsToHistory(raw: readonly unknown[], fallbackTs: number): HistoryItem[] {
+  const items: HistoryItem[] = [];
+  /** 子 thread id → items 下标（它的派生卡） */
+  const cards = new Map<string, number>();
+  let ts = fallbackTs;
+  for (const item of raw) {
+    const states = childStatesOf(item);
+    const isActivity = isRecord(item) && item['type'] === 'subAgentActivity' && item['kind'] !== 'started';
+    let merged = false;
+    for (const [child, state] of states) {
+      const at = cards.get(child);
+      if (at === undefined) continue;
+      const card = items[at] as Extract<HistoryItem, { kind: 'tool' }>;
+      items[at] = { ...card, subagent: { ...card.subagent, state } };
+      merged = true;
+    }
+    // 动态已经并进派生卡就不再单独成卡；collab 调用（wait 等）照常成卡
+    if (isActivity && merged) continue;
+    const converted = codexItemToHistory(item, ts);
+    if (converted === undefined) continue;
+    ts = converted.ts;
+    for (const spawn of spawnOf(item)) cards.set(spawn.childThreadId, items.length);
+    items.push(converted);
+  }
+  for (const at of new Set(cards.values())) {
+    const card = items[at] as Extract<HistoryItem, { kind: 'tool' }>;
+    const state = card.subagent?.state;
+    if (state === undefined || state === 'running' || state === 'pending') {
+      items[at] = { ...card, subagent: { ...card.subagent, state: 'unknown' } };
+    }
+  }
+  return items;
 }
 
 /** 一个 thread item 转成历史条目；不需要展示或认不出的返回 undefined */

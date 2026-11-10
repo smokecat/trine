@@ -43,12 +43,16 @@ export interface AppServerClientOptions {
   now?: () => number;
   log?: (line: string) => void;
   onNotification?: (method: string, params: Record<string, unknown>) => void;
-  /** 服务端发来的请求（审批等）。返回 false = 不处理，这里回错误，免得对端干等 */
+  /**
+   * 服务端发来的请求（审批等）。返回 false = 不处理，这里回错误，免得对端干等。
+   * 返回 true 但要异步才知道处理不了（如先查子 thread 归属）时，调 `fail` 回错误。
+   */
   onServerRequest?: (
     id: unknown,
     method: string,
     params: Record<string, unknown>,
     reply: (result: unknown) => void,
+    fail: (code: number, message: string) => void,
   ) => boolean;
   /** 进程退出（不含空闲退出和 dispose）：加载的 thread 都没了 */
   onExit?: () => void;
@@ -245,13 +249,21 @@ export class AppServerClient {
         return;
       }
       const transport = this.#transport;
-      const handled = this.#options.onServerRequest?.(id, message['method'], params, (result) => {
-        // 请求所在的进程已经没了，回复不了也不需要回复
-        if (this.#transport === transport) transport?.send(`${JSON.stringify({ id, result })}\n`);
-      });
-      if (handled !== true) {
-        transport?.send(`${JSON.stringify({ id, error: { code: -32601, message: 'not supported by this client' } })}\n`);
-      }
+      // 请求所在的进程已经没了，回复不了也不需要回复
+      const live = (): boolean => this.#transport === transport;
+      const fail = (code: number, msg: string): void => {
+        if (live()) transport?.send(`${JSON.stringify({ id, error: { code, message: msg } })}\n`);
+      };
+      const handled = this.#options.onServerRequest?.(
+        id,
+        message['method'],
+        params,
+        (result) => {
+          if (live()) transport?.send(`${JSON.stringify({ id, result })}\n`);
+        },
+        fail,
+      );
+      if (handled !== true) fail(-32601, 'not supported by this client');
       return;
     }
     if (typeof id !== 'number') return;

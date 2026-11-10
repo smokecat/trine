@@ -1031,3 +1031,153 @@ describe('CodexSession · 回退', () => {
     });
   });
 });
+
+describe('CodexSession · 子 agent thread（spike S2）', () => {
+  const CHILD = 'thread-child-1';
+  /** thread/read：子 thread 有昵称与父级；陌生 thread 查不到 */
+  const threadRoutes = (extra: Record<string, Record<string, unknown>> = {}): Record<string, FakeRoute> => ({
+    'thread/read': (params) => {
+      const id = (params as { threadId: string }).threadId;
+      if (id === CHILD) return { thread: { id: CHILD, parentThreadId: THREAD, agentNickname: 'Meitner', agentRole: null, model: 'other-model' } };
+      const found = extra[id];
+      if (found !== undefined) return { thread: { id, ...found } };
+      throw Object.assign(new Error('thread not loaded'), { code: -32600 });
+    },
+  });
+
+  /** 起一轮并派生一个子 agent（v2：subAgentActivity started 就是派生） */
+  async function spawned(extra: Record<string, Record<string, unknown>> = {}) {
+    const h = harness({ routes: threadRoutes(extra) });
+    h.session.send('c1', 'go');
+    await h.flush();
+    h.notify('turn/started', { turn: { id: 'turn-1', rootTurnId: 'turn-1', status: 'inProgress' } });
+    const item = { type: 'subAgentActivity', id: 'call_spawn', kind: 'started', agentThreadId: CHILD, agentPath: '/root/probe', model: 'm-1' };
+    h.notify('item/started', { turnId: 'turn-1', item });
+    h.notify('item/completed', { turnId: 'turn-1', item });
+    await h.flush();
+    const child = (method: string, params: Record<string, unknown> = {}) => h.notify(method, { threadId: CHILD, ...params });
+    const childRequest = (id: number, method: string, params: Record<string, unknown> = {}) => h.request(id, method, { threadId: CHILD, ...params });
+    const card = () => h.of('tool.start').filter((e) => e.toolUseId === 'call_spawn').at(-1)!;
+    return { ...h, child, childRequest, card };
+  }
+
+  test('派生卡：带子 thread / 模型 / 运行中；昵称从子 thread 读，模型以派生时给的为准', async () => {
+    const h = await spawned();
+    const starts = h.of('tool.start').filter((e) => e.toolUseId === 'call_spawn');
+    expect(starts[0]).toMatchObject({ toolName: 'SubAgent', argSummary: '派生子 agent · probe', subagent: { agentId: CHILD, model: 'm-1', state: 'running' } });
+    expect(h.of('tool.end').find((e) => e.toolUseId === 'call_spawn')).toMatchObject({ status: 'ok', resultSummary: '已派生' });
+    expect(h.card().subagent).toMatchObject({ nickname: 'Meitner', model: 'm-1', state: 'running' });
+    for (const body of h.events) {
+      expect(AgentToClientEventSchema.safeParse({ ...body, ts: 1, seq: 1, dir: 'a2c', sessionId: THREAD }).success).toBe(true);
+    }
+    h.engine.dispose();
+  });
+
+  test('子 thread 的审批：卡挂本会话、标来源；回复带原请求 id；子 thread 的 turn/completed 不结束父轮', async () => {
+    const h = await spawned();
+    h.child('turn/started', { turn: { id: 'child-turn-1', rootTurnId: 'turn-1', status: 'inProgress' } });
+    h.child('item/started', { item: { type: 'commandExecution', id: 'exec-1', command: "zsh -lc 'touch x'", status: 'inProgress', commandActions: [] } });
+    h.childRequest(41, 'item/commandExecution/requestApproval', { turnId: 'child-turn-1', itemId: 'exec-1', command: "/usr/bin/zsh -lc 'touch x'", availableDecisions: ['accept', 'decline'] });
+    await h.flush();
+    const [req] = h.of('permission.request');
+    expect(req).toMatchObject({ toolName: 'Shell', input: { command: 'touch x' }, parentToolUseId: 'call_spawn' });
+    // 子 thread 的 item 不出卡（完整嵌套过程是后续）
+    expect(h.of('tool.start').some((e) => e.toolUseId === 'exec-1')).toBe(false);
+    expect(h.session.state).toBe('waiting_permission');
+    // 同一请求重放：不出第二张卡
+    h.childRequest(41, 'item/commandExecution/requestApproval', { turnId: 'child-turn-1', itemId: 'exec-1', command: 'x' });
+    await h.flush();
+    expect(h.of('permission.request')).toHaveLength(1);
+
+    expect(h.session.respondPermission({ requestId: req!.requestId, verdict: 'allow' })).toBe(true);
+    expect(h.replyTo(41)).toEqual({ id: 41, result: { decision: 'accept' } });
+    expect(h.session.state).toBe('running');
+    // 迟到 / 重复的回复：不再生效
+    expect(h.session.respondPermission({ requestId: req!.requestId, verdict: 'deny' })).toBe(false);
+
+    h.child('turn/completed', { turn: { id: 'child-turn-1', status: 'completed', error: null } });
+    await h.flush();
+    expect(h.of('run.done')).toHaveLength(0);
+    expect(h.session.state).toBe('running');
+    expect(h.card().subagent?.state).toBe('completed');
+    // 父 thread 上的 completed 动态并进派生卡，不另出卡
+    h.notify('item/started', { item: { type: 'subAgentActivity', id: 'done-1', kind: 'completed', agentThreadId: CHILD, agentPath: '/root/probe' } });
+    h.notify('item/completed', { item: { type: 'subAgentActivity', id: 'done-1', kind: 'completed', agentThreadId: CHILD, agentPath: '/root/probe' } });
+    await h.finish();
+    expect(h.of('tool.start').some((e) => e.toolUseId === 'done-1')).toBe(false);
+    expect(h.of('tool.end').some((e) => e.toolUseId === 'done-1')).toBe(false);
+    expect(h.of('run.done')).toHaveLength(1);
+    h.engine.dispose();
+  });
+
+  test('撤销按请求所属 thread：子 thread 的 serverRequest/resolved / turn/completed 只作废子请求；父轮结束不作废子请求', async () => {
+    const h = await spawned();
+    h.childRequest(5, 'item/commandExecution/requestApproval', { turnId: 'ct', command: 'a' });
+    h.request(5, 'item/commandExecution/requestApproval', { turnId: 'turn-1', command: 'b' });
+    await h.flush();
+    const [childReq, ownReq] = h.of('permission.request');
+    // 同一个请求 id、不同 thread：只撤子 thread 的
+    h.child('serverRequest/resolved', { requestId: 5 });
+    await h.flush();
+    expect(h.of('permission.invalidated').map((e) => e.requestId)).toEqual([childReq!.requestId]);
+    h.session.respondPermission({ requestId: ownReq!.requestId, verdict: 'allow' });
+
+    h.childRequest(6, 'item/commandExecution/requestApproval', { turnId: 'ct2', command: 'c' });
+    await h.flush();
+    const late = h.of('permission.request').at(-1)!;
+    await h.finish();
+    // 父轮结束：子 agent 的请求还挂着，会话仍是等待批准
+    expect(h.of('permission.invalidated').some((e) => e.requestId === late.requestId)).toBe(false);
+    expect(h.session.state).toBe('waiting_permission');
+    h.child('turn/completed', { turn: { id: 'ct2', status: 'completed', error: null } });
+    await h.flush();
+    expect(h.of('permission.invalidated').at(-1)).toMatchObject({ requestId: late.requestId, reason: '子 agent 的这一轮已结束' });
+    expect(h.session.state).toBe('idle');
+    h.engine.dispose();
+  });
+
+  test('子 thread 改文件审批：diff 取自子 thread 的 item/started', async () => {
+    const h = await spawned();
+    h.child('item/started', { item: { type: 'fileChange', id: 'fc-1', status: 'inProgress', changes: [{ path: '/w/a.txt', diff: '+x' }] } });
+    h.childRequest(9, 'item/fileChange/requestApproval', { turnId: 'ct', itemId: 'fc-1' });
+    await h.flush();
+    expect(h.of('permission.request')[0]).toMatchObject({ toolName: 'Edit', input: { file_path: '/w/a.txt', new_string: '+x' }, parentToolUseId: 'call_spawn' });
+    h.engine.dispose();
+  });
+
+  test('归属未知的 thread：rootTurnId 对上当前轮即认亲；否则限时 thread/read 上溯；都查不到回 -32601', async () => {
+    const h = await spawned({ 'thread-grand': { parentThreadId: CHILD }, 'thread-stray': { parentThreadId: 'thread-elsewhere' } });
+    // rootTurnId 认亲（不经派生 item）
+    h.notify('turn/started', { threadId: 'thread-sib', turn: { id: 'sib-turn', rootTurnId: 'turn-1', status: 'inProgress' } });
+    h.request(21, 'item/commandExecution/requestApproval', { threadId: 'thread-sib', turnId: 'sib-turn', command: 'a' });
+    await h.flush();
+    expect(h.of('permission.request')).toHaveLength(1);
+    expect(h.of('permission.request')[0]!.parentToolUseId).toBeUndefined();
+    // 孙辈：thread/read 上溯到子 thread，再到本会话；来源标到子 agent 的派生卡
+    h.request(22, 'item/commandExecution/requestApproval', { threadId: 'thread-grand', turnId: 'g', command: 'b' });
+    await h.flush();
+    await h.flush();
+    expect(h.of('permission.request')).toHaveLength(2);
+    // 查不到活跃会话：不猜，回 -32601
+    h.request(23, 'item/commandExecution/requestApproval', { threadId: 'thread-stray', command: 'c' });
+    h.request(24, 'item/commandExecution/requestApproval', { threadId: 'thread-nobody', command: 'd' });
+    await h.flush();
+    await h.flush();
+    expect(h.of('permission.request')).toHaveLength(2);
+    expect(h.replyTo(23)).toMatchObject({ id: 23, error: { code: -32601 } });
+    expect(h.replyTo(24)).toMatchObject({ id: 24, error: { code: -32601 } });
+    h.engine.dispose();
+  });
+
+  test('会话关闭后子 thread 的通知与请求不再路由', async () => {
+    const h = await spawned();
+    await h.session.close();
+    const before = h.events.length;
+    h.child('turn/completed', { turn: { id: 'ct', status: 'completed' } });
+    h.childRequest(31, 'item/commandExecution/requestApproval', { command: 'x' });
+    await h.flush();
+    expect(h.events.length).toBe(before);
+    expect(h.replyTo(31)).toMatchObject({ error: { code: -32601 } });
+    h.engine.dispose();
+  });
+});

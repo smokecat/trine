@@ -4,7 +4,7 @@ import { buildMachineInfo } from '../../app/machine-info.ts';
 import { AppServerClient, AppServerError } from './app-server.ts';
 import { CodexEngine, modelFromList, rateWindows, threadToMeta } from './engine.ts';
 import { FakeAppServer, fakeThread, rpcError } from './fake-app-server.ts';
-import { codexItemToHistory, unwrapShellCommand } from './history.ts';
+import { codexItemsToHistory, codexItemToHistory, collabAgentState, unwrapShellCommand } from './history.ts';
 
 function engine(routes: ConstructorParameters<typeof FakeAppServer>[0], now: () => number = () => 1_000_000) {
   const server = new FakeAppServer(routes);
@@ -632,12 +632,63 @@ describe('M4：目录、斜杠菜单、子 agent 卡', () => {
 
   test('子 agent 操作显示成卡；字段缺失也不报错', () => {
     const spawn = codexItemToHistory({ type: 'collabAgentToolCall', id: 'c1', tool: 'spawnAgent', status: 'completed', prompt: '查一下', agentsStates: { x: { status: 'completed', message: '查完了' } } }, 5);
-    expect(spawn).toMatchObject({ kind: 'tool', toolName: 'SubAgent', argSummary: '查一下', status: 'ok', resultSummary: 'completed 1', outputPreview: '查完了' });
+    // 调用状态与子 agent 状态分开、都中文化（wait 调用完成 ≠ 子 agent 完成）
+    expect(spawn).toMatchObject({
+      kind: 'tool',
+      toolName: 'SubAgent',
+      argSummary: '查一下',
+      status: 'ok',
+      resultSummary: '调用完成 · 子 agent 已完成 1',
+      outputPreview: '查完了',
+      subagent: { agentId: 'x', state: 'completed' },
+    });
     const wait = codexItemToHistory({ type: 'collabAgentToolCall', id: 'c2', tool: 'wait', status: 'completed', prompt: null, agentsStates: { x: { status: 'errored', message: null } } }, 5);
-    expect(wait).toMatchObject({ toolName: 'SubAgent', argSummary: '等待子 agent', status: 'error' });
-    expect(codexItemToHistory({ type: 'collabAgentToolCall', id: 'c3', status: 'interrupted' }, 5)).toMatchObject({ status: 'warn' });
+    expect(wait).toMatchObject({ toolName: 'SubAgent', argSummary: '等待子 agent', status: 'error', resultSummary: '调用完成 · 子 agent 失败 1', subagent: { state: 'failed' } });
+    expect(codexItemToHistory({ type: 'collabAgentToolCall', id: 'c3', status: 'interrupted' }, 5)).toMatchObject({ status: 'warn', resultSummary: '调用已中断' });
     expect(codexItemToHistory({ type: 'subAgentActivity', id: 's1', kind: 'completed', agentPath: 'root/a', agentThreadId: 't' }, 5)).toMatchObject({ toolName: 'SubAgent', argSummary: '子 agent 已完成 · root/a', status: 'ok' });
+    // v2 的派生（spike S2）：subAgentActivity started 就是派生卡
+    const started = codexItemToHistory({ type: 'subAgentActivity', id: 'call_1', kind: 'started', agentPath: '/root/probe', agentThreadId: 'thr-c', model: 'm-1' }, 5);
+    expect(started).toMatchObject({ argSummary: '派生子 agent · probe', resultSummary: '已派生', subagent: { agentId: 'thr-c', model: 'm-1', state: 'running' } });
     expect(HistoryItemSchema.safeParse(spawn).success).toBe(true);
+    expect(HistoryItemSchema.safeParse(started).success).toBe(true);
+  });
+
+  test('全部 CollabAgentStatus 都有对应状态；不认识的不给', () => {
+    const all = ['pendingInit', 'running', 'interrupted', 'completed', 'errored', 'shutdown', 'notFound'];
+    expect(all.map(collabAgentState)).toEqual(['pending', 'running', 'interrupted', 'completed', 'failed', 'shutdown', 'not_found']);
+    expect(collabAgentState('later')).toBeUndefined();
+  });
+
+  test('历史：子 agent 的后续动态并进派生卡；没有结束证据的标状态未知；昵称从子 thread 读', async () => {
+    const raw = [
+      { type: 'subAgentActivity', id: 'call_a', kind: 'started', agentThreadId: 'thr-a', agentPath: '/root/a', model: 'm-1', startedAtMs: 10 },
+      { type: 'collabAgentToolCall', id: 'w1', tool: 'wait', status: 'completed', receiverThreadIds: [], agentsStates: {}, startedAtMs: 11 },
+      { type: 'subAgentActivity', id: 'done-a', kind: 'completed', agentThreadId: 'thr-a', agentPath: '/root/a', startedAtMs: 12 },
+      { type: 'subAgentActivity', id: 'call_b', kind: 'started', agentThreadId: 'thr-b', agentPath: '/root/b', startedAtMs: 13 },
+      // 对不上派生卡的动态照常成卡
+      { type: 'subAgentActivity', id: 'odd', kind: 'interrupted', agentThreadId: 'thr-x', agentPath: '/root/x', startedAtMs: 14 },
+    ];
+    const items = codexItemsToHistory(raw, 0);
+    expect(items.map((i) => i.id)).toEqual(['call_a', 'w1', 'call_b', 'odd']);
+    expect(items[0]).toMatchObject({ subagent: { agentId: 'thr-a', state: 'completed', model: 'm-1' } });
+    expect(items[2]).toMatchObject({ subagent: { agentId: 'thr-b', state: 'unknown' } });
+
+    const server = new FakeAppServer({
+      'thread/items/list': () => ({ data: raw.map((item) => ({ item, startedAtMs: item.startedAtMs })), nextCursor: null }),
+      'thread/read': (params) => {
+        const id = (params as { threadId: string }).threadId;
+        if (id === 'thr-a') return { thread: fakeThread('thr-a', { agentNickname: 'Meitner', agentRole: 'worker', model: 'other' }) };
+        throw rpcError(-32600, 'thread not loaded');
+      },
+    });
+    const engine = new CodexEngine({ spawn: server.spawn });
+    const history = await engine.history('parent');
+    // 模型以 subAgentActivity 给的为准，昵称 / 角色从子 thread 读
+    expect(history[0]).toMatchObject({ subagent: { nickname: 'Meitner', agentType: 'worker', model: 'm-1', state: 'completed' } });
+    expect(history[2]).toMatchObject({ subagent: { agentId: 'thr-b' } });
+    expect((history[2] as { subagent?: { nickname?: string } }).subagent?.nickname).toBeUndefined();
+    for (const item of history) expect(HistoryItemSchema.safeParse(item).success).toBe(true);
+    engine.dispose();
   });
 
   test('压缩显示成卡；skill 消息不把名字写两遍', () => {
