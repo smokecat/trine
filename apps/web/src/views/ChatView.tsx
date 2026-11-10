@@ -98,8 +98,8 @@ import { formatCost } from '@/lib/format.ts';
 import { waitingForOfTool } from '@/lib/waiting.ts';
 import { ExtHeadEntry, ExtPanelSheet } from '@/components/ext/ExtPanel.tsx';
 import { FilePanel } from '@/components/files/FilePanel.tsx';
-import { FileLinksContext, type FileLinks } from '@/components/files/file-links.ts';
-import { useFilePanelRoute } from '@/components/files/use-file-panel.ts';
+import { createFileLinks, FileLinksContext, type FileLinks } from '@/components/files/file-links.ts';
+import { useFilePanelRoute, viewForIntent } from '@/components/files/use-file-panel.ts';
 import { composerPickerLabel, ExtComposerPicker, useComposerExtensions } from '@/components/ext/ExtComposerPicker.tsx';
 import { useExtRecords } from '@/components/ext/use-ext.ts';
 import { useIsDesktop } from '@/components/shell/use-media-query.ts';
@@ -159,14 +159,9 @@ export function ChatView(): React.JSX.Element {
   const filesSupported = machine?.info?.files != null;
   const filePanel = useFilePanelRoute();
   const openFilePanel = filePanel.open;
+  // 打开 intent 的路由：目前只有抽屉（auto / side 都落到抽屉）；工作区（C2）在这里传 workspace 处理器
   const fileLinks = useMemo<FileLinks | null>(
-    () =>
-      filesSupported
-        ? {
-            open: (path) => openFilePanel({ kind: 'file', path }),
-            browse: (dir) => openFilePanel(dir === undefined ? { kind: 'dir' } : { kind: 'dir', path: dir }),
-          }
-        : null,
+    () => (filesSupported ? createFileLinks({ drawer: (intent) => openFilePanel(viewForIntent(intent)) }) : null),
     [filesSupported, openFilePanel],
   );
   const extRecords = useExtRecords(machineId, sessionId);
@@ -749,7 +744,7 @@ export function ChatView(): React.JSX.Element {
                     },
                   }
                 : {})}
-              {...(fileLinks === null ? {} : { onBrowseFiles: () => fileLinks.browse() })}
+              {...(fileLinks === null ? {} : { onBrowseFiles: () => fileLinks.open({ dir: true, target: 'auto' }) })}
             />
           </div>
         }

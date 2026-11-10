@@ -111,7 +111,7 @@ describe('Markdown restricted（扩展详情）：更严的一档', () => {
 });
 
 describe('Markdown 文件链接（FileLinksContext）：路径可点，外连拦截不变', () => {
-  const links: FileLinks = { open: () => {}, browse: () => {} };
+  const links: FileLinks = { open: () => {} };
   const renderLinked = (text: string, fileBase?: string): string =>
     renderToStaticMarkup(
       <FileLinksContext.Provider value={links}>

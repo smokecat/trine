@@ -55,9 +55,15 @@ import { memo, useContext } from 'react';
 import { defaultRehypePlugins, Streamdown, type StreamdownProps } from 'streamdown';
 import { code } from '@streamdown/code';
 import { ImageIcon } from 'lucide-react';
-import { decodeHref, detectPath, isLocalHref, resolveRelative } from '@/components/files/file-model.ts';
-import { FileBaseContext, useFileLinks } from '@/components/files/file-links.ts';
+import { decodeHref, detectPath, isLocalHref, resolveRelative, type DetectedPath } from '@/components/files/file-model.ts';
+import { FileBaseContext, targetForClick, useFileLinks, type FileOpenIntent, type FileOpenTarget } from '@/components/files/file-links.ts';
 import { cn } from '@/lib/utils.ts';
+
+/** 识别出的路径 → 打开 intent（以 `/` 结尾的是目录） */
+function intentFor(detected: DetectedPath, target: FileOpenTarget, fragment?: string): FileOpenIntent {
+  if (detected.dir) return { dir: true, path: detected.path, target };
+  return fragment === undefined || fragment === '' ? { path: detected.path, target } : { path: detected.path, target, fragment };
+}
 
 /** 插件实例提到模块级：每次渲染新建会丢掉 shiki 已加载的语言缓存 */
 const plugins = { code };
@@ -94,7 +100,7 @@ function FileAwareInlineCode({ children, className, node: _node, ...props }: Rea
       data-testid="file-link"
       data-path={detected.path}
       title={detected.dir ? `浏览目录 ${detected.path}` : `预览 ${detected.path}`}
-      onClick={() => (detected.dir ? links.browse(detected.path) : links.open(detected.path))}
+      onClick={(e) => links.open(intentFor(detected, targetForClick(e)))}
       className="cursor-pointer align-baseline decoration-dotted underline-offset-2 hover:underline"
     >
       {codeEl}
@@ -125,7 +131,7 @@ function FileAwareLink({
           data-testid="file-link"
           data-path={detected.path}
           title={detected.path}
-          onClick={() => (detected.dir ? links.browse(detected.path) : links.open(detected.path))}
+          onClick={(e) => links.open(intentFor(detected, targetForClick(e)))}
           className={cn('text-brand-ink cursor-pointer text-left underline', className)}
         >
           {children}
@@ -156,7 +162,7 @@ function FileDocImage({
       type="button"
       data-testid="file-doc-image"
       data-path={target}
-      onClick={() => links.open(target)}
+      onClick={(e) => links.open({ path: target, target: targetForClick(e) })}
       className="border-border bg-surface-2 text-text-2 hover:text-text inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[12px]"
     >
       <ImageIcon className="size-3.5" />

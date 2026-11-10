@@ -6,6 +6,7 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import type { FsFile } from '@trine/core';
 import type { ToolEntry } from '@/lib/reducer.ts';
 import type { OpenedFile } from '@/lib/client.ts';
+import type { FileOpenIntent } from './file-links.ts';
 
 await import('@/lib/dom-test-env.ts');
 const { act } = await import('react');
@@ -47,16 +48,23 @@ const tool = (extra: Partial<ToolEntry> = {}): ToolEntry => ({
 });
 
 describe('ToolCard 文件预览入口', () => {
-  test('有 filePath 且有 provider：按钮打开完整路径；没有 provider 或没有路径：不出现', () => {
-    const opened: string[] = [];
-    const links = { open: (p: string) => opened.push(p), browse: () => {} };
+  test('有 filePath 且有 provider：按钮打开完整路径（Alt+点击 = side）；没有 provider 或没有路径：不出现', () => {
+    const opened: FileOpenIntent[] = [];
+    const links = { open: (i: FileOpenIntent) => void opened.push(i) };
     const el = mount(
       <FileLinksContext.Provider value={links}>
         <ToolCard entry={tool({ filePath: '/w/repo/docs/plan.md' })} runningElapsedMs={null} />
       </FileLinksContext.Provider>,
     );
     act(() => $(el, 'tool-open-file')!.click());
-    expect(opened).toEqual(['/w/repo/docs/plan.md']);
+    act(() => void $(el, 'tool-open-file')!.dispatchEvent(new MouseEvent('click', { bubbles: true, altKey: true })));
+    // Ctrl/Cmd 不劫持：仍是 auto
+    act(() => void $(el, 'tool-open-file')!.dispatchEvent(new MouseEvent('click', { bubbles: true, ctrlKey: true })));
+    expect(opened).toEqual([
+      { path: '/w/repo/docs/plan.md', target: 'auto' },
+      { path: '/w/repo/docs/plan.md', target: 'side' },
+      { path: '/w/repo/docs/plan.md', target: 'auto' },
+    ]);
     act(() => root?.render(<ToolCard entry={tool({ filePath: '/w/repo/docs/plan.md' })} runningElapsedMs={null} />));
     expect($(el, 'tool-open-file')).toBeNull();
     act(() =>

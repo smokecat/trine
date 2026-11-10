@@ -31,7 +31,7 @@ import { toast } from 'sonner';
 import { CopyIcon, FileSearchIcon } from 'lucide-react';
 import type { BgTask, SubagentState } from '@trine/core';
 import { copyText } from '@/lib/clipboard.ts';
-import { useFileLinks } from '@/components/files/file-links.ts';
+import { targetForClick, useFileLinks } from '@/components/files/file-links.ts';
 import type { ToolEntry } from '@/lib/reducer.ts';
 import { formatClockSeconds, formatDuration, formatSeconds } from '@/lib/format.ts';
 import {
@@ -368,9 +368,9 @@ export function ToolCard({
           <button
             type="button"
             data-testid="tool-open-file"
-            title={`预览 ${filePath}`}
+            title={`预览 ${filePath}（Alt+点击在侧边打开）`}
             aria-label={`预览 ${filePath}`}
-            onClick={() => fileLinks?.open(filePath)}
+            onClick={(e) => fileLinks?.open({ path: filePath, target: targetForClick(e) })}
             className="text-text-3 hover:text-text shrink-0 self-stretch px-2.5"
           >
             <FileSearchIcon className="size-3.5" />

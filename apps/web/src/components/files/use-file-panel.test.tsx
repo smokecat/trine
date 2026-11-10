@@ -48,6 +48,18 @@ describe('useFilePanelRoute', () => {
     expect(api!.search).toBe('');
   });
 
+  test('锚点放在 state 里：不进查询参数，换到别的视图就清掉，返回时恢复', () => {
+    mount('/s/m/s1');
+    act(() => api!.open({ kind: 'file', path: '/w/a#b.md', fragment: '安装 步骤' }));
+    expect(api!.view).toEqual({ kind: 'file', path: '/w/a#b.md', fragment: '安装 步骤' });
+    expect(new URLSearchParams(api!.search).get('file')).toBe('/w/a#b.md');
+    expect(api!.search).not.toContain('frag');
+    act(() => api!.open({ kind: 'file', path: '/w/c.md' }));
+    expect(api!.view).toEqual({ kind: 'file', path: '/w/c.md' });
+    act(() => api!.close());
+    expect(api!.view).toBeNull();
+  });
+
   test('深链进来再跳转：关闭不会退回仍带面板的起点', () => {
     mount('/s/m/s1?file=%2Fw%2Fa.md');
     expect(api!.view).toEqual({ kind: 'file', path: '/w/a.md' });
