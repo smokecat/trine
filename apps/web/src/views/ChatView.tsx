@@ -102,6 +102,8 @@ import { FileLinksContext, type FileLinks } from '@/components/files/file-links.
 import { useFilePanelRoute } from '@/components/files/use-file-panel.ts';
 import { composerPickerLabel, ExtComposerPicker, useComposerExtensions } from '@/components/ext/ExtComposerPicker.tsx';
 import { useExtRecords } from '@/components/ext/use-ext.ts';
+import { useIsDesktop } from '@/components/shell/use-media-query.ts';
+import { contentMaxWidth, effectiveContentWidth, setContentWidthOverride, type ContentWidth } from '@/lib/layout-prefs.ts';
 
 type InfoCardState =
   | { kind: 'status'; rows: { label: string; value: string }[] }
@@ -130,6 +132,10 @@ export function ChatView(): React.JSX.Element {
   const setDraft = useTrine((s) => s.setDraft);
   const deviceId = useTrine((s) => s.deviceId);
   const prefs = useTrine((s) => s.prefs);
+  const isDesktop = useIsDesktop();
+  const contentWidth = effectiveContentWidth(prefs.contentWidth, prefs.sessionContentWidth, key);
+  const setSessionContentWidth = (width: ContentWidth | null): void =>
+    client?.updatePrefs({ sessionContentWidth: setContentWidthOverride(prefs.sessionContentWidth, key, width) });
 
   const [settingsSection, setSettingsSection] = useState<SettingsSection | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -674,6 +680,8 @@ export function ChatView(): React.JSX.Element {
 
   return (
     <FileLinksContext.Provider value={fileLinks}>
+      {/* display:contents 不改布局，只把内容宽度变量传给时间线与输入框（PC 上生效） */}
+      <div className="contents" style={{ '--chat-max': contentMaxWidth(contentWidth) } as React.CSSProperties}>
       <AppHead
         back={backTo}
         title={meta?.title !== undefined && meta.title !== '' ? meta.title : sessionId.slice(0, 8)}
@@ -732,6 +740,15 @@ export function ChatView(): React.JSX.Element {
               meta={meta}
               actions={sessionActions}
               onRequestRename={() => setRenameOpen(true)}
+              {...(isDesktop && client !== null
+                ? {
+                    contentWidth: {
+                      value: prefs.sessionContentWidth[key] ?? null,
+                      global: prefs.contentWidth,
+                      onChange: setSessionContentWidth,
+                    },
+                  }
+                : {})}
               {...(fileLinks === null ? {} : { onBrowseFiles: () => fileLinks.browse() })}
             />
           </div>
@@ -921,6 +938,7 @@ export function ChatView(): React.JSX.Element {
           }}
         />
       )}
+      </div>
     </FileLinksContext.Provider>
   );
 }

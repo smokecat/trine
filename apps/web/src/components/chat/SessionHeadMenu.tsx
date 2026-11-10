@@ -15,11 +15,52 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
   DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu.tsx';
 import { archiveLikelyBusy, type SessionRowActions } from '@/components/list/SessionRowMenu.tsx';
+import { CONTENT_WIDTH_LABEL, CONTENT_WIDTHS, type ContentWidth } from '@/lib/layout-prefs.ts';
 import { cn } from '@/lib/utils.ts';
+
+/** 本会话的内容宽度：value 为 null = 跟随全局（global） */
+export interface SessionContentWidthControl {
+  value: ContentWidth | null;
+  global: ContentWidth;
+  onChange: (width: ContentWidth | null) => void;
+}
+
+const FOLLOW_GLOBAL = 'global';
+
+function ContentWidthSub({ control }: { control: SessionContentWidthControl }): React.JSX.Element {
+  return (
+    <DropdownMenuSub>
+      <DropdownMenuSubTrigger data-testid="head-menu-content-width">
+        内容宽度
+        <span className="text-text-3 ml-auto pl-3 text-[11px]">{CONTENT_WIDTH_LABEL[control.value ?? control.global]}</span>
+      </DropdownMenuSubTrigger>
+      <DropdownMenuSubContent>
+        <DropdownMenuRadioGroup
+          value={control.value ?? FOLLOW_GLOBAL}
+          onValueChange={(v) => control.onChange(v === FOLLOW_GLOBAL ? null : (v as ContentWidth))}
+        >
+          <DropdownMenuRadioItem value={FOLLOW_GLOBAL} data-testid="content-width-global">
+            跟随全局（{CONTENT_WIDTH_LABEL[control.global]}）
+          </DropdownMenuRadioItem>
+          {CONTENT_WIDTHS.map((w) => (
+            <DropdownMenuRadioItem key={w} value={w} data-testid={`content-width-${w}`}>
+              {CONTENT_WIDTH_LABEL[w]}
+            </DropdownMenuRadioItem>
+          ))}
+        </DropdownMenuRadioGroup>
+      </DropdownMenuSubContent>
+    </DropdownMenuSub>
+  );
+}
 
 export function SessionHeadMenu({
   machineId,
@@ -28,6 +69,7 @@ export function SessionHeadMenu({
   actions,
   onRequestRename,
   onBrowseFiles,
+  contentWidth,
 }: {
   machineId: string;
   sessionId: string;
@@ -37,6 +79,8 @@ export function SessionHeadMenu({
   onRequestRename: () => void;
   /** 打开文件浏览器；agent 不支持文件查看时不给 */
   onBrowseFiles?: (() => void) | undefined;
+  /** 本会话内容宽度（PC 才给；手机上内容本来就铺满） */
+  contentWidth?: SessionContentWidthControl | undefined;
 }): React.JSX.Element | null {
   const canRename = actions.onRename !== undefined;
   const canArchive = actions.onArchive !== undefined && meta !== undefined;
@@ -44,7 +88,7 @@ export function SessionHeadMenu({
   const canCopyCwd = actions.onCopyCwd !== undefined && cwd !== '';
   const canLink = actions.onLink !== undefined && (actions.supportsLinks === undefined || actions.supportsLinks(machineId));
   const canBrowse = onBrowseFiles !== undefined;
-  if (!canRename && !canArchive && !canCopyCwd && !canLink && !canBrowse) return null;
+  if (!canRename && !canArchive && !canCopyCwd && !canLink && !canBrowse && contentWidth === undefined) return null;
   const archived = meta?.archived === true;
   const busy = meta !== undefined && archiveLikelyBusy(meta);
   const swallow = (r: void | Promise<unknown>): void => {
@@ -105,6 +149,12 @@ export function SessionHeadMenu({
           >
             取消归档
           </DropdownMenuItem>
+        )}
+        {contentWidth !== undefined && (
+          <>
+            {(canBrowse || canCopyCwd || canLink || canRename || canArchive) && <DropdownMenuSeparator />}
+            <ContentWidthSub control={contentWidth} />
+          </>
         )}
       </DropdownMenuContent>
     </DropdownMenu>

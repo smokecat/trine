@@ -44,6 +44,7 @@ import { setTheme, syncFromPrefs, useTheme, type ThemeMode } from '@/app/theme.t
 import { browserKv } from '@/lib/adapters.browser.ts';
 import { KV_IDENTITY, KV_PREFS, type Prefs } from '@/lib/storage.ts';
 import { copyText } from '@/lib/clipboard.ts';
+import { CONTENT_WIDTH_LABEL, CONTENT_WIDTHS, type ContentWidth } from '@/lib/layout-prefs.ts';
 import { formatBytes } from '@/lib/format.ts';
 import { ATTACHMENTS_MAX_COUNT } from '@trine/core/types';
 import { cn } from '@/lib/utils.ts';
@@ -356,7 +357,36 @@ function SendKeySetting(): React.JSX.Element {
   );
 }
 
-const STATS_INTERVAL_OPTIONS: { value: Prefs['machineStatsIntervalMs']; label: string }[] = [
+/** 会话页内容宽度（PC）：全局默认，单个会话可在会话菜单里另设 */
+function ContentWidthSetting(): React.JSX.Element {
+  const client = useClient();
+  const value = useTrine((s) => s.prefs.contentWidth);
+  const overrides = useTrine((s) => Object.keys(s.prefs.sessionContentWidth).length);
+  const hints: Record<ContentWidth, string> = { standard: '960px', wide: '1200px', full: '铺满主区' };
+  return (
+    <section className="flex flex-col gap-2" data-testid="content-width-setting">
+      <h2 className="font-medium">会话内容宽度</h2>
+      <p className="text-text-3 text-xs">
+        电脑上消息与输入框的最大宽度，宽于此时居中。单个会话可在右上角「⋯」菜单里另设
+        {overrides > 0 ? `（已有 ${overrides} 个会话单独设置）` : ''}。
+      </p>
+      <div className="flex flex-wrap gap-1.5">
+        {CONTENT_WIDTHS.map((w) => (
+          <Chip key={w} data-testid={`content-width-${w}`} selected={value === w} onClick={() => client?.updatePrefs({ contentWidth: w })}>
+            {CONTENT_WIDTH_LABEL[w]} <span className="text-text-3">· {hints[w]}</span>
+          </Chip>
+        ))}
+        {overrides > 0 && (
+          <Button size="sm" variant="ghost" className="h-7 text-xs" data-testid="content-width-reset-overrides" onClick={() => client?.updatePrefs({ sessionContentWidth: {} })}>
+            全部会话跟随全局
+          </Button>
+        )}
+      </div>
+    </section>
+  );
+}
+
+const STATS_INTERVAL_OPTIONS:{ value: Prefs['machineStatsIntervalMs']; label: string }[] = [
   { value: 5_000, label: '5 秒' },
   { value: 10_000, label: '10 秒' },
   { value: 30_000, label: '30 秒' },
@@ -792,6 +822,7 @@ export function SettingsView(): React.JSX.Element {
                   <ThemeSwitcher />
                 </section>
                 <SendKeySetting />
+                <ContentWidthSetting />
               </div>
               <Separator />
               <PromptSnippets />

@@ -223,7 +223,7 @@ export function Timeline({
         ref={scrollRef}
         data-testid="timeline"
         data-following={String(following)}
-        className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-3.5 py-3.5 min-[900px]:px-[max(1.5rem,calc((100%_-_960px)/2))] min-[900px]:py-6 [overflow-anchor:none] [&>*]:shrink-0"
+        className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-3.5 py-3.5 min-[900px]:px-[max(1.5rem,calc((100%_-_var(--chat-max,960px))/2))] min-[900px]:py-6 [overflow-anchor:none] [&>*]:shrink-0"
         onScroll={(e) => {
           const atBottom = isAtBottom(e.currentTarget);
           setFollowing((prev) => (prev === atBottom ? prev : atBottom));
