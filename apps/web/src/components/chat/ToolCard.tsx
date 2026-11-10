@@ -20,14 +20,28 @@
  * - 展开：子工具卡列表（复用本组件、缩进一级，嵌套同理）+ 报告预览。
  * - 历史回看里的卡没有实时收到的子工具：展开时经 `onLoadChildren` 向 agent 拉子转录
  *   （版本不够时调用方不给这个回调）；加载中 / 失败 / 空结果都有一行提示。
+ * - 标题「Agent · 类型 · 前台/后台」，展开第一块是写给子 agent 的提示词（argDetail）。
+ * - 启动工具返回 ≠ 子 agent 结束（plan §7，见 lib/subagent-view.ts）：后台的右侧显示
+ *   「后台运行中 · 计时」（后台任务快照派生），结束后是 agent 的收尾摘要，拿不到结束证据
+ *   是「状态未知」。并行的子 agent 各自按开始时刻走秒（`now` 只给在跑的卡）。
+ * - Codex 的 SubAgent 卡：右侧是调用状态，另起一行是子 agent 自己的昵称 / 状态 / 模型。
  */
 import { useState } from 'react';
 import { toast } from 'sonner';
 import { CopyIcon, FileSearchIcon } from 'lucide-react';
+import type { BgTask, SubagentState } from '@trine/core';
 import { copyText } from '@/lib/clipboard.ts';
 import { useFileLinks } from '@/components/files/file-links.ts';
 import type { ToolEntry } from '@/lib/reducer.ts';
 import { formatClockSeconds, formatDuration, formatSeconds } from '@/lib/format.ts';
+import {
+  claudeSubagentView,
+  codexSubagentLine,
+  subagentArgSummary,
+  subagentStateLabel,
+  subagentTitle,
+  type ClaudeSubagentView,
+} from '@/lib/subagent-view.ts';
 import { childTotal, currentChild, isSubagentTool } from '@/lib/tool-tree.ts';
 import { cn } from '@/lib/utils.ts';
 
@@ -117,9 +131,50 @@ export function fullArgText(entry: Pick<ToolEntry, 'argSummary' | 'argDetail'>):
   return entry.argSummary.length > ARG_EXPAND_MIN ? entry.argSummary : undefined;
 }
 
-/** 完整参数块的标题：命令类工具写「命令」，其余写「参数」 */
+/** 完整参数块的标题：命令类工具写「命令」，子 agent 写「提示词」，其余写「参数」 */
 function argLabel(toolName: string): string {
-  return toolName === 'Bash' || toolName === 'Shell' ? '命令' : '参数';
+  if (toolName === 'Bash' || toolName === 'Shell') return '命令';
+  return isSubagentTool(toolName) ? '提示词' : '参数';
+}
+
+/** 子 agent 卡右侧状态的号（运行中另画转圈） */
+const STATE_MARK: Partial<Record<SubagentState, string>> = {
+  completed: '✓',
+  failed: '✗',
+  stopped: '⊘',
+  interrupted: '⊘',
+  shutdown: '⊘',
+  not_found: '?',
+  unknown: '?',
+};
+
+function stateTone(state: SubagentState): string {
+  if (state === 'completed') return 'text-green';
+  if (state === 'failed') return 'text-red';
+  return 'text-text-3';
+}
+
+/**
+ * 后台子 agent 卡右侧（Claude）：运行中给「后台运行中 · 计时」，结束给 agent 的收尾摘要
+ * （没有收尾帧时给状态词），拿不到结束证据给「状态未知」。不是后台卡返回 null。
+ */
+export function backgroundStatusText(
+  entry: ToolEntry,
+  view: ClaudeSubagentView | undefined,
+  now: number,
+): { text: string; tone: string; running: boolean } | null {
+  if (view?.background !== true) return null;
+  const { state } = view;
+  if (state === 'running') {
+    // 启动工具还没返回：照常是「运行中」，由上层的通用分支画
+    if (view.startedAt === undefined) return null;
+    const elapsed = now > 0 ? ` · ${formatDuration(Math.max(0, now - view.startedAt))}` : '';
+    return { text: `后台运行中${elapsed}`, tone: 'text-brand', running: true };
+  }
+  if (state === 'unknown') return { text: '? 状态未知', tone: 'text-text-3', running: false };
+  const fromAgent = entry.subagent?.state === state && entry.resultSummary !== undefined && entry.resultSummary !== '';
+  if (fromAgent) return { text: entry.resultSummary!, tone: stateTone(state), running: false };
+  return { text: `${STATE_MARK[state] ?? ''} ${subagentStateLabel(state)}`.trim(), tone: stateTone(state), running: false };
 }
 
 function FullArgs({ toolName, text }: { toolName: string; text: string }): React.JSX.Element {
@@ -159,10 +214,19 @@ export function ToolCard({
   onLoadChildren,
   depth = 0,
   historyUnknown = false,
+  bgTask,
+  bgStale = false,
+  now = 0,
 }: {
   entry: ToolEntry;
   /** 运行中工具的已耗时（来自心跳快照 + 本地插值）；不在运行或没有心跳时为 null */
   runningElapsedMs: number | null;
+  /** 这张子 agent 卡对应的后台任务（toolUseId 关联）；没有 / 不是子 agent 卡时不给 */
+  bgTask?: BgTask | undefined;
+  /** 后台任务快照已陈旧（agent 重启后的 running 不可信，按状态未知） */
+  bgStale?: boolean;
+  /** 1s tick（只给在跑的子 agent 卡，用来各自计时）；0 = 不走秒 */
+  now?: number;
   /** 拉子 agent 过程（subagent.history.request）；agent 不支持时不给 */
   onLoadChildren?: ((toolUseId: string) => Promise<void>) | undefined;
   /** 嵌套深度（子工具卡为 1，孙为 2…），只影响样式 */
@@ -181,11 +245,20 @@ export function ToolCard({
   // 只对**已结束**、还没拉过、没有子工具在跑的卡拉子转录（子工具正实时到达时不拉）。
   // 已有部分实时子条目也允许拉一次补全（中途连上 / 补发窗口外，评审 M3）
   const live = currentChild(entry)?.status === undefined && children.length > 0;
-  const canLoad = sub && onLoadChildren !== undefined && entry.childrenLoaded !== true && status !== undefined && !live;
+  const view = claudeSubagentView(entry, bgTask, bgStale);
+  const bgStatus = backgroundStatusText(entry, view, now);
+  // 后台子 agent 还在跑：子工具正实时到达，这时拉回看只会拿到一半、之后也不再补拉
+  const canLoad =
+    sub && onLoadChildren !== undefined && entry.childrenLoaded !== true && status !== undefined && !live && bgStatus?.running !== true;
   const args = fullArgText(entry);
   const expandable =
-    hasPreview || args !== undefined || (sub && (children.length > 0 || canLoad || entry.childrenLoaded === true || status === undefined));
-  const progress = subagentProgressText(entry);
+    hasPreview ||
+    args !== undefined ||
+    (sub && (children.length > 0 || canLoad || entry.childrenLoaded === true || status === undefined || bgStatus?.running === true));
+  const progress = subagentProgressText(entry) ?? (bgStatus?.running === true && view?.progress !== undefined ? `最近：${view.progress}` : null);
+  const codexLine = codexSubagentLine(entry);
+  // 并行的子 agent 各自计时：心跳只跟踪一个工具，其余在跑的子 agent 卡按自己的开始时刻走秒
+  const ownElapsed = sub && status === undefined && runningElapsedMs === null && now > 0 && entry.ts > 0 ? Math.max(0, now - entry.ts) : null;
 
   const fetchChildren = (): void => {
     if (!canLoad || onLoadChildren === undefined || load === 'loading') return;
@@ -209,6 +282,7 @@ export function ToolCard({
       data-tool={entry.toolName}
       data-status={entry.status ?? 'running'}
       data-depth={depth}
+      data-subagent-state={view?.state ?? entry.subagent?.state}
       className={cn(
         'overflow-hidden rounded-xl border text-[13px]',
         depth === 0 ? 'border-border bg-surface' : 'border-border bg-surface-2',
@@ -230,18 +304,34 @@ export function ToolCard({
           <span aria-hidden className="w-[18px] shrink-0 text-center">
             {toolIcon(entry.toolName)}
           </span>
-          <span className="shrink-0 font-semibold">{entry.toolName}</span>
-          <span className="text-text-2 min-w-0 flex-1 truncate font-mono text-[12px]" title={entry.argSummary === '' ? undefined : entry.argSummary}>
-            {entry.argSummary}
+          <span data-testid="tool-name" className="shrink-0 font-semibold">
+            {subagentTitle(entry, view)}
           </span>
-          {status === undefined ? (
+          <span className="text-text-2 min-w-0 flex-1 truncate font-mono text-[12px]" title={entry.argSummary === '' ? undefined : entry.argSummary}>
+            {subagentArgSummary(entry, view)}
+          </span>
+          {bgStatus !== null ? (
+            <span
+              data-testid="tool-subagent-status"
+              title={toolTimeTitle(entry)}
+              className={cn('tabular shrink-0 font-mono text-[12px]', bgStatus.tone)}
+            >
+              {bgStatus.running && (
+                <span aria-hidden className="mr-1 inline-block motion-safe:animate-spin">
+                  ◠
+                </span>
+              )}
+              {bgStatus.text}
+            </span>
+          ) : status === undefined ? (
             <span title={toolTimeTitle(entry)} className="text-brand tabular shrink-0 font-mono text-[12px]">
               <span aria-hidden className="mr-1 inline-block motion-safe:animate-spin">
                 ◠
               </span>
               {/* 已耗时取自心跳里的 currentTool.elapsedMs（agent 自己算的）+ 本地插值：
-                  entry.ts 是 agent 时钟，直接拿本地 now 去减会被两端时钟差打歪 */}
-              {runningElapsedMs === null ? '运行中' : formatSeconds(runningElapsedMs)}
+                  entry.ts 是 agent 时钟，直接拿本地 now 去减会被两端时钟差打歪。
+                  心跳只跟一个工具：并行的子 agent 卡按自己的开始时刻走秒（与后台任务条同口径） */}
+              {runningElapsedMs !== null ? formatSeconds(runningElapsedMs) : ownElapsed !== null ? formatDuration(ownElapsed) : '运行中'}
             </span>
           ) : (
             <span
@@ -266,6 +356,11 @@ export function ToolCard({
           </button>
         )}
       </div>
+      {codexLine !== null && (
+        <div data-testid="tool-subagent-line" className="text-text-3 -mt-1 truncate px-3 pb-2 pl-[38px] text-[11.5px]">
+          {codexLine}
+        </div>
+      )}
       {progress !== null && !open && (
         <div
           data-testid="tool-subagent-progress"
@@ -286,6 +381,7 @@ export function ToolCard({
               onLoadChildren={onLoadChildren}
               depth={depth}
               historyUnknown={historyUnknown}
+              running={status === undefined || bgStatus?.running === true}
             />
           )}
           {hasPreview && (
@@ -319,6 +415,7 @@ function SubagentChildren({
   onLoadChildren,
   depth,
   historyUnknown,
+  running,
 }: {
   entry: ToolEntry;
   childEntries: ToolEntry[];
@@ -327,6 +424,8 @@ function SubagentChildren({
   onLoadChildren: ((toolUseId: string) => Promise<void>) | undefined;
   depth: number;
   historyUnknown: boolean;
+  /** 子 agent 还在跑（前台未返回，或后台运行中） */
+  running: boolean;
 }): React.JSX.Element {
   const note = (testId: string, text: React.ReactNode): React.JSX.Element => (
     <div data-testid={testId} className="text-text-3 px-3 py-2 text-[12px]">
@@ -346,7 +445,7 @@ function SubagentChildren({
         </>,
       );
     }
-    if (entry.status === undefined) return note('tool-children-empty', '子 agent 还没有调用工具');
+    if (running) return note('tool-children-empty', '子 agent 还没有调用工具');
     if (entry.childrenLoaded === true) return note('tool-children-empty', '没有找到子 agent 的过程记录');
     if (onLoadChildren === undefined && historyUnknown) {
       return note('tool-children-empty', '正在获取 agent 信息，稍后再展开查看子 agent 的过程');

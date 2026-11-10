@@ -765,6 +765,8 @@ export function ChatView(): React.JSX.Element {
           now={now}
           runningToolId={runningToolId}
           runningElapsedMs={runningElapsedMs}
+          bgTasks={bgTasks}
+          bgStale={bgStale}
           handlers={handlers}
           planOptions={agentSupportsPlanOptions(machine?.info?.agentVersion) && engineCaps.planMode === true}
           // machine.info 还没到时不下「版本过旧」的结论（评审 m4）

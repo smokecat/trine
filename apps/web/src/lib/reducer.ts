@@ -60,6 +60,7 @@ import {
   RunPhaseSchema,
   SessionStateSchema,
   SlashCommandSchema,
+  SubagentInfoSchema,
   ToolResultStatusSchema,
 } from '@trine/core/types';
 import {
@@ -172,6 +173,7 @@ export interface ToolEntry {
   children?: ToolEntry[];
   childCount?: number;
   childrenLoaded?: boolean;
+  subagent?: z.infer<typeof SubagentInfoSchema>;
   seq: number;
   ts: number;
 }
@@ -201,8 +203,22 @@ export const ToolEntrySchema = z.object({
   childCount: z.number().int().nonnegative().optional(),
   /** 已向 agent 拉过子转录（subagent.history.response 到了，哪怕是空的） */
   childrenLoaded: z.boolean().optional(),
+  /**
+   * 子 agent 卡的附加信息（类型、前台/后台、目标状态、Codex 昵称/模型；加法字段）。
+   * tool.start / tool.end / 历史多次下发时按字段合并，后到的覆盖（见 mergeSubagent）
+   */
+  subagent: SubagentInfoSchema.optional(),
   ...entryBase,
 });
+
+/** 两份子 agent 信息按字段合并（`next` 的字段覆盖 `cur`）；都没有返回 undefined */
+export function mergeSubagent(
+  cur: ToolEntry['subagent'],
+  next: ToolEntry['subagent'],
+): ToolEntry['subagent'] {
+  if (next === undefined) return cur;
+  return cur === undefined ? next : { ...cur, ...next };
+}
 
 export const PermissionEntrySchema = z.object({
   kind: z.literal('permission'),
@@ -552,13 +568,18 @@ export function applyEvent(tl: Timeline, event: AgentToClientEvent): Timeline {
     case 'tool.start': {
       // 已有同 id 条目（重发 / 子条目先于 start 收到过 end）：原地更新名字与参数，
       // 结果与子树留着。顶层与任意深度的子条目都算
-      const updated = updateTool(tl.entries, event.toolUseId, (cur) => ({
-        ...cur,
-        toolName: event.toolName,
-        argSummary: event.argSummary,
-        ...(event.filePath === undefined ? {} : { filePath: event.filePath }),
-        ...(event.argDetail === undefined ? {} : { argDetail: event.argDetail }),
-      }));
+      // 重发也用来只更新子 agent 信息（Codex 子 thread 的状态变化）
+      const updated = updateTool(tl.entries, event.toolUseId, (cur) => {
+        const subagent = mergeSubagent(cur.subagent, event.subagent);
+        return {
+          ...cur,
+          toolName: event.toolName,
+          argSummary: event.argSummary,
+          ...(event.filePath === undefined ? {} : { filePath: event.filePath }),
+          ...(event.argDetail === undefined ? {} : { argDetail: event.argDetail }),
+          ...(subagent === undefined ? {} : { subagent }),
+        };
+      });
       if (updated !== undefined) return withEntries(tl, updated, seq);
       const entry: ToolEntry = {
         kind: 'tool',
@@ -567,6 +588,7 @@ export function applyEvent(tl: Timeline, event: AgentToClientEvent): Timeline {
         argSummary: event.argSummary,
         ...(event.filePath === undefined ? {} : { filePath: event.filePath }),
         ...(event.argDetail === undefined ? {} : { argDetail: event.argDetail }),
+        ...(event.subagent === undefined ? {} : { subagent: event.subagent }),
         seq,
         ts: event.ts,
       };
@@ -579,10 +601,22 @@ export function applyEvent(tl: Timeline, event: AgentToClientEvent): Timeline {
         resultSummary: event.resultSummary,
         ...(event.outputPreview === undefined ? {} : { outputPreview: event.outputPreview }),
       };
-      const updated = updateTool(tl.entries, event.toolUseId, (cur) => ({ ...cur, ...result }));
+      const updated = updateTool(tl.entries, event.toolUseId, (cur) => {
+        const subagent = mergeSubagent(cur.subagent, event.subagent);
+        return { ...cur, ...result, ...(subagent === undefined ? {} : { subagent }) };
+      });
       if (updated !== undefined) return withEntries(tl, updated, seq);
       // start 没收到（补发窗口外）：仍落一条，工具名未知
-      const entry: ToolEntry = { kind: 'tool', id: event.toolUseId, toolName: '?', argSummary: '', ...result, seq, ts: event.ts };
+      const entry: ToolEntry = {
+        kind: 'tool',
+        id: event.toolUseId,
+        toolName: '?',
+        argSummary: '',
+        ...result,
+        ...(event.subagent === undefined ? {} : { subagent: event.subagent }),
+        seq,
+        ts: event.ts,
+      };
       return placeTool(tl, entry, event.parentToolUseId, seq);
     }
     case 'permission.request': {
@@ -1141,6 +1175,7 @@ function historyToEntry(item: HistoryItem): TimelineEntry {
         ...(item.durationMs === undefined ? {} : { durationMs: item.durationMs }),
         ...(item.resultSummary === undefined ? {} : { resultSummary: item.resultSummary }),
         ...(item.outputPreview === undefined ? {} : { outputPreview: item.outputPreview }),
+        ...(item.subagent === undefined ? {} : { subagent: item.subagent }),
         seq: 0,
         ts: item.ts,
       };

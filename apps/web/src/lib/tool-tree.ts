@@ -177,6 +177,11 @@ function mergeToolEntry(base: ToolEntry, extra: ToolEntry): ToolEntry {
   if ((out.toolName === '?' || out.toolName === '') && extra.toolName !== '?' && extra.toolName !== '') {
     out = { ...out, toolName: extra.toolName, argSummary: extra.argSummary };
   }
+  // 子 agent 信息逐字段补缺（base 已有的字段为准）
+  if (extra.subagent !== undefined) {
+    const merged = { ...extra.subagent, ...out.subagent };
+    if (out.subagent === undefined || Object.keys(merged).length !== Object.keys(out.subagent).length) out = { ...out, subagent: merged };
+  }
   if (extra.children !== undefined && extra.children.length > 0) out = appendChildren(out, extra.children);
   if (extra.childrenLoaded === true && out.childrenLoaded !== true) out = { ...out, childrenLoaded: true };
   return out;
@@ -251,6 +256,7 @@ export function historyToolEntry(item: Extract<HistoryItem, { kind: 'tool' }>): 
     ...(item.durationMs === undefined ? {} : { durationMs: item.durationMs }),
     ...(item.resultSummary === undefined ? {} : { resultSummary: item.resultSummary }),
     ...(item.outputPreview === undefined ? {} : { outputPreview: item.outputPreview }),
+    ...(item.subagent === undefined ? {} : { subagent: item.subagent }),
     seq: 0,
     ts: item.ts,
   };

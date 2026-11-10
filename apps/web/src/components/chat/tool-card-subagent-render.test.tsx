@@ -4,6 +4,7 @@
  * 与其他 DOM 测试同款：先注册 happy-dom，再动态 import react-dom。
  */
 import { afterEach, describe, expect, test } from 'bun:test';
+import type { BgTask } from '@trine/core';
 import type { TimelineEntry, ToolEntry } from '@/lib/reducer.ts';
 
 await import('@/lib/dom-test-env.ts');
@@ -221,5 +222,78 @@ describe('权限类卡片的来源标注', () => {
       null,
     ]);
     expect($($(el, 'entry-ask-question')!, 'perm-subagent-source')?.textContent).toBe('🤖来自子 agent：内层任务');
+  });
+});
+
+describe('ToolCard · 前台 / 后台与子任务状态（plan §7）', () => {
+  const launched = { status: 'ok' as const, resultSummary: '✓ 后台子 agent 已启动' };
+  const bgTask = (over: Partial<BgTask> = {}): BgTask => ({
+    taskId: 'task-1',
+    kind: 'agent',
+    description: 'probe',
+    status: 'running',
+    startedAt: 1_000,
+    toolUseId: 'P',
+    ...over,
+  });
+  const handlers = { onUserAction: () => {}, onRespondPermission: () => {}, onResumeAt: () => {}, onStop: () => {} };
+
+  test('后台运行中：标题带类型与「后台」，右侧「后台运行中 · 计时」；展开看提示词', () => {
+    const entry = agent({ argSummary: '后台 · probe', argDetail: '写给子 agent 的提示词', ...launched, subagent: { agentType: 'Explore', background: true } });
+    const el = mount(<ToolCard entry={entry} runningElapsedMs={null} bgTask={bgTask()} now={66_000} />);
+    expect($(el, 'tool-name')?.textContent).toBe('Agent · Explore · 后台');
+    expect(header(el).textContent).toContain('probe');
+    expect(header(el).textContent).not.toContain('后台 · probe');
+    expect($(el, 'tool-subagent-status')?.textContent).toContain('后台运行中 · 1:05');
+    expect(el.querySelector('[data-testid="entry-tool"]')?.getAttribute('data-subagent-state')).toBe('running');
+    click(header(el));
+    expect($(el, 'tool-args')?.textContent).toContain('提示词');
+    expect($(el, 'tool-args-text')?.textContent).toBe('写给子 agent 的提示词');
+  });
+
+  test('结束后：显示 agent 的收尾摘要；没有收尾帧只有快照结束 → 状态词；快照陈旧 / 历史无证据 → 状态未知', () => {
+    const done = agent({ status: 'ok', resultSummary: '✓ 3 次工具调用 · 0:20', subagent: { background: true, state: 'completed' } });
+    expect($(mount(<ToolCard entry={done} runningElapsedMs={null} bgTask={bgTask({ status: 'completed' })} />), 'tool-subagent-status')?.textContent).toBe(
+      '✓ 3 次工具调用 · 0:20',
+    );
+    act(() => root?.unmount());
+    const pending = agent({ ...launched, subagent: { background: true } });
+    expect($(mount(<ToolCard entry={pending} runningElapsedMs={null} bgTask={bgTask({ status: 'failed' })} />), 'tool-subagent-status')?.textContent).toBe('✗ 失败');
+    act(() => root?.unmount());
+    expect($(mount(<ToolCard entry={pending} runningElapsedMs={null} bgTask={bgTask()} bgStale />), 'tool-subagent-status')?.textContent).toBe('? 状态未知');
+    act(() => root?.unmount());
+    const history = agent({ ...launched, subagent: { background: true, state: 'unknown' } });
+    expect($(mount(<ToolCard entry={history} runningElapsedMs={null} />), 'tool-subagent-status')?.textContent).toBe('? 状态未知');
+  });
+
+  test('前台：标「前台」，结束照常显示结果摘要', () => {
+    const el = mount(<ToolCard entry={agent({ status: 'ok', resultSummary: '✓ 2 次工具调用', subagent: { agentType: 'Plan' } })} runningElapsedMs={null} />);
+    expect($(el, 'tool-name')?.textContent).toBe('Agent · Plan · 前台');
+    expect($(el, 'tool-result')?.textContent).toBe('✓ 2 次工具调用');
+    expect($(el, 'tool-subagent-status')).toBeNull();
+  });
+
+  test('时间线里并行的两个子 agent 各自计时：心跳只跟一个，另一个按自己的开始时刻走秒；后台的按快照', () => {
+    const entries: TimelineEntry[] = [
+      agent({ id: 'A1', ts: 4_000 }),
+      agent({ id: 'A2', ts: 1_000 }),
+      agent({ id: 'B1', ...launched, subagent: { background: true } }),
+    ];
+    const el = mount(
+      <Timeline
+        entries={entries}
+        syncing={undefined}
+        deviceId="d1"
+        now={10_000}
+        runningToolId="A1"
+        runningElapsedMs={3_000}
+        handlers={handlers}
+        bgTasks={[bgTask({ toolUseId: 'B1', startedAt: 7_000 })]}
+      />,
+    );
+    const cards = $$(el, 'entry-tool');
+    expect(cards[0]!.textContent).toContain('3s');
+    expect(cards[1]!.textContent).toContain('9s');
+    expect($(cards[2]!, 'tool-subagent-status')?.textContent).toContain('后台运行中 · 3s');
   });
 });

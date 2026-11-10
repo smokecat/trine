@@ -16,8 +16,10 @@
  */
 import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { ArrowDownIcon } from 'lucide-react';
-import type { ExtRecord } from '@trine/core';
+import type { BgTask, ExtRecord } from '@trine/core';
 import { placeRecords, recordText } from '@/lib/ext-model.ts';
+import { bgTasksByToolUseId, claudeSubagentView, subagentTicking } from '@/lib/subagent-view.ts';
+import { isSubagentTool } from '@/lib/tool-tree.ts';
 import { rewindTargetId, type TimelineEntry, type ToolEntry, type UserEntry } from '@/lib/reducer.ts';
 import { formatDayLabel } from '@/lib/format.ts';
 import { timeMarkers } from '@/lib/time-markers.ts';
@@ -109,8 +111,14 @@ export function Timeline({
   onRewind,
   records,
   recordsHideOlder = false,
+  bgTasks,
+  bgStale = false,
 }: {
   entries: TimelineEntry[];
+  /** 后台任务快照：子 agent 卡据此显示「后台运行中 · 计时」（toolUseId 关联） */
+  bgTasks?: readonly BgTask[] | undefined;
+  /** 快照已陈旧（reducer `bgTasksStale`）：运行中按状态未知 */
+  bgStale?: boolean;
   syncing: 'normal' | 'backfill' | undefined;
   deviceId: string | null;
   /** 由 ChatView 的 1s tick 驱动，供权限卡「已等待 N 秒」计时 */
@@ -161,6 +169,7 @@ export function Timeline({
     () => (entries.some((e) => e.kind === 'permission' && e.parentToolUseId !== undefined) ? toolLabels(entries) : new Map<string, string>()),
     [entries],
   );
+  const tasksByTool = useMemo(() => bgTasksByToolUseId(bgTasks), [bgTasks]);
   const loadChildren = subagentHistory === true ? handlers.onLoadSubagentHistory : undefined;
   const historyUnknown = subagentHistory === null;
 
@@ -233,6 +242,9 @@ export function Timeline({
         {syncing !== undefined && <SyncingRow mode={syncing} />}
         {entries.map((entry, i) => {
           const marker = markers[i];
+          // 子 agent 卡：对应的后台任务（对象引用随快照整份替换，memo 只在快照变了时打穿）
+          const bgTask = entry.kind === 'tool' && isSubagentTool(entry.toolName) ? tasksByTool.get(entry.id) : undefined;
+          const ticking = entry.kind === 'tool' && subagentTicking(claudeSubagentView(entry, bgTask, bgStale), entry);
           return (
             <Fragment key={`${entry.kind}:${entry.id}`}>
               {/* 记录比这条条目早：排在它的时间分隔线之前，日期归属才对 */}
@@ -252,7 +264,9 @@ export function Timeline({
                 // pending 的权限卡（「已等待 N 秒」）与撤回中的用户消息。
                 // 其余条目拿到的是常量 0，`memo` 得以把它们挡在重渲染之外
                 // ——否则 500 条时间线每秒整表重画。
-                now={needsTick(entry) ? now : 0}
+                now={needsTick(entry) || ticking ? now : 0}
+                bgTask={bgTask}
+                bgStale={bgTask === undefined ? false : bgStale}
                 // 只有正在跑的那个工具条目才拿会变的耗时（评审 N4）；
                 // 其余条目恒拿 -1，`memo` 得以把它们挡在重渲染之外
                 runningElapsedMs={
@@ -321,8 +335,13 @@ const Entry = memo(function Entry({
   onLoadChildren,
   historyUnknown,
   onRewind,
+  bgTask,
+  bgStale,
 }: {
   entry: TimelineEntry;
+  /** 子 agent 卡对应的后台任务（见 Timeline）；其余条目 undefined */
+  bgTask: BgTask | undefined;
+  bgStale: boolean;
   deviceId: string | null;
   planOptions: boolean;
   /** 子 agent 发起的权限类卡片的来源（见 subagentSourceOf）；primitive，不打穿 memo */
@@ -362,6 +381,9 @@ const Entry = memo(function Entry({
           runningElapsedMs={runningElapsedMs < 0 ? null : runningElapsedMs}
           onLoadChildren={onLoadChildren}
           historyUnknown={historyUnknown}
+          bgTask={bgTask}
+          bgStale={bgStale}
+          now={now}
         />
       );
     case 'permission':

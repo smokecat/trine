@@ -100,6 +100,35 @@ describe('reducer · tool / permission 原地更新', () => {
     expect(tl.entries[1]).toMatchObject({ kind: 'tool', id: 't2', toolName: '?', status: 'error' });
   });
 
+  test('subagent 信息：start / end / 重发 start 按字段合并，结果与子树保留；历史条目带上；落盘往返不丢', async () => {
+    let tl = apply(
+      emptyTimeline(),
+      ev({ type: 'tool.start', ...S, toolUseId: 'a1', toolName: 'Agent', argSummary: 'd', subagent: { agentType: 'Explore' } }),
+      ev({ type: 'tool.end', ...S, toolUseId: 'a1', status: 'ok', durationMs: 1, resultSummary: '✓ 后台子 agent 已启动', subagent: { background: true } }),
+    );
+    expect(tl.entries[0]).toMatchObject({ status: 'ok', subagent: { agentType: 'Explore', background: true } });
+    tl = apply(tl, ev({ type: 'tool.end', ...S, toolUseId: 'a1', status: 'ok', durationMs: 9, resultSummary: '✓ 2 次', subagent: { background: true, state: 'completed' } }));
+    expect(tl.entries[0]).toMatchObject({ resultSummary: '✓ 2 次', subagent: { agentType: 'Explore', background: true, state: 'completed' } });
+    // Codex：重发 tool.start 只为更新子 agent 状态，调用结果不动
+    tl = apply(
+      tl,
+      ev({ type: 'tool.start', ...S, toolUseId: 'x1', toolName: 'SubAgent', argSummary: 'task' }),
+      ev({ type: 'tool.end', ...S, toolUseId: 'x1', status: 'ok', durationMs: 1, resultSummary: '已派生' }),
+      ev({ type: 'tool.start', ...S, toolUseId: 'x1', toolName: 'SubAgent', argSummary: 'task', subagent: { state: 'running', nickname: 'n' } }),
+      ev({ type: 'tool.start', ...S, toolUseId: 'x1', toolName: 'SubAgent', argSummary: 'task', subagent: { state: 'completed' } }),
+    );
+    expect(tl.entries[1]).toMatchObject({ status: 'ok', resultSummary: '已派生', subagent: { state: 'completed', nickname: 'n' } });
+    tl = mergeHistory(tl, {
+      items: [{ kind: 'tool', id: 'h1', toolName: 'Agent', argSummary: 'old', status: 'ok', subagent: { background: true, state: 'unknown' }, ts: 1 }],
+      hasMore: false,
+    });
+    expect(tl.entries[0]).toMatchObject({ id: 'h1', subagent: { state: 'unknown' } });
+    const store = new MemoryDocStore();
+    await saveTimeline(store, 'm/s1', tl);
+    const loaded = await loadTimeline(store, 'm/s1');
+    expect(loaded?.entries.find((e) => e.id === 'x1')).toMatchObject({ subagent: { state: 'completed', nickname: 'n' } });
+  });
+
   test('permission.request 同 requestId 幂等；resolved 后重发不回退 pending；invalidated 不覆盖 resolved', () => {
     const req = ev({ type: 'permission.request', ...S, requestId: 'r1', toolName: 'Bash', input: { command: 'rm x' }, requestedAt: 1 });
     let tl = apply(emptyTimeline(), req, req);
