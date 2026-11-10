@@ -68,7 +68,9 @@ import type {
 //   EngineSummary 带 install（实际的更新命令）
 // - 0.24.0 起支持信任目录（files.trust.add / remove，`~/.trine/files.json`）：MachineInfo.files 带
 //   roots / home（web 按 roots 有无判断）；fs.* 的 denied 带 reason；/proc /sys /dev 一律拒绝
-export const AGENT_VERSION = '0.24.0';
+// - 0.25.0 起 tool.start / history tool 条目带 argDetail（长命令原文）；MachineInfo.rateLimits 带
+//   models（按模型计的周限额，如 Fable）。都是可选字段，web 按有无判断
+export const AGENT_VERSION = '0.25.0';
 
 export function buildMachineInfo(input: {
   name: string;

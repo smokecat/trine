@@ -29,10 +29,14 @@
 
 ### 1.2 工具调用卡（原地更新）
 
-- `tool.start` — `{ toolUseId, toolName, argSummary, filePath? }`
+- `tool.start` — `{ toolUseId, toolName, argSummary, filePath?, argDetail? }`
   - argSummary：单行摘要（Bash→命令、Edit→文件路径），由 agent 端生成，避免 client 理解每种工具的参数结构
   - filePath（agent ≥ 0.20.0）：Read / Write / Edit / MultiEdit / NotebookEdit 的完整路径（argSummary 会把长路径缩成 `…/a/b`），
     client 据此打开文件预览（§1.10）。history 的 tool 条目同样带。旧 client 忽略
+  - argDetail（agent ≥ 0.25.0）：完整参数原文（Bash / Codex Shell 的命令，WebFetch 的 URL、WebSearch 的查询、
+    Grep / Glob 的模式），保留换行，上限 16000 字符（超出截断并在尾部写明原长）。只在 argSummary 看不全原文
+    （被压成单行或截断）时带；Codex 被识别成 Read 的命令也带原命令。client 展开工具卡时显示、可复制。
+    history 的 tool 条目同样带。旧 client 忽略
 - `tool.end` — `{ toolUseId, status: ok|warn|error, durationMs, resultSummary, outputPreview }`
   - resultSummary：单行（`✓ +9 −2` / `⚠ 1 failed · 3.5s` 的数据源：exit code、diff stat、耗时）
   - outputPreview：尾部截断的输出文本（阈值待定，~2KB），展开查看用
@@ -76,7 +80,7 @@
   （读的是 `~/.claude/projects` 转录，SDK `getSessionMessages`）
 - `session.history.response`（agent→client，**只发给请求方设备**）— `{ reqId, items[], hasMore, nextBefore? }`；
   items 旧→新，三种：`user{id,text,attachments?,ts}` / `assistant{id=SDK message.id,text,ts}` /
-  `tool{id=toolUseId,toolName,argSummary,status?,durationMs?,resultSummary?,outputPreview?,ts}`，
+  `tool{id=toolUseId,toolName,argSummary,filePath?,argDetail?,status?,durationMs?,resultSummary?,outputPreview?,ts}`，
   id 与实时流同源以便去重。单条文本截断（~8KB），整帧体积封顶（~512KB，超了少给并 hasMore）——
   它会进服务端离线补发存储。会话找不到 → 空 items，不报错
 - client 合并：只收早于时间线里「agent 产生的条目（seq>0）」最早 ts 的历史项，按 id 去重，
@@ -216,7 +220,11 @@ agent 侧所有产出 SessionMeta 的出口（list、session.created、session.u
 
 - `machine.status`† — 服务端可见（在线状态本身就是服务端知道的）：`{ machineId, online, lastSeenAt }`
 - `machine.info` — E2E 内容：`{ name, platform, osVersion, agentVersion, claudeVersion, activeSessionCount, maxSessions?, rateLimits?, extensions?, restart?, claudeLatest?, files? }`（maxSessions 自 0.10.0，rateLimits 自 0.12.0，extensions 自 0.16.0、其中 records 自 0.17.0，见 §3.1；restart 自 0.18.0，claudeLatest 自 0.19.0，见下；files 自 0.20.0，见 §1.10）（常用目录另见 §6）
-- `rateLimits?: { fiveHour?, sevenDay?: { percent(0–100), resetsAt? }, updatedAt }`（usage-display）— 机器上登录账号的订阅限额用量，账号级、同机所有会话共用。来源：会话活动时 CLI 每次 API 请求发的 `rate_limit_event`（取其 `unifiedWindows`，类型定义里没有的字段；没有时退回顶层的单个窗口），值变了（或值不变但距上次广播超过 5 分钟）就广播一次 `machine.info`。API key / Bedrock / Vertex 等没有订阅限额的账号不带。agent 不落盘，重启后等下一次会话活动或手动刷新
+- `rateLimits?: { fiveHour?, sevenDay?: { percent(0–100), resetsAt? }, models?: { name, percent, resetsAt? }[], updatedAt }`（usage-display）— 机器上登录账号的订阅限额用量，账号级、同机所有会话共用。来源：会话活动时 CLI 每次 API 请求发的 `rate_limit_event`（取其 `unifiedWindows`，类型定义里没有的字段；没有时退回顶层的单个窗口），值变了（或值不变但距上次广播超过 5 分钟）就广播一次 `machine.info`。API key / Bedrock / Vertex 等没有订阅限额的账号不带。agent 不落盘，重启后等下一次会话活动或手动刷新
+  - `models`（agent ≥ 0.25.0）：按模型单独计的周限额（如 Fable），`name` 是服务端给的桶名。来源：usage 接口的
+    `rate_limits.model_scoped`（带名字，空数组 = 没有这类限额，清掉已知值），以及 `rate_limit_event` 的
+    `unifiedWindows.seven_day_overage_included`（不带名字：已知恰好一个桶时更新它，还不知道时记作 `Fable`，
+    多个桶时无法对应、不动）。旧 client 忽略
 - `machine.claude.update.request { reqId }`（client→agent，机器级，agent ≥ 0.4.0）— 用会话所用的同一个 claude 可执行文件跑 `claude update`（单飞，5 分钟超时），跑完重新探测版本、先广播 `machine.info` 再回 `machine.claude.update.response { reqId, ok, fromVersion, toVersion, output, outputTruncated?, error?: { code: busy|not_found|timeout|failed, message } }`。运行中的会话不重启，新起的会话才用新版
 - `claudeLatest?: { channel: latest|stable, version?, checkedAt?, error? }`（agent ≥ 0.19.0）— 发布源上的 claude 最新版本：agent 查 `https://downloads.claude.ai/claude-code-releases/<channel>`（claude 原生安装自更新用的同一个地址，返回体就是版本号），渠道取 claude settings（`$CLAUDE_CONFIG_DIR` 或 `~/.claude`）的 `autoUpdatesChannel`，每次检查重读。启动后约 30 秒与每 6 小时自动查一次（环境里设了 `DISABLE_AUTOUPDATER` / `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` 时不自动查），每次查完广播 `machine.info`。失败保留上次的 version / checkedAt 并带 `error`。client 拿 version 与 claudeVersion 开头的版本号比较，判断有没有新版本。缺失 = 不支持，client 隐藏检查入口
 - `machine.claude.check.request { reqId }`（client→agent，机器级，agent ≥ 0.19.0）— 立即检查一次（单飞，15 秒超时），先广播带新 claudeLatest 的 `machine.info`，再回 `machine.claude.check.response { reqId, ok, currentVersion, latest?: { version, channel }, error?: { code: failed, message } }`。旧 agent 静默丢弃，client 按 `machine.info.claudeLatest` 有无探测

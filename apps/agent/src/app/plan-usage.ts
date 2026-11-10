@@ -14,9 +14,9 @@
  */
 import { tmpdir } from 'node:os';
 import { query, type Options } from '@anthropic-ai/claude-agent-sdk';
-import type { RateLimits, RateLimitWindow, UsageErrorCode } from '@trine/core';
+import type { ModelRateLimitWindow, RateLimits, RateLimitWindow, UsageErrorCode } from '@trine/core';
 import { idleInput } from '../bridge/idle-input.ts';
-import { planUsageFrom, type RateLimitPatch } from '../bridge/usage.ts';
+import { MODEL_BUCKET_FALLBACK, planUsageFrom, type RateLimitPatch } from '../bridge/usage.ts';
 
 export const PLAN_USAGE_TIMEOUT_MS = 30_000;
 /** 值没变时也重新广播的间隔 */
@@ -40,6 +40,24 @@ export interface PlanUsageTrackerOptions {
 
 function sameWindow(a: RateLimitWindow | undefined, b: RateLimitWindow | undefined): boolean {
   return a?.percent === b?.percent && a?.resetsAt === b?.resetsAt;
+}
+
+function sameModels(a: readonly ModelRateLimitWindow[] | undefined, b: readonly ModelRateLimitWindow[] | undefined): boolean {
+  if ((a?.length ?? 0) !== (b?.length ?? 0)) return false;
+  return (a ?? []).every((m, i) => m.name === b?.[i]?.name && sameWindow(m, b[i]));
+}
+
+/**
+ * 按模型的窗口：usage 接口给了完整列表就整体替换；事件只给一个不带名字的窗口，
+ * 已知恰好一个桶时更新它，一个都不知道时记作默认名，多个桶时无法对应、不动。
+ */
+function mergeModels(previous: readonly ModelRateLimitWindow[] | undefined, patch: RateLimitPatch): ModelRateLimitWindow[] | undefined {
+  if (patch.models !== undefined) return patch.models;
+  const window = patch.modelWindow;
+  if (window === undefined) return previous === undefined ? undefined : [...previous];
+  if (previous === undefined || previous.length === 0) return [{ name: MODEL_BUCKET_FALLBACK, ...window }];
+  if (previous.length === 1) return [{ name: previous[0]!.name, ...window }];
+  return [...previous];
 }
 
 export class PlanUsageTracker {
@@ -75,14 +93,19 @@ export class PlanUsageTracker {
     const previous = this.#current;
     const fiveHour = patch.fiveHour ?? previous?.fiveHour;
     const sevenDay = patch.sevenDay ?? previous?.sevenDay;
+    const models = mergeModels(previous?.models, patch);
     const now = this.#now();
     this.#current = {
       ...(fiveHour === undefined ? {} : { fiveHour }),
       ...(sevenDay === undefined ? {} : { sevenDay }),
+      ...(models === undefined || models.length === 0 ? {} : { models }),
       updatedAt: now,
     };
     const changed =
-      previous === undefined || !sameWindow(previous.fiveHour, fiveHour) || !sameWindow(previous.sevenDay, sevenDay);
+      previous === undefined ||
+      !sameWindow(previous.fiveHour, fiveHour) ||
+      !sameWindow(previous.sevenDay, sevenDay) ||
+      !sameModels(previous.models, this.#current.models);
     if (!force && !changed && now - this.#lastBroadcastAt < REBROADCAST_MS) return;
     this.#lastBroadcastAt = now;
     this.#onChange();

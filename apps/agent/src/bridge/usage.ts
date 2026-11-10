@@ -14,13 +14,28 @@
  * - `Query.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET()`（/usage 的数据）：
  *   `rate_limits.five_hour / seven_day: { utilization: 0–100, resets_at: ISO }`，
  *   `rate_limits_available: false` 表示账号没有订阅限额。API 名就写明了不稳定。
+ *
+ * ## 按模型计的周限额（Claude Code 2.1.322 实测）
+ *
+ * - usage 接口的 `rate_limits.model_scoped: [{ display_name: 'Fable', utilization: 0–100,
+ *   resets_at }]`，服务端有这类限额时才带，名字由服务端给。
+ * - `rate_limit_event` 的 `unifiedWindows.seven_day_overage_included`：同一个按模型的周窗口，
+ *   但不带模型名。名字取 usage 接口上次给的（只有一个桶时）；还没查过 usage 时记作
+ *   `MODEL_BUCKET_FALLBACK`（目前唯一的按模型桶就是 Fable）。
  */
-import type { ContextUsage, RateLimitWindow } from '@trine/core';
+import type { ContextUsage, ModelRateLimitWindow, RateLimitWindow } from '@trine/core';
+
+/** 事件里的按模型窗口不带名字时的默认名 */
+export const MODEL_BUCKET_FALLBACK = 'Fable';
 
 /** 限额的部分更新：只带这次知道的窗口 */
 export interface RateLimitPatch {
   fiveHour?: RateLimitWindow;
   sevenDay?: RateLimitWindow;
+  /** usage 接口给的完整列表（带名字），整体替换 */
+  models?: ModelRateLimitWindow[];
+  /** 事件里不带名字的按模型周窗口，合并进已知的那个桶 */
+  modelWindow?: RateLimitWindow;
 }
 
 /** usage 接口的解析结果 */
@@ -76,6 +91,9 @@ export function rateLimitPatchFromEvent(info: unknown): RateLimitPatch | undefin
     const sevenDay = seven === undefined ? undefined : windowFromFraction(seven['utilization'], seven['resetsAt']);
     if (fiveHour !== undefined) patch.fiveHour = fiveHour;
     if (sevenDay !== undefined) patch.sevenDay = sevenDay;
+    const model = record(unified['seven_day_overage_included']);
+    const modelWindow = model === undefined ? undefined : windowFromFraction(model['utilization'], model['resetsAt']);
+    if (modelWindow !== undefined) patch.modelWindow = modelWindow;
   }
   if (patch.fiveHour === undefined && patch.sevenDay === undefined) {
     // 退路：顶层只描述一个窗口
@@ -83,7 +101,7 @@ export function rateLimitPatchFromEvent(info: unknown): RateLimitPatch | undefin
     if (window !== undefined && r['rateLimitType'] === 'five_hour') patch.fiveHour = window;
     if (window !== undefined && r['rateLimitType'] === 'seven_day') patch.sevenDay = window;
   }
-  return patch.fiveHour === undefined && patch.sevenDay === undefined ? undefined : patch;
+  return patch.fiveHour === undefined && patch.sevenDay === undefined && patch.modelWindow === undefined ? undefined : patch;
 }
 
 /** usage 接口的单个窗口：utilization 0–100，resets_at ISO */
@@ -105,9 +123,32 @@ export function planUsageFrom(response: unknown): PlanUsageResult | undefined {
   if (limits === undefined) return undefined;
   const fiveHour = windowFromUsage(limits['five_hour']);
   const sevenDay = windowFromUsage(limits['seven_day']);
-  if (fiveHour === undefined && sevenDay === undefined) return undefined;
+  const models = modelWindowsFromUsage(limits['model_scoped']);
+  if (fiveHour === undefined && sevenDay === undefined && (models === undefined || models.length === 0)) return undefined;
   return {
     available: true,
-    limits: { ...(fiveHour === undefined ? {} : { fiveHour }), ...(sevenDay === undefined ? {} : { sevenDay }) },
+    limits: {
+      ...(fiveHour === undefined ? {} : { fiveHour }),
+      ...(sevenDay === undefined ? {} : { sevenDay }),
+      ...(models === undefined ? {} : { models }),
+    },
   };
+}
+
+/**
+ * usage 接口的 `model_scoped` → 按模型的窗口。字段缺失 → undefined（不动已知值）；
+ * 空数组 → []（账号没有这类限额，清掉已知值）。没有用量数字的桶跳过。
+ */
+function modelWindowsFromUsage(value: unknown): ModelRateLimitWindow[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const out: ModelRateLimitWindow[] = [];
+  for (const entry of value) {
+    const r = record(entry);
+    const name = typeof r?.['display_name'] === 'string' ? r['display_name'].trim().slice(0, 40) : '';
+    const window = windowFromUsage(entry);
+    if (name === '' || window === undefined || out.some((m) => m.name === name)) continue;
+    out.push({ name, ...window });
+    if (out.length >= 8) break;
+  }
+  return out;
 }

@@ -149,7 +149,7 @@ export const SessionMetaSchema = z.object({
    * client 看的近似值；Claude 会话不带，`permissionMode` 就是真值。
    */
   engineMode: EngineModeSchema.optional(),
-  /** 推理强度（agent ≥ 0.22.0）；省略 = 跟随引擎自己的配置 */
+  /** 推理强度（agent ≥ 0.25.0）；省略 = 跟随引擎自己的配置 */
   effort: EngineEffortSchema.optional(),
 });
 export type SessionMeta = z.infer<typeof SessionMetaSchema>;
@@ -234,6 +234,16 @@ export const HistoryAttachmentSchema = AttachmentMetaSchema.extend({
 });
 export type HistoryAttachment = z.infer<typeof HistoryAttachmentSchema>;
 
+/** ToolArgDetailSchema 的长度上限（agent 超出时截断并在尾部写明） */
+export const TOOL_ARG_DETAIL_MAX = 16_000;
+
+/**
+ * 工具调用的完整参数（tool.start / history tool 条目的 `argDetail`，agent ≥ 0.25.0）：
+ * Bash / Shell 的命令原文等，保留换行。argSummary 是压成单行、限长 120 的摘要，长命令
+ * 在卡片上看不全；agent 只在摘要与原文不同时带这个字段。旧 client 忽略。
+ */
+export const ToolArgDetailSchema = z.string().min(1).max(TOOL_ARG_DETAIL_MAX + 64);
+
 /**
  * 历史回看条目（`session.history.response`，决策 D8：agent 读本机会话存储按需拉取）。
  *
@@ -268,6 +278,8 @@ export const HistoryItemSchema = z.discriminatedUnion('kind', [
     argSummary: z.string(),
     /** 文件类工具（Read/Write/Edit…）的完整路径，见 ToolStartSchema.filePath（agent ≥ 0.20.0） */
     filePath: z.string().min(1).max(4096).optional(),
+    /** 完整参数，见 ToolArgDetailSchema */
+    argDetail: ToolArgDetailSchema.optional(),
     status: ToolResultStatusSchema.optional(),
     /** tool_use 到 tool_result 两行 timestamp 之差（配到结果才有） */
     durationMs: z.number().int().nonnegative().optional(),
@@ -287,6 +299,12 @@ export const RateLimitWindowSchema = z.object({
 });
 export type RateLimitWindow = z.infer<typeof RateLimitWindowSchema>;
 
+/** 按模型计的限额窗口：`name` 是服务端给的模型桶名（如「Fable」） */
+export const ModelRateLimitWindowSchema = RateLimitWindowSchema.extend({
+  name: z.string().min(1).max(40),
+});
+export type ModelRateLimitWindow = z.infer<typeof ModelRateLimitWindowSchema>;
+
 /**
  * 机器上登录的 Claude 账号的订阅限额用量（usage-display 新增）。账号级数据：同一
  * 台机器的所有会话共用。会话活动时随 SDK 的限额事件刷新，或由 client 手动请求
@@ -295,6 +313,12 @@ export type RateLimitWindow = z.infer<typeof RateLimitWindowSchema>;
 export const RateLimitsSchema = z.object({
   fiveHour: RateLimitWindowSchema.optional(),
   sevenDay: RateLimitWindowSchema.optional(),
+  /**
+   * 按模型单独计的周限额（agent ≥ 0.25.0，如 Fable）。来源：usage 接口的 `model_scoped`
+   * （带模型名），以及 `rate_limit_event` 的 `unifiedWindows.seven_day_overage_included`。
+   * 账号没有这类限额时省略。旧 client 忽略。
+   */
+  models: z.array(ModelRateLimitWindowSchema).max(8).optional(),
   /** agent 最近一次拿到这份数据的时间 */
   updatedAt: TimestampSchema,
 });

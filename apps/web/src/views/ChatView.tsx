@@ -92,7 +92,8 @@ import {
 } from '@/lib/reducer.ts';
 import { timelineKey } from '@/lib/storage.ts';
 import { CLAUDE_ENGINE_ID } from '@trine/core';
-import { capabilitiesOf, engineModeLabel, engineOf, sessionEngineTag } from '@/lib/engine-model.ts';
+import { capabilitiesOf, engineModeLabel, engineOf, hasMultipleEngines, sessionEngineTag } from '@/lib/engine-model.ts';
+import { EngineIcon } from '@/components/shell/EngineIcon.tsx';
 import { formatCost } from '@/lib/format.ts';
 import { waitingForOfTool } from '@/lib/waiting.ts';
 import { ExtHeadEntry, ExtPanelSheet } from '@/components/ext/ExtPanel.tsx';
@@ -686,6 +687,14 @@ export function ChatView(): React.JSX.Element {
               onClick={() => openSettings(null)}
               title="会话设置：模型 / 权限模式 / 工作目录"
             >
+              {/* 多引擎机器上在最前面标出引擎图标（Claude 会话也标，两种会话一眼可分） */}
+              {meta !== undefined && hasMultipleEngines(machine?.info) && (
+                <EngineIcon
+                  engineId={meta.engine ?? CLAUDE_ENGINE_ID}
+                  data-testid="session-meta-engine"
+                  className="mr-1 inline size-3 align-[-1px]"
+                />
+              )}
               {meta === undefined
                 ? '会话设置 ▾'
                 : engineTagText !== undefined
@@ -697,6 +706,7 @@ export function ChatView(): React.JSX.Element {
               // Claude 的限额只给确定是 Claude 的会话：多引擎机器上 meta 没到时还不知道是谁的
               rateLimits={engineOf(machine?.info, meta)?.id === CLAUDE_ENGINE_ID ? machine?.info?.rateLimits : undefined}
               windows={engineOf(machine?.info, meta)?.rateLimits}
+              model={meta?.model}
               now={usageNow}
               onRefreshContext={canRefreshContext ? refreshContext : undefined}
             />

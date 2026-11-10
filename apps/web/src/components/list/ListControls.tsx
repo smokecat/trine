@@ -20,6 +20,7 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import type { EngineOption } from '@/lib/engine-model.ts';
 import { cn } from '@/lib/utils.ts';
 import { STATUS_FILTER_LABEL, STATUS_FILTERS, type ListGroupBy, type StatusFilter } from './filtering.ts';
+import { EngineIcon } from '@/components/shell/EngineIcon.tsx';
 
 export const ARCHIVED_PATH = '/archived';
 
@@ -85,6 +86,7 @@ function EngineChips({
       </Chip>
       {options.map((o) => (
         <Chip key={o.id} aria-pressed={value === o.id} selected={value === o.id} onClick={() => onChange(o.id)} data-testid={`engine-chip-${o.id}`}>
+          <EngineIcon engineId={o.id} className="size-3" />
           {o.label}
         </Chip>
       ))}

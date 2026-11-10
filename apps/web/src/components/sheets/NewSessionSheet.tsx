@@ -44,6 +44,7 @@ import {
   type EngineModePickerState,
   type ModePickerState,
 } from './permission-mode.ts';
+import { EngineIcon } from '@/components/shell/EngineIcon.tsx';
 
 /** 分区标题（原型 `.form-row .lbl`） */
 function Label({ children }: { children: React.ReactNode }): React.JSX.Element {
@@ -339,6 +340,7 @@ export function NewSessionSheet({
                         selected={engine?.id === e.id}
                         onClick={() => setEngineId(e.id)}
                       >
+                        <EngineIcon engineId={e.id} className="size-3" />
                         {e.displayName}
                       </Chip>
                     ))}

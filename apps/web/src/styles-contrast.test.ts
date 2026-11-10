@@ -49,6 +49,13 @@ for (const [theme, selector] of [['light', ':root {'], ['system dark', ":root:no
       expect(contrast(t['accent-fg']!, t.accent!)).toBeGreaterThanOrEqual(4.5);
       expect(contrast(t['accent-ink']!, over(t['accent-soft']!, t.surface!))).toBeGreaterThanOrEqual(4.5);
     });
+    test('engine marks', () => {
+      for (const engine of ['engine-claude', 'engine-codex']) {
+        for (const surface of ['phone-bg', 'surface', 'surface-2', 'surface-3']) {
+          expect(contrast(t[engine]!, t[surface]!)).toBeGreaterThanOrEqual(4.5);
+        }
+      }
+    });
     test('input boundary', () => {
       for (const surface of ['phone-bg', 'surface', 'surface-2']) {
         expect(contrast(t.input!, t[surface]!)).toBeGreaterThanOrEqual(3);

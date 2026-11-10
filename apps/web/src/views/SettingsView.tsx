@@ -48,6 +48,7 @@ import { formatBytes } from '@/lib/format.ts';
 import { ATTACHMENTS_MAX_COUNT } from '@trine/core/types';
 import { cn } from '@/lib/utils.ts';
 import { ExtensionsSettings } from '@/components/ext/ExtensionsSettings.tsx';
+import { EngineIcon, EngineName } from '@/components/shell/EngineIcon.tsx';
 
 const THEME_OPTIONS: { value: ThemeMode; label: string }[] = [
   { value: 'system', label: '跟随系统' },
@@ -541,6 +542,7 @@ function EngineDefaults(): React.JSX.Element {
                 selected={(defaultEngine ?? CLAUDE_ENGINE_ID) === e.id}
                 onClick={() => client?.updatePrefs({ defaultEngine: e.id })}
               >
+                <EngineIcon engineId={e.id} className="size-3" />
                 {e.displayName}
               </Chip>
             ))}
@@ -561,7 +563,9 @@ function EngineDefaults(): React.JSX.Element {
             const warning = engineModeWarning(state, modes);
             return (
               <section key={e.id} className="bg-surface-2/50 flex min-w-0 flex-col gap-2 rounded-xl border border-border p-4" data-engine={e.id}>
-                <h3 className="mb-1 font-medium">{e.displayName}</h3>
+                <h3 className="mb-1 font-medium">
+                  <EngineName engineId={e.id} name={e.displayName} className="gap-1.5" iconClassName="size-4" />
+                </h3>
                 <div className="text-text-3 text-xs">模型</div>
                 <div className="flex flex-wrap gap-1.5">
                   <Chip selected={model === ENGINE_DEFAULT_MODEL} onClick={() => save(e.id, { model: ENGINE_DEFAULT_MODEL })}>

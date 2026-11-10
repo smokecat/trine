@@ -165,7 +165,7 @@ function capChildren(children: ToolEntry[]): ToolEntry[] {
  */
 function mergeToolEntry(base: ToolEntry, extra: ToolEntry): ToolEntry {
   let out = base;
-  const fill = <K extends 'status' | 'durationMs' | 'resultSummary' | 'outputPreview' | 'filePath'>(key: K): void => {
+  const fill = <K extends 'status' | 'durationMs' | 'resultSummary' | 'outputPreview' | 'filePath' | 'argDetail'>(key: K): void => {
     if (out[key] === undefined && extra[key] !== undefined) out = { ...out, [key]: extra[key] };
   };
   fill('status');
@@ -173,6 +173,7 @@ function mergeToolEntry(base: ToolEntry, extra: ToolEntry): ToolEntry {
   fill('resultSummary');
   fill('outputPreview');
   fill('filePath');
+  fill('argDetail');
   if ((out.toolName === '?' || out.toolName === '') && extra.toolName !== '?' && extra.toolName !== '') {
     out = { ...out, toolName: extra.toolName, argSummary: extra.argSummary };
   }
@@ -245,6 +246,7 @@ export function historyToolEntry(item: Extract<HistoryItem, { kind: 'tool' }>): 
     toolName: item.toolName,
     argSummary: item.argSummary,
     ...(item.filePath === undefined ? {} : { filePath: item.filePath }),
+    ...(item.argDetail === undefined ? {} : { argDetail: item.argDetail }),
     ...(item.status === undefined ? {} : { status: item.status }),
     ...(item.durationMs === undefined ? {} : { durationMs: item.durationMs }),
     ...(item.resultSummary === undefined ? {} : { resultSummary: item.resultSummary }),

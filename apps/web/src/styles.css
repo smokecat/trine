@@ -45,6 +45,9 @@
   --green-soft: rgba(46, 143, 85, 0.12);
   --blue: #3465a6;
   --blue-soft: rgba(61, 111, 180, 0.1);
+  /* 引擎标识（图标、标签）：Claude 赭橙、Codex 靛蓝；只用于识别，不表达状态 */
+  --engine-claude: #9f4a2b;
+  --engine-codex: #5348c7;
   --user-bubble: #e0efef;
   --code-bg: #f0f3f6;
   --shadow-card: 0 1px 3px rgba(27, 37, 48, 0.08), 0 4px 16px rgba(27, 37, 48, 0.06);
@@ -99,6 +102,8 @@
     --green-soft: rgba(87, 199, 126, 0.13);
     --blue: #6fa3e0;
     --blue-soft: rgba(111, 163, 224, 0.12);
+    --engine-claude: #e8906c;
+    --engine-codex: #a3a8f5;
     --user-bubble: #1d343a;
     --code-bg: #141b22;
     --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.35), 0 4px 18px rgba(0, 0, 0, 0.28);
@@ -133,6 +138,8 @@
   --green-soft: rgba(87, 199, 126, 0.13);
   --blue: #6fa3e0;
   --blue-soft: rgba(111, 163, 224, 0.12);
+  --engine-claude: #e8906c;
+  --engine-codex: #a3a8f5;
   --user-bubble: #1d343a;
   --code-bg: #141b22;
   --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.35), 0 4px 18px rgba(0, 0, 0, 0.28);
@@ -187,6 +194,8 @@
   --color-green-soft: var(--green-soft);
   --color-blue: var(--blue);
   --color-blue-soft: var(--blue-soft);
+  --color-engine-claude: var(--engine-claude);
+  --color-engine-codex: var(--engine-codex);
   --color-user-bubble: var(--user-bubble);
   --color-code-bg: var(--code-bg);
 

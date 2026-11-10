@@ -10,6 +10,16 @@ licenses of dependencies, adapted components, fonts or external services.
 | IBM Plex Sans | Bundled through `@fontsource/ibm-plex-sans` | [SIL OFL 1.1](LICENSES/ibm-plex-sans-OFL.txt) |
 | IBM Plex Mono | Bundled through `@fontsource/ibm-plex-mono` | [SIL OFL 1.1](LICENSES/ibm-plex-mono-OFL.txt) |
 | Claude Agent SDK / Claude Code | Agent runtime dependency, installed separately by the package manager / user | Anthropic's separate terms, not this project's MIT license |
+| Simple Icons (`claude` icon path, v16.37.0) | Claude engine mark in `apps/web/src/components/shell/EngineIcon.tsx` | CC0 1.0 (icon data); the mark itself is a trademark, see below |
+| Lobe Icons (`codex` monochrome icon path, `@lobehub/icons-static-svg` v1.102.0) | Codex engine mark in `apps/web/src/components/shell/EngineIcon.tsx` | [MIT](LICENSES/lobe-icons-MIT.txt); the mark itself is a trademark, see below |
+
+## Trademarks
+
+Claude and the Claude logo are trademarks of Anthropic PBC. Codex, OpenAI and their
+logos are trademarks of OpenAI. trine shows these marks only to identify which engine
+a session or usage figure belongs to; it is not affiliated with or endorsed by either
+company. Check each owner's brand guidelines before redistributing a build that
+contains the marks.
 
 ## Claude products
 

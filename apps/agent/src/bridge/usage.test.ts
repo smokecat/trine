@@ -40,6 +40,18 @@ describe('rateLimitPatchFromEvent', () => {
     });
   });
 
+  test('unifiedWindows.seven_day_overage_included → 不带名字的按模型窗口', () => {
+    expect(
+      rateLimitPatchFromEvent({
+        status: 'allowed',
+        unifiedWindows: {
+          seven_day: { utilization: 0.2, resetsAt: 1_800_000_000 },
+          seven_day_overage_included: { utilization: 0.55, resetsAt: 1_800_000_100 },
+        },
+      }),
+    ).toEqual({ sevenDay: { percent: 20, resetsAt: 1_800_000_000_000 }, modelWindow: { percent: 55, resetsAt: 1_800_000_100_000 } });
+  });
+
   test('没有 unifiedWindows 时退回顶层的单个窗口', () => {
     expect(rateLimitPatchFromEvent({ rateLimitType: 'seven_day', utilization: 0.9, resetsAt: 100 })).toEqual({
       sevenDay: { percent: 90, resetsAt: 100_000 },
@@ -76,6 +88,31 @@ describe('planUsageFrom', () => {
         sevenDay: { percent: 16 },
       },
     });
+  });
+
+  test('model_scoped → 按模型的周限额；空数组表示没有；缺名字 / 缺用量的跳过', () => {
+    expect(
+      planUsageFrom({
+        rate_limits_available: true,
+        rate_limits: {
+          seven_day: { utilization: 16, resets_at: null },
+          model_scoped: [
+            { display_name: 'Fable', utilization: 42.25, resets_at: '2026-11-12T00:00:00Z' },
+            { display_name: '', utilization: 3, resets_at: null },
+            { display_name: 'Other', utilization: null, resets_at: null },
+          ],
+        },
+      }),
+    ).toEqual({
+      available: true,
+      limits: {
+        sevenDay: { percent: 16 },
+        models: [{ name: 'Fable', percent: 42.3, resetsAt: Date.parse('2026-11-12T00:00:00Z') }],
+      },
+    });
+    expect(
+      planUsageFrom({ rate_limits_available: true, rate_limits: { seven_day: { utilization: 1, resets_at: null }, model_scoped: [] } }),
+    ).toEqual({ available: true, limits: { sevenDay: { percent: 1 }, models: [] } });
   });
 
   test('rate_limits_available=false → 不可用', () => {

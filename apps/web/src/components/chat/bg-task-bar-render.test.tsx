@@ -118,4 +118,19 @@ describe('BgTaskBar', () => {
     expect($(rows[0]!, 'bgtask-status')!.textContent).toBe('? 状态未知（agent 已重启）');
     expect($$(el, 'bgtask-stop')).toHaveLength(0);
   });
+
+  test('长描述点一下展开全文、再点收起；短描述不可点', () => {
+    const long = `bun run scripts/check.ts --input ${'a'.repeat(60)}`;
+    const el = mount({ tasks: [task({ description: long }), task({ taskId: 'short', description: '短' })] });
+    const desc = $(el, 'bgtask-desc')!;
+    expect(desc.getAttribute('aria-expanded')).toBe('false');
+    expect(desc.className).toContain('truncate');
+    act(() => desc.click());
+    expect(desc.getAttribute('aria-expanded')).toBe('true');
+    expect(desc.className).toContain('whitespace-pre-wrap');
+    expect(desc.textContent).toBe(long);
+    act(() => desc.click());
+    expect(desc.getAttribute('aria-expanded')).toBe('false');
+    expect($$(el, 'bgtask-desc')).toHaveLength(1);
+  });
 });

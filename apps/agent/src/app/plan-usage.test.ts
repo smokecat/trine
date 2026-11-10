@@ -71,6 +71,49 @@ describe('PlanUsageTracker · apply', () => {
   });
 });
 
+describe('PlanUsageTracker · 按模型的周限额', () => {
+  test('usage 给的列表整体替换；事件里不带名字的窗口更新唯一的桶；没有桶时记作 Fable', () => {
+    let clock = 1_000;
+    const { tracker, changes } = makeTracker({ now: () => clock });
+    tracker.apply({ modelWindow: { percent: 4, resetsAt: 9 } });
+    expect(tracker.current?.models).toEqual([{ name: 'Fable', percent: 4, resetsAt: 9 }]);
+    expect(changes()).toBe(1);
+
+    clock = 2_000;
+    tracker.apply({ models: [{ name: 'Fable X', percent: 5 }] });
+    expect(tracker.current?.models).toEqual([{ name: 'Fable X', percent: 5 }]);
+    expect(changes()).toBe(2);
+
+    clock = 3_000;
+    tracker.apply({ fiveHour: { percent: 1 }, modelWindow: { percent: 6, resetsAt: 10 } });
+    expect(tracker.current?.models).toEqual([{ name: 'Fable X', percent: 6, resetsAt: 10 }]);
+    expect(changes()).toBe(3);
+
+    // 只有 5h 变化：按模型的桶保留
+    clock = 4_000;
+    tracker.apply({ fiveHour: { percent: 2 } });
+    expect(tracker.current?.models).toEqual([{ name: 'Fable X', percent: 6, resetsAt: 10 }]);
+
+    // 多个桶时事件窗口对应不上，不动
+    tracker.apply({ models: [{ name: 'A', percent: 1 }, { name: 'B', percent: 2 }] });
+    tracker.apply({ modelWindow: { percent: 50 } });
+    expect(tracker.current?.models).toEqual([{ name: 'A', percent: 1 }, { name: 'B', percent: 2 }]);
+
+    // usage 给空列表：清掉
+    tracker.apply({ models: [] });
+    expect(tracker.current?.models).toBeUndefined();
+  });
+
+  test('值不变不重复广播', () => {
+    let clock = 1_000;
+    const { tracker, changes } = makeTracker({ now: () => clock });
+    tracker.apply({ models: [{ name: 'Fable', percent: 5 }] });
+    clock = 2_000;
+    tracker.apply({ models: [{ name: 'Fable', percent: 5 }] });
+    expect(changes()).toBe(1);
+  });
+});
+
 describe('PlanUsageTracker · refresh', () => {
   test('有活跃会话就借它，不起临时进程', async () => {
     const { tracker, calls, changes } = makeTracker({ live: () => Promise.resolve(usageResponse) });

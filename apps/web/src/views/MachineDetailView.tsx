@@ -34,8 +34,8 @@ import { SessionList } from '@/components/list/SessionList.tsx';
 import { countActiveSessions, countLiveSessions, liveSessionsLine } from '@/components/list/sorting.ts';
 import { countArchived, DEFAULT_LIST_QUERY, type ListQuery } from '@/components/list/filtering.ts';
 import { useNow } from '@/components/list/use-session-refresh.ts';
-import { EngineUsageLines, PlanUsageLine, PlanUsageRefreshButton } from '@/components/usage/PlanUsage.tsx';
-import { enginesOf, hasMultipleEngines } from '@/lib/engine-model.ts';
+import { MachineUsageRows, PlanUsageRefreshButton } from '@/components/usage/PlanUsage.tsx';
+import { enginesOf, enginesWithLimits, hasMultipleEngines } from '@/lib/engine-model.ts';
 import { supportsUsageRefresh } from '@/components/usage/usage-model.ts';
 import { useSessionActions } from '@/components/list/use-session-actions.ts';
 import { useListShowTemp } from '@/components/list/use-list-query.ts';
@@ -135,16 +135,12 @@ export function MachineDetailView(): React.JSX.Element {
               </dd>
             </>
           )}
-          {(machine.info?.rateLimits !== undefined || supportsUsageRefresh(machine.info)) && (
+          {(machine.info?.rateLimits !== undefined || supportsUsageRefresh(machine.info) || enginesWithLimits(machine.info).length > 0) && (
             <>
               <dt className="text-text-3">用量</dt>
-              <dd className="flex items-center gap-2" data-testid="detail-usage">
-                {machine.info?.rateLimits === undefined ? (
-                  <span className="text-text-3 text-xs">暂无数据，会话活动后更新</span>
-                ) : (
-                  <PlanUsageLine rateLimits={machine.info.rateLimits} now={now} />
-                )}
-                <EngineUsageLines info={machine.info} now={now} />
+              {/* 每个引擎一行（图标 + 名字一列），刷新按钮在整块右上 */}
+              <dd className="flex min-w-0 items-start gap-2" data-testid="detail-usage">
+                <MachineUsageRows info={machine.info} now={now} className="min-w-0 flex-1" />
                 <PlanUsageRefreshButton machine={machine} />
               </dd>
             </>

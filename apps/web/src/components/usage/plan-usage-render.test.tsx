@@ -8,7 +8,7 @@ import '@/lib/dom-test-env.ts';
 
 const { act } = await import('react');
 const { createRoot } = await import('react-dom/client');
-const { PlanUsageLine, SessionUsage } = await import('./PlanUsage.tsx');
+const { MachineUsageRows, PlanUsageLine, SessionUsage, sessionModelWindows } = await import('./PlanUsage.tsx');
 
 let root: Root | null = null;
 let host: HTMLDivElement | null = null;
@@ -130,5 +130,57 @@ describe('限额窗口：悬停提示与点击切换', () => {
     const button = el.querySelector('button[data-testid="usage-window-value"]') as HTMLButtonElement;
     act(() => button.click());
     expect(button.textContent).toBe('1w16%');
+  });
+});
+
+describe('按模型的周限额（Fable）', () => {
+  const withFable = { ...rateLimits, models: [{ name: 'Fable', percent: 40, resetsAt: new Date(2026, 9, 26, 3, 59).getTime() }] };
+
+  test('PlanUsageLine 在 1w 后面显示，悬停写明是周限额', () => {
+    const el = render(<PlanUsageLine rateLimits={withFable} now={now} />);
+    expect(el.textContent).toBe('5h62%14:39 重置1w96%周一 03:59 重置Fable40%周一 03:59 重置');
+    const values = el.querySelectorAll('[data-testid="usage-window-value"]');
+    expect(values[2]!.getAttribute('title')).toContain('Fable 周限额 已用 40%');
+  });
+
+  test('只有按模型的窗口也渲染', () => {
+    expect(render(<PlanUsageLine rateLimits={{ models: [{ name: 'Fable', percent: 3 }], updatedAt: now }} now={now} />).textContent).toBe('Fable3%');
+  });
+
+  test('会话头部只在会话用这个模型时显示', () => {
+    expect(render(<SessionUsage context={undefined} rateLimits={withFable} model="claude-fable-5" now={now} />).textContent).toBe('5h62%1w96%Fable40%');
+    act(() => root?.unmount());
+    expect(render(<SessionUsage context={undefined} rateLimits={withFable} model="claude-opus-5-5" now={now} />).textContent).toBe('5h62%1w96%');
+    expect(sessionModelWindows(withFable.models, undefined)).toEqual([]);
+    expect(sessionModelWindows(withFable.models, 'fable')).toHaveLength(1);
+  });
+});
+
+describe('MachineUsageRows', () => {
+  const codex = {
+    id: 'codex',
+    displayName: 'Codex',
+    available: true,
+    capabilities: {},
+    rateLimits: { windows: [{ id: 'w', durationMins: 10080, percent: 5 }], updatedAt: now },
+  };
+  const claude = { id: 'claude', displayName: 'Claude Code', available: true, capabilities: {} };
+
+  test('每个引擎一行，行首图标 + 名字', () => {
+    const el = render(<MachineUsageRows info={{ agentVersion: '0.25.0', rateLimits, engines: [claude, codex] }} now={now} />);
+    const rows = Array.from(el.querySelectorAll('[data-testid="usage-row"]')) as HTMLElement[];
+    expect(rows.map((r) => r.dataset['engine'])).toEqual(['claude', 'codex']);
+    expect(rows[0]!.querySelector('[data-testid="usage-engine-label"]')!.textContent).toBe('Claude');
+    expect(rows[0]!.querySelector('[data-engine-icon="claude"]')).not.toBeNull();
+    expect(rows[1]!.querySelector('[data-testid="usage-engine-label"]')!.textContent).toBe('Codex');
+    expect(rows[1]!.querySelector('[data-engine-icon="codex"]')).not.toBeNull();
+    expect(rows[1]!.querySelector('[data-testid="engine-usage"]')!.textContent).toBe('1w5%');
+  });
+
+  test('Claude 还没有数据但支持刷新：给提示行；都没有不渲染', () => {
+    const el = render(<MachineUsageRows info={{ agentVersion: '0.25.0', engines: [claude] }} now={now} />);
+    expect(el.textContent).toBe('Claude暂无数据，会话活动后更新');
+    act(() => root?.unmount());
+    expect(render(<MachineUsageRows info={{ agentVersion: '0.11.0', engines: [claude] }} now={now} />).innerHTML).toBe('');
   });
 });

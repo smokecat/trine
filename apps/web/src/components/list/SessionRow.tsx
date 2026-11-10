@@ -28,7 +28,9 @@
 import { NavLink } from 'react-router';
 import { BlocksIcon, CheckIcon, PinIcon } from 'lucide-react';
 import type { SessionMeta } from '@trine/core';
+import { CLAUDE_ENGINE_ID } from '@trine/core';
 import { StatePill } from '@/components/shell/StatusDot.tsx';
+import { EngineIcon, engineColorClass } from '@/components/shell/EngineIcon.tsx';
 import { formatCost, formatRelativeTime, truncate } from '@/lib/format.ts';
 import { cn } from '@/lib/utils.ts';
 import { lastEventPrefix, sessionTitle, shortCwd } from './sorting.ts';
@@ -159,8 +161,12 @@ export function SessionRow({
         <div className={cn('flex items-center gap-2', compact ? 'mt-1' : 'mt-1.5')}>
           <span className="text-text-3 min-w-0 flex-1 truncate font-mono text-[11px]">
             {engineTag === undefined ? '' : (
-              <span data-testid="session-engine" className="text-text-2">
-                {engineTag} ·{' '}
+              <span data-testid="session-engine" data-engine={meta.engine ?? CLAUDE_ENGINE_ID} className="text-text-2">
+                <span className={engineColorClass(meta.engine ?? CLAUDE_ENGINE_ID)}>
+                  <EngineIcon engineId={meta.engine} className="mr-0.5 inline size-3 align-[-2px]" />
+                  {engineTag}
+                </span>{' '}
+                ·{' '}
               </span>
             )}
             {showMachine ? `${machineName} · ` : ''}

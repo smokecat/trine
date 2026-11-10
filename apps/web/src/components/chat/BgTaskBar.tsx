@@ -10,6 +10,9 @@
  *
  * 全部结束后折成一行「后台任务 N 个已完成」，点开可看摘要，不永久占屏。
  *
+ * 描述（多为命令原文）默认单行省略；较长时点一下展开成可换行的全文，再点收起
+ * ——手机上没有悬停，title 看不到。
+ *
  * `stale`（评审 M2）：agent 重启 / 崩溃后落盘快照里的 running 已经不可信（判据见
  * reducer `bgTasksStale`）——这些行显示成「状态未知」、不走秒、没有停止按钮、
  * 不算在跑，条按「全部结束」折叠。
@@ -56,6 +59,36 @@ export function statusText(task: BgTask, now: number, stale = false): { text: st
     case 'stopped':
       return { text: '⊘ 已停止', tone: 'muted' };
   }
+}
+
+/** 描述超过这个长度才可点开看全 */
+const DESC_EXPAND_MIN = 40;
+
+function TaskDescription({ task }: { task: BgTask }): React.JSX.Element {
+  const [open, setOpen] = useState(false);
+  const text = task.description === '' ? task.taskId : task.description;
+  if (text.length <= DESC_EXPAND_MIN) {
+    return (
+      <span className="min-w-0 flex-1 truncate" title={text}>
+        {text}
+      </span>
+    );
+  }
+  return (
+    <button
+      type="button"
+      data-testid="bgtask-desc"
+      aria-expanded={open}
+      title={open ? '点击收起' : `${text}\n（点击展开全文）`}
+      className={cn(
+        'hover:text-text-1 min-w-0 flex-1 cursor-pointer text-left',
+        open ? 'font-mono text-[11.5px] break-all whitespace-pre-wrap' : 'truncate',
+      )}
+      onClick={() => setOpen((v) => !v)}
+    >
+      {text}
+    </button>
+  );
 }
 
 const TONE_CLASS = {
@@ -126,14 +159,12 @@ export function BgTaskBar({
                 data-testid="bgtask-row"
                 data-task-id={task.taskId}
                 data-status={task.status}
-                className="flex min-w-0 items-center gap-2"
+                className="flex min-w-0 items-baseline gap-2"
               >
                 <span aria-hidden className="w-[18px] shrink-0 text-center">
                   {KIND_ICON[task.kind]}
                 </span>
-                <span className="min-w-0 flex-1 truncate" title={task.description}>
-                  {task.description === '' ? task.taskId : task.description}
-                </span>
+                <TaskDescription task={task} />
                 <span
                   data-testid="bgtask-status"
                   className={cn('tabular min-w-0 shrink-0 truncate font-mono text-[11.5px]', TONE_CLASS[status.tone])}

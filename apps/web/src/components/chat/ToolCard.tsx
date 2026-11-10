@@ -8,6 +8,10 @@
  *
  * 点整行展开 `outputPreview`（agent 已经截断过，尾部给提示）。
  *
+ * 完整参数：折叠态的参数摘要是单行省略的（agent 给的 argSummary 本身也限长 120）。
+ * 有 `argDetail`（长 / 多行命令原文，agent ≥ 0.25.0）或摘要较长时卡片可展开，展开后
+ * 第一块是可换行、可复制的完整参数——手机上没有悬停，只能靠展开看全。
+ *
  * ## 子 agent（Agent / Task，subagent-view）
  *
  * 子 agent 里的工具调用挂在这张卡的 `children` 下（reducer 按 parentToolUseId 挂）。
@@ -18,7 +22,9 @@
  *   （版本不够时调用方不给这个回调）；加载中 / 失败 / 空结果都有一行提示。
  */
 import { useState } from 'react';
-import { FileSearchIcon } from 'lucide-react';
+import { toast } from 'sonner';
+import { CopyIcon, FileSearchIcon } from 'lucide-react';
+import { copyText } from '@/lib/clipboard.ts';
 import { useFileLinks } from '@/components/files/file-links.ts';
 import type { ToolEntry } from '@/lib/reducer.ts';
 import { formatClockSeconds, formatDuration, formatSeconds } from '@/lib/format.ts';
@@ -102,6 +108,51 @@ export function subagentProgressText(entry: ToolEntry): string | null {
 
 type LoadState = 'idle' | 'loading' | 'error';
 
+/** 摘要超过这个长度就允许展开看全（窄屏上大约一行放得下的量） */
+export const ARG_EXPAND_MIN = 40;
+
+/** 展开后显示的完整参数；摘要短到一行放得下、又没有原文时为 undefined */
+export function fullArgText(entry: Pick<ToolEntry, 'argSummary' | 'argDetail'>): string | undefined {
+  if (entry.argDetail !== undefined && entry.argDetail !== '') return entry.argDetail;
+  return entry.argSummary.length > ARG_EXPAND_MIN ? entry.argSummary : undefined;
+}
+
+/** 完整参数块的标题：命令类工具写「命令」，其余写「参数」 */
+function argLabel(toolName: string): string {
+  return toolName === 'Bash' || toolName === 'Shell' ? '命令' : '参数';
+}
+
+function FullArgs({ toolName, text }: { toolName: string; text: string }): React.JSX.Element {
+  const copy = (): void => {
+    copyText(text).then(
+      () => toast.success(`已复制${argLabel(toolName)}`),
+      (err: unknown) => toast.error(`复制失败：${err instanceof Error ? err.message : String(err)}`),
+    );
+  };
+  return (
+    <div data-testid="tool-args" className="border-border border-b">
+      <div className="text-text-3 flex items-center justify-between px-3 pt-1.5 text-[11px]">
+        <span>{argLabel(toolName)}</span>
+        <button
+          type="button"
+          data-testid="tool-args-copy"
+          className="hover:text-text inline-flex items-center gap-1 rounded px-1 py-0.5"
+          onClick={copy}
+        >
+          <CopyIcon aria-hidden className="size-3" />
+          复制
+        </button>
+      </div>
+      <pre
+        data-testid="tool-args-text"
+        className="text-text-2 max-h-64 overflow-auto px-3 pt-0.5 pb-2 font-mono text-[11.5px] break-all whitespace-pre-wrap"
+      >
+        {text}
+      </pre>
+    </div>
+  );
+}
+
 export function ToolCard({
   entry,
   runningElapsedMs,
@@ -131,7 +182,9 @@ export function ToolCard({
   // 已有部分实时子条目也允许拉一次补全（中途连上 / 补发窗口外，评审 M3）
   const live = currentChild(entry)?.status === undefined && children.length > 0;
   const canLoad = sub && onLoadChildren !== undefined && entry.childrenLoaded !== true && status !== undefined && !live;
-  const expandable = hasPreview || (sub && (children.length > 0 || canLoad || entry.childrenLoaded === true || status === undefined));
+  const args = fullArgText(entry);
+  const expandable =
+    hasPreview || args !== undefined || (sub && (children.length > 0 || canLoad || entry.childrenLoaded === true || status === undefined));
   const progress = subagentProgressText(entry);
 
   const fetchChildren = (): void => {
@@ -178,7 +231,7 @@ export function ToolCard({
             {toolIcon(entry.toolName)}
           </span>
           <span className="shrink-0 font-semibold">{entry.toolName}</span>
-          <span className="text-text-2 min-w-0 flex-1 truncate font-mono text-[12px]">
+          <span className="text-text-2 min-w-0 flex-1 truncate font-mono text-[12px]" title={entry.argSummary === '' ? undefined : entry.argSummary}>
             {entry.argSummary}
           </span>
           {status === undefined ? (
@@ -223,6 +276,7 @@ export function ToolCard({
       )}
       {expandable && open && (
         <div className="border-border border-t">
+          {args !== undefined && <FullArgs toolName={entry.toolName} text={args} />}
           {sub && (
             <SubagentChildren
               entry={entry}

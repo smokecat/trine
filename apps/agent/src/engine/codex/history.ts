@@ -7,7 +7,7 @@
  */
 import type { HistoryItem, ToolResultStatus } from '@trine/core';
 import { truncateText } from '../../bridge/history.ts';
-import { formatDuration, outputPreview, toSingleLine } from '../../bridge/summarize.ts';
+import { capArgDetail, detailIfHidden, formatDuration, outputPreview, toSingleLine } from '../../bridge/summarize.ts';
 
 type Rec = Record<string, unknown>;
 
@@ -83,6 +83,8 @@ function commandItem(item: Rec, id: string, ts: number): HistoryItem {
   const exitCode = num(item['exitCode']);
   const failed = exitCode !== undefined && exitCode !== 0;
   const path = singleReadPath(item['commandActions']);
+  const argSummary = toSingleLine(path ?? command);
+  const argDetail = command.trim() === '' ? undefined : path === undefined ? detailIfHidden(command, argSummary) : capArgDetail(command.replace(/\s+$/, ''));
   const ms = num(item['durationMs']);
   const summary = [
     exitCode === undefined ? undefined : `exit ${exitCode}`,
@@ -94,8 +96,10 @@ function commandItem(item: Rec, id: string, ts: number): HistoryItem {
     kind: 'tool',
     id,
     toolName: path === undefined ? 'Shell' : 'Read',
-    argSummary: toSingleLine(path ?? command),
+    argSummary,
     ...(path === undefined ? {} : { filePath: path.slice(0, 4096) }),
+    // Read 的摘要是路径，命令原文另看；Shell 的摘要是命令本身，看不全时才带
+    ...(argDetail === undefined ? {} : { argDetail }),
     ...statusOf(item['status'], !failed),
     ...duration(item['durationMs']),
     ...(summary === '' ? {} : { resultSummary: summary }),

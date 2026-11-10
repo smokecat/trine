@@ -482,6 +482,7 @@ export class CodexSession implements EngineSession, CodexSessionEvents {
       toolName: converted.toolName,
       argSummary: converted.argSummary,
       ...(converted.filePath === undefined ? {} : { filePath: converted.filePath }),
+      ...(converted.argDetail === undefined ? {} : { argDetail: converted.argDetail }),
     });
   }
 

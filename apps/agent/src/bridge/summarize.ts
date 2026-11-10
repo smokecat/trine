@@ -8,7 +8,7 @@
  * 未知工具（MCP 工具、未来新增内置工具）必须优雅降级，绝不抛错——
  * 这里的失败只该导致「摘要不好看」，不该中断事件流。
  */
-import type { ToolResultStatus } from '@trine/core';
+import { TOOL_ARG_DETAIL_MAX, type ToolResultStatus } from '@trine/core';
 
 /** CSI（颜色、光标）与 OSC（标题、超链接）转义序列 */
 const ANSI_RE = /\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]/g;
@@ -83,6 +83,52 @@ export function toolFilePath(toolName: string, input: unknown): string | undefin
 export function withFilePath(toolName: string, input: unknown): { filePath?: string } {
   const filePath = toolFilePath(toolName, input);
   return filePath === undefined ? {} : { filePath };
+}
+
+/** 完整参数的原文来源：Bash 的命令、URL / 查询 / 模式（摘要会压成单行、截断的那些字段） */
+function argDetailSource(toolName: string, input: unknown): string | undefined {
+  switch (toolName) {
+    case 'Bash':
+      return str(input, 'command');
+    case 'WebFetch':
+      return str(input, 'url');
+    case 'WebSearch':
+      return str(input, 'query');
+    case 'Glob':
+    case 'Grep':
+      return str(input, 'pattern');
+    default:
+      return undefined;
+  }
+}
+
+/** 限长：超出 TOOL_ARG_DETAIL_MAX 时截断并在尾部写明原长 */
+export function capArgDetail(text: string): string {
+  if (text.length <= TOOL_ARG_DETAIL_MAX) return text;
+  return `${text.slice(0, TOOL_ARG_DETAIL_MAX)}\n…（已截断，原文共 ${text.length} 字符）`;
+}
+
+/**
+ * 工具调用的完整参数（tool.start / history 的 `argDetail`）。只在摘要看不全原文时给：
+ * 原文有换行、多余空白或超出摘要长度。不需要时返回 undefined。
+ */
+export function toolArgDetail(toolName: string, input: unknown, summary: string): string | undefined {
+  const raw = argDetailSource(toolName, input);
+  if (raw === undefined || raw.trim() === '') return undefined;
+  return detailIfHidden(raw, summary);
+}
+
+/** 原文在摘要里看不全（截断 / 压成单行）时给出限长后的原文 */
+export function detailIfHidden(raw: string, summary: string): string | undefined {
+  const text = raw.replace(/\s+$/, '');
+  if (text === '' || summary.endsWith(text)) return undefined;
+  return capArgDetail(text);
+}
+
+/** 展开进 tool.start / history tool 条目：需要时才带 argDetail 字段 */
+export function withArgDetail(toolName: string, input: unknown, summary: string): { argDetail?: string } {
+  const argDetail = toolArgDetail(toolName, input, summary);
+  return argDetail === undefined ? {} : { argDetail };
 }
 
 /**

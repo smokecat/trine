@@ -41,6 +41,7 @@ import {
   summarizeToolArgs,
   summarizeToolResult,
   toSingleLine,
+  withArgDetail,
   withFilePath,
 } from './summarize.ts';
 import type { EventBody } from './types.ts';
@@ -372,12 +373,14 @@ function toolStarts(messageBody: unknown, ctx: TranslateContext, parentToolUseId
     }
     // run 统计只算主线程（见文件头「子 agent 的帧」）
     if (parentToolUseId === undefined) ctx.state.toolCount += 1;
+    const argSummary = summarizeToolArgs(toolName, b['input']);
     out.push({
       type: 'tool.start',
       toolUseId,
       toolName,
-      argSummary: summarizeToolArgs(toolName, b['input']),
+      argSummary,
       ...withFilePath(toolName, b['input']),
+      ...withArgDetail(toolName, b['input'], argSummary),
       ...(parentToolUseId === undefined ? {} : { parentToolUseId }),
     });
   }

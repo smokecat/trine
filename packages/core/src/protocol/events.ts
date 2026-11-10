@@ -67,6 +67,7 @@ import {
   SessionStateSchema,
   SlashCommandSchema,
   TimestampSchema,
+  ToolArgDetailSchema,
   ToolResultStatusSchema,
 } from '../types/index.ts';
 
@@ -180,6 +181,8 @@ export const ToolStartSchema = z.object({
    * argSummary 会把长路径缩成 `…/a/b`，client 要打开文件预览得用这个。旧 client 忽略。
    */
   filePath: z.string().min(1).max(4096).optional(),
+  /** 完整参数（命令原文，保留换行）；只在 argSummary 被压成单行或截断时带，见 ToolArgDetailSchema */
+  argDetail: ToolArgDetailSchema.optional(),
   /** 子 agent 的工具调用：父 Agent/Task 工具的 toolUseId（见 ParentToolUseIdSchema） */
   parentToolUseId: ParentToolUseIdSchema.optional(),
 });

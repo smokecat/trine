@@ -164,6 +164,7 @@ export interface ToolEntry {
   toolName: string;
   argSummary: string;
   filePath?: string;
+  argDetail?: string;
   status?: z.infer<typeof ToolResultStatusSchema>;
   durationMs?: number;
   resultSummary?: string;
@@ -182,6 +183,8 @@ export const ToolEntrySchema = z.object({
   argSummary: z.string(),
   /** 文件类工具的完整路径（agent ≥ 0.20.0），点击打开文件预览 */
   filePath: z.string().optional(),
+  /** 完整参数（长命令原文，agent ≥ 0.25.0）；展开工具卡时显示 */
+  argDetail: z.string().optional(),
   status: ToolResultStatusSchema.optional(),
   durationMs: z.number().optional(),
   resultSummary: z.string().optional(),
@@ -550,6 +553,7 @@ export function applyEvent(tl: Timeline, event: AgentToClientEvent): Timeline {
         toolName: event.toolName,
         argSummary: event.argSummary,
         ...(event.filePath === undefined ? {} : { filePath: event.filePath }),
+        ...(event.argDetail === undefined ? {} : { argDetail: event.argDetail }),
       }));
       if (updated !== undefined) return withEntries(tl, updated, seq);
       const entry: ToolEntry = {
@@ -558,6 +562,7 @@ export function applyEvent(tl: Timeline, event: AgentToClientEvent): Timeline {
         toolName: event.toolName,
         argSummary: event.argSummary,
         ...(event.filePath === undefined ? {} : { filePath: event.filePath }),
+        ...(event.argDetail === undefined ? {} : { argDetail: event.argDetail }),
         seq,
         ts: event.ts,
       };
@@ -1126,6 +1131,7 @@ function historyToEntry(item: HistoryItem): TimelineEntry {
         toolName: item.toolName,
         argSummary: item.argSummary,
         ...(item.filePath === undefined ? {} : { filePath: item.filePath }),
+        ...(item.argDetail === undefined ? {} : { argDetail: item.argDetail }),
         ...(item.status === undefined ? {} : { status: item.status }),
         ...(item.durationMs === undefined ? {} : { durationMs: item.durationMs }),
         ...(item.resultSummary === undefined ? {} : { resultSummary: item.resultSummary }),

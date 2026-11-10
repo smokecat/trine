@@ -6,6 +6,7 @@ import { CLAUDE_ENGINE_ID, type EngineSummary, type MachineInfo } from '@trine/c
 import { EngineUpdateSection } from '@/components/machines/EngineUpdateSection.tsx';
 import { claudeLatestView, CODEX_RUNNING_NOTE, engineLatestView, shortClaudeVersion, supportsClaudeUpdate } from '@/components/machines/claude-update.ts';
 import type { useClient } from '@/app/runtime.ts';
+import { EngineName } from '@/components/shell/EngineIcon.tsx';
 
 type Client = NonNullable<ReturnType<typeof useClient>>;
 type Info = MachineInfo | null | undefined;
@@ -33,7 +34,7 @@ function EngineCard({
   return (
     <div data-testid="engine-card" data-engine={engine.id} className="border-border flex flex-col gap-2 rounded-[12px] border px-3 py-2.5">
       <p className="flex flex-wrap items-baseline gap-x-2">
-        <span className="font-medium">{engine.displayName}</span>
+        <EngineName engineId={engine.id} name={engine.displayName} className="gap-1.5 self-center font-medium" iconClassName="size-4" />
         <span className="text-text-3 font-mono text-xs">{engine.version === undefined ? '版本未知' : shortClaudeVersion(engine.version)}</span>
       </p>
       <p className="text-xs" data-testid="engine-status">
