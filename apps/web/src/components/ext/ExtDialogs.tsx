@@ -243,7 +243,7 @@ function LinkPickerBody({ request, ext, multiple }: { request: LinkPickerRequest
   };
 
   return (
-    <div className="flex flex-col gap-3">
+    <div className="flex min-w-0 flex-col gap-3">
       <Input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索" className="h-8" />
       <div className="flex max-h-[50dvh] flex-col gap-1 overflow-y-auto">
         {read.response?.ok === false && <p className="text-red text-[12.5px]">{read.response.error?.message}</p>}
@@ -262,10 +262,14 @@ function LinkPickerBody({ request, ext, multiple }: { request: LinkPickerRequest
               <input type={multiple ? 'checkbox' : 'radio'} checked={on} onChange={() => toggle(ref)} className="mt-1" />
               <span className="min-w-0 flex-1">
                 <span className="flex flex-wrap items-center gap-1.5">
-                  <span className="text-[13px]">{item.title}</span>
+                  <span className="min-w-0 text-[13px] break-words">{item.title}</span>
                   {item.badges?.map((b, i) => <ExtBadgeChip key={i} badge={b} />)}
                 </span>
-                {item.subtitle !== undefined && <span className="text-text-3 block truncate text-[12px]">{item.subtitle}</span>}
+                {item.subtitle !== undefined && (
+                  <span className="text-text-3 block truncate text-[12px]" title={item.subtitle}>
+                    {item.subtitle}
+                  </span>
+                )}
               </span>
             </label>
           );
