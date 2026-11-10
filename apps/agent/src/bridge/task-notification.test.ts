@@ -108,4 +108,34 @@ describe('parseTranscriptOrigins / readTranscriptOrigins', () => {
     expect(await readTranscriptOrigins('nope', { projectsDir: root })).toBeUndefined();
     expect(await readTranscriptOrigins('../x', { projectsDir: root })).toBeUndefined();
   });
+
+  test('评审 低11：流式读、按 (路径, mtime, size) 缓存，翻页不重扫；文件变了重扫；超上限放弃', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'trine-origins-cache-'));
+    await mkdir(join(root, '-w-p'), { recursive: true });
+    const path = join(root, '-w-p', 'sess-2.jsonl');
+    await writeFile(path, text);
+    const first = await readTranscriptOrigins('sess-2', { cwd: '/w/p', projectsDir: root });
+    const again = await readTranscriptOrigins('sess-2', { cwd: '/w/p', projectsDir: root });
+    expect(again).toBe(first!);
+    const extra = { type: 'user', uuid: 'u-new', origin: { kind: 'task-notification' }, message: { role: 'user', content: NOTICE } };
+    await writeFile(path, `${text}${JSON.stringify(extra)}\n`);
+    const changed = await readTranscriptOrigins('sess-2', { cwd: '/w/p', projectsDir: root });
+    expect(changed).not.toBe(first!);
+    expect(changed?.origins.get('u-new')).toBe('task-notification');
+    expect(await readTranscriptOrigins('sess-2', { cwd: '/w/p', projectsDir: root, maxBytes: 10 })).toBeUndefined();
+  });
+
+  test('附件 / system 行记父子关系，附件通知带 parentUuid', () => {
+    const parsed = parseTranscriptOrigins(
+      [
+        { type: 'system', uuid: 's1', parentUuid: 'a1', subtype: 'x' },
+        { type: 'attachment', uuid: 'att1', parentUuid: 's1', attachment: { type: 'queued_command', commandMode: 'task-notification', prompt: NOTICE } },
+      ]
+        .map((l) => JSON.stringify(l))
+        .join('\n'),
+    );
+    expect(parsed.parents?.get('att1')).toBe('s1');
+    expect(parsed.parents?.get('s1')).toBe('a1');
+    expect(parsed.notices[0]?.parentUuid).toBe('s1');
+  });
 });

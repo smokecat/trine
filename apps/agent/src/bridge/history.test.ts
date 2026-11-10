@@ -9,6 +9,7 @@ import {
   paginateHistory,
   toHistoryItems,
 } from './history.ts';
+import { taskNotificationLines } from './task-notification.ts';
 
 /** 造一行转录：形状照 SDK 0.3.251 getSessionMessages 实测（多出 timestamp 字段） */
 function line(
@@ -342,12 +343,59 @@ describe('toHistoryItems · 后台子 agent（spike S1）', () => {
     expect(items).toEqual([]);
   });
 
-  test('被吸收进轮次的通知（原始转录的 queued_command）也回填', () => {
+  test('被吸收进轮次的通知（原始转录的 queued_command）也回填：要能沿父行走回当前主链', () => {
     const items = toHistoryItems(launch, new Map(), {
       origins: new Map(),
-      notices: [{ taskId: 't', toolUseId: 'toolu_bg', status: 'completed', result: 'r', usage: { tool_uses: 1 } }],
+      // 附件 att-2 → 附件 att-1 → 主链上的 r1
+      notices: [{ taskId: 't', toolUseId: 'toolu_bg', status: 'completed', result: 'r', usage: { tool_uses: 1 }, parentUuid: 'att-2' }],
+      parents: new Map([
+        ['att-2', 'att-1'],
+        ['att-1', 'r1'],
+      ]),
     });
     expect(items[0]).toMatchObject({ resultSummary: '✓ 1 次工具调用', subagent: { state: 'completed' } });
+  });
+
+  test('评审 中6：回退撤掉的分支上的附件通知不算（走不回当前主链 / 没有父行）', () => {
+    const origins = {
+      origins: new Map<string, string>(),
+      notices: [
+        { taskId: 't', toolUseId: 'toolu_bg', status: 'completed', result: '撤掉分支的报告', parentUuid: 'att-x' },
+        { taskId: 't', toolUseId: 'toolu_bg', status: 'completed', result: '无父行' },
+      ],
+      // att-x 挂在被撤掉的用户消息 u-dropped 之后
+      parents: new Map([['att-x', 'u-dropped']]),
+    };
+    const items = toHistoryItems(launch, new Map(), origins);
+    expect(items[0]).toMatchObject({ subagent: { state: 'unknown' } });
+    expect((items[0] as { outputPreview?: string }).outputPreview).toBeUndefined();
+  });
+
+  test('评审 中5：来源不明时兜底收紧——引用 Read 调用、或缺结束 status 的文本仍是用户消息', () => {
+    const readCall = [
+      assistant('a1', 'msg_1', [{ type: 'tool_use', id: 'toolu_read', name: 'Read', input: { file_path: '/a' } }], T0),
+      user('r1', [{ type: 'tool_result', tool_use_id: 'toolu_read', content: 'x' }], T1),
+    ];
+    const items = toHistoryItems([...readCall, user('n1', notification('toolu_read'), T2)]);
+    expect(items.some((i) => i.kind === 'user' && i.id === 'n1')).toBe(true);
+    const noStatus = '<task-notification>\n<task-id>t</task-id>\n<tool-use-id>toolu_bg</tool-use-id>\n</task-notification>';
+    const items2 = toHistoryItems([...launch, user('n2', noStatus, T2)]);
+    expect(items2.some((i) => i.kind === 'user' && i.id === 'n2')).toBe(true);
+    // 回退口径相同
+    expect(humanUserText(user('n2', noStatus, T2), taskNotificationLines([...launch, user('n2', noStatus, T2)]))).toBe(noStatus);
+  });
+
+  test('评审 中9：后台启动本身失败 → 失败，不是状态未知', () => {
+    const items = toHistoryItems([
+      assistant('a1', 'msg_1', [{ type: 'tool_use', id: 'toolu_bg', name: 'Agent', input: { description: 'p', run_in_background: true } }], T0),
+      user('r1', [{ type: 'tool_result', tool_use_id: 'toolu_bg', content: 'Agent type not found', is_error: true }], T1),
+    ]);
+    expect(items[0]).toMatchObject({ status: 'error', subagent: { background: true, state: 'failed' } });
+  });
+
+  test('规格缺口：meta.json 只说 finished → 「已结束 · 结果未知」，不当成功', () => {
+    const items = toHistoryItems(launch, new Map(), { origins: new Map(), notices: [], finished: new Set(['toolu_bg']) });
+    expect(items[0]).toMatchObject({ status: 'ok', resultSummary: '✓ 后台子 agent 已启动', subagent: { state: 'ended' } });
   });
 
   test('后台 Bash 的通知只过滤气泡，不改 Bash 卡', () => {

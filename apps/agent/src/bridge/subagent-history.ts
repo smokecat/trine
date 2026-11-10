@@ -116,6 +116,42 @@ async function findByToolUseId(root: string, toolUseId: string): Promise<string 
   return walk(root, 0);
 }
 
+/**
+ * 这个会话里 meta.json 标了 `finished: true` 的子 agent（父 Agent/Task 的 toolUseId）。
+ * finished 只证明子 agent 结束了，不说成功还是失败（spike S1）——调用方只能显示「已结束 ·
+ * 结果未知」。读不到返回空集合。
+ */
+export async function finishedSubagents(sessionId: string, locator: SubagentTranscriptLocator = {}): Promise<Set<string>> {
+  const out = new Set<string>();
+  if (!/^[A-Za-z0-9_-]+$/.test(sessionId)) return out;
+  let seen = 0;
+  const walk = async (dir: string, depth: number): Promise<void> => {
+    let entries: import('node:fs').Dirent[];
+    try {
+      entries = await readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (depth < MAX_WALK_DEPTH) await walk(path, depth + 1);
+        continue;
+      }
+      if (!entry.isFile() || !entry.name.endsWith('.meta.json')) continue;
+      if (++seen > MAX_META_FILES) return;
+      try {
+        const meta = JSON.parse(await readFile(path, 'utf8')) as { toolUseId?: unknown; finished?: unknown };
+        if (meta.finished === true && typeof meta.toolUseId === 'string' && meta.toolUseId !== '') out.add(meta.toolUseId);
+      } catch {
+        // 坏 meta：跳过
+      }
+    }
+  };
+  for (const dir of await sessionDirs(sessionId, locator)) await walk(join(dir, 'subagents'), 0);
+  return out;
+}
+
 /** 找到某次 Agent/Task 调用的子转录文件路径；找不到 undefined */
 export async function findSubagentTranscript(
   sessionId: string,

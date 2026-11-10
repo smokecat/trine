@@ -46,7 +46,7 @@ import {
   withFilePath,
   withSubagentStart,
 } from './summarize.ts';
-import { taskNotificationLines, type TaskNotice, type TranscriptOrigins } from './task-notification.ts';
+import { noticeOnChain, taskNotificationLines, type TaskNotice, type TranscriptOrigins } from './task-notification.ts';
 
 /** 单条 user/assistant 文本上限（字符数），超出截断并标注 */
 export const HISTORY_TEXT_MAX = 8 * 1024;
@@ -202,7 +202,9 @@ export function toHistoryItems(
   const toolIdx = new Map<string, number>();
   const seenUser = new Set<string>();
   const notificationLines = taskNotificationLines(messages, origins?.origins);
-  const notices: TaskNotice[] = [...(origins?.notices ?? [])];
+  // 附件通知只认能走回当前主链的：回退撤掉的分支上的不算（评审 中6）
+  const chain = new Set(messages.map((m) => m.uuid));
+  const notices: TaskNotice[] = (origins?.notices ?? []).filter((n) => noticeOnChain(n, origins?.parents, chain));
   let lastTs = 0;
 
   for (const message of messages) {
@@ -303,7 +305,7 @@ export function toHistoryItems(
     items.push({ kind: 'user', id: message.uuid, text, ...(files.length === 0 ? {} : { attachments: [...files] }), ts });
   }
 
-  backfillSubagentEnds(items, toolIdx, notices);
+  backfillSubagentEnds(items, toolIdx, notices, origins?.finished);
 
   // 截断放最后：合并期间要拼的是全文
   return items.map((item) =>
@@ -314,10 +316,16 @@ export function toHistoryItems(
 /**
  * 后台子 agent 的最终状态回填（原地改 items）：通知按 tool-use-id 对上 Agent/Task 条目，
  * 与实时流的收尾 tool.end 同口径（backgroundSubagentEnd）；对不上的通知（后台 Bash、
- * 别的会话）忽略。之后仍没有结束证据的后台条目标「状态未知」——宁可说不知道，也不让它
- * 看着像还在跑或已经成功。
+ * 别的会话）忽略。之后仍没有结束证据的后台条目：启动本身就失败了 → 失败（评审 中9）；
+ * 子转录 meta.json 说 finished → 「已结束 · 结果未知」（finished 不说成败，不当成功）；
+ * 其余「状态未知」——宁可说不知道，也不让它看着像还在跑或已经成功。
  */
-function backfillSubagentEnds(items: HistoryItem[], toolIdx: ReadonlyMap<string, number>, notices: readonly TaskNotice[]): void {
+function backfillSubagentEnds(
+  items: HistoryItem[],
+  toolIdx: ReadonlyMap<string, number>,
+  notices: readonly TaskNotice[],
+  finished: ReadonlySet<string> | undefined,
+): void {
   for (const notice of notices) {
     if (notice.toolUseId === undefined) continue;
     const at = toolIdx.get(notice.toolUseId);
@@ -337,7 +345,8 @@ function backfillSubagentEnds(items: HistoryItem[], toolIdx: ReadonlyMap<string,
   for (let i = 0; i < items.length; i++) {
     const item = items[i]!;
     if (item.kind !== 'tool' || item.subagent?.background !== true || item.subagent.state !== undefined) continue;
-    items[i] = { ...item, subagent: { ...item.subagent, state: 'unknown' } };
+    const state = item.status === 'error' ? 'failed' : finished?.has(item.id) === true ? 'ended' : 'unknown';
+    items[i] = { ...item, subagent: { ...item.subagent, state } };
   }
 }
 

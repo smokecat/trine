@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { HistoryItemSchema } from '@trine/core';
 import { toSubagentHistoryItems } from './history.ts';
-import { findSubagentTranscript, projectDirName, readJsonlLines, readSubagentTranscript } from './subagent-history.ts';
+import { findSubagentTranscript, finishedSubagents, projectDirName, readJsonlLines, readSubagentTranscript } from './subagent-history.ts';
 
 const FIXTURE_DIR = join(import.meta.dir, '..', 'testing', 'fixtures', 'subagent');
 const FIXTURE = join(FIXTURE_DIR, 'agent-a000000000000001.jsonl');
@@ -84,5 +84,22 @@ describe('findSubagentTranscript', () => {
     const projects = await fakeProjects('-repo');
     await writeFile(join(projects, '-repo', SID, 'subagents', 'agent-bad.meta.json'), '{not json');
     expect(await findSubagentTranscript(SID, PARENT, { projectsDir: projects })).toBeDefined();
+  });
+});
+
+describe('finishedSubagents（meta.json 的 finished）', () => {
+  test('只收 finished:true 的 toolUseId（含嵌套目录）；坏 meta / 非法 sessionId 不抛', async () => {
+    const projects = await fakeProjects('-repo');
+    const sub = join(projects, '-repo', SID, 'subagents');
+    await writeFile(join(sub, 'agent-f1.meta.json'), JSON.stringify({ toolUseId: 'toolu_done', finished: true }));
+    await writeFile(join(sub, 'agent-f2.meta.json'), JSON.stringify({ toolUseId: 'toolu_running' }));
+    await mkdir(join(sub, 'nested'), { recursive: true });
+    await writeFile(join(sub, 'nested', 'agent-f3.meta.json'), JSON.stringify({ toolUseId: 'toolu_nested', finished: true }));
+    await writeFile(join(sub, 'agent-bad.meta.json'), '{not json');
+    const finished = await finishedSubagents(SID, { projectsDir: projects });
+    expect(finished.has('toolu_done')).toBe(true);
+    expect(finished.has('toolu_nested')).toBe(true);
+    expect(finished.has('toolu_running')).toBe(false);
+    expect((await finishedSubagents('../x', { projectsDir: projects })).size).toBe(0);
   });
 });

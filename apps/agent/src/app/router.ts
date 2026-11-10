@@ -121,8 +121,18 @@ import {
   toSubagentHistoryItems,
   transcriptImages,
 } from '../bridge/history.ts';
-import { readSubagentTranscript } from '../bridge/subagent-history.ts';
+import { finishedSubagents, readSubagentTranscript } from '../bridge/subagent-history.ts';
 import { readTranscriptOrigins, type TranscriptOrigins } from '../bridge/task-notification.ts';
+
+/** 默认的来源信息读取：主转录的 origin / 附件通知 + 子转录 meta.json 的 finished */
+async function readRealOrigins(sessionId: string, options: { cwd?: string | undefined }): Promise<TranscriptOrigins | undefined> {
+  const [origins, finished] = await Promise.all([
+    readTranscriptOrigins(sessionId, options),
+    finishedSubagents(sessionId, options).catch(() => new Set<string>()),
+  ]);
+  if (origins === undefined && finished.size === 0) return undefined;
+  return { ...(origins ?? { origins: new Map(), notices: [] }), finished };
+}
 import {
   ConcurrencyLimitError,
   seedFromInfo,
@@ -909,7 +919,7 @@ export class Router {
   /** 原始转录的来源信息（见 readTranscriptOriginsFn）；读不到 undefined，调用方退回结构校验 */
   async #readOrigins(sessionId: string): Promise<TranscriptOrigins | undefined> {
     const read =
-      this.#deps.readTranscriptOriginsFn ?? (this.#deps.getSessionMessagesFn === undefined ? readTranscriptOrigins : undefined);
+      this.#deps.readTranscriptOriginsFn ?? (this.#deps.getSessionMessagesFn === undefined ? readRealOrigins : undefined);
     if (read === undefined) return undefined;
     const cwd = this.#deps.state.sessionParams(sessionId)?.cwd ?? this.#deps.manager.metaOf(sessionId)?.cwd;
     return read(sessionId, { cwd }).catch(() => undefined);
