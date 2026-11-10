@@ -1340,42 +1340,61 @@ export class TrineClient {
   /**
    * 调整置顶工作区的顺序（pin-order，只对 `machine.info.cwd.pinOrder` 为真的 agent 调）：把 cwd 移到
    * before 之前（null = 末尾）。先乐观改本地 pinOrder，以 agent 的应答 / `cwd.updated` 广播为准；
-   * 失败（被拒、超时、离线）时若本地仍是这次的乐观值就回滚，再重拉一次 cwd 快照，然后抛出
-   * （被拒是 `CwdPinMoveError`）。cwd / before 用规范化路径，agent 按字面或去尾 `/` 匹配。
+   * 失败（被拒、超时）时若本地仍是这次的乐观值就回滚，再重拉一次 cwd 快照，然后抛出
+   * （被拒是 `CwdPinMoveError`）。cwd / before 按目录身份认（core normalizeCwdPath / movePinOrder，与 agent 同一规则）。
+   *
+   * - **不进离线队列**：与 relay 的连接不在（或机器离线）就直接拒绝，不做乐观更新——排队的移动在重连后
+   *   补发，可能覆盖用户之后在别的设备上调好的顺序。万一帧仍落进了待发队列，超时时撤掉它。
+   * - **每台机器同时只有一个在途移动**（`MachineState.pinMoving`）：快照永远是已确认的状态，失败回滚
+   *   不会恢复到上一个已失败的乐观值。在途时再调直接拒绝，界面据 pinMoving 禁用入口。
    */
-  async movePinnedWorkspace(machineId: string, cwd: string, before: string | null): Promise<void> {
-    const snap = this.#machines.get(machineId)?.cwd ?? null;
+  async movePinnedWorkspace(
+    machineId: string,
+    cwd: string,
+    before: string | null,
+    options: { timeoutMs?: number } = {},
+  ): Promise<void> {
+    const machine = this.#machines.get(machineId);
+    if (this.#connection?.isOpen !== true) throw new Error('与中继的连接已断开，暂不能调整顺序');
+    if (machine?.online !== true) throw new Error('机器离线，暂不能调整顺序');
+    if (machine.pinMoving === true) throw new Error('上一次调整还没完成');
+    const snap = machine.cwd;
     let optimistic: string[] | undefined;
     if (snap?.pinned !== undefined) {
-      const order = normalizePinOrder(snap.pinOrder, snap.pinned);
-      const key = (p: string): string | undefined => order.find((k) => normalizeCwdPath(k) === normalizeCwdPath(p));
-      const from = key(cwd);
-      const to = before === null ? null : key(before);
-      const next = from === undefined || to === undefined ? undefined : movePinOrder(order, from, to);
-      if (Array.isArray(next)) {
-        optimistic = next;
-        this.#updateMachine(machineId, (m) => (m.cwd === null ? m : { ...m, cwd: { ...m.cwd, pinOrder: next } }));
-      }
+      const next = movePinOrder(normalizePinOrder(snap.pinOrder, snap.pinned), cwd, before);
+      if (Array.isArray(next)) optimistic = next;
     }
+    this.#updateMachine(machineId, (m) => ({
+      ...m,
+      pinMoving: true,
+      ...(optimistic === undefined || m.cwd === null ? {} : { cwd: { ...m.cwd, pinOrder: optimistic } }),
+    }));
+    const reqId = this.#uuid();
     try {
       const res = await this.request<Extract<OutboundBody, { type: 'cwd.pin.move' }>>(machineId, {
         type: 'cwd.pin.move',
+        reqId,
         path: cwd,
         before,
-      });
+      }, options);
       if (res.type !== 'cwd.pin.move.response') throw new Error(`意外的应答 ${res.type}`);
       if (!res.ok) throw new CwdPinMoveError(res.error?.code ?? 'failed', res.error?.message ?? '调整顺序失败');
     } catch (err) {
-      if (optimistic !== undefined) {
-        this.#updateMachine(machineId, (m) => {
-          if (m.cwd === null || m.cwd.pinOrder !== optimistic) return m;
-          const { pinOrder: _drop, ...rest } = m.cwd;
-          return { ...m, cwd: snap?.pinOrder === undefined ? rest : { ...rest, pinOrder: snap.pinOrder } };
-        });
-      }
-      void this.request(machineId, { type: 'cwd.list.request' }).catch(() => undefined);
+      // 还在待发队列里（断线后入队）的就撤掉：失败已经报给用户，重连后不能再补发
+      if (this.#outbox.cancelQueued(machineId, (e) => e.type === 'cwd.pin.move' && e.reqId === reqId)) this.#emitQueue();
+      this.#updateMachine(machineId, (m) => {
+        const { pinMoving: _done, ...rest } = m;
+        if (optimistic === undefined || rest.cwd === null || rest.cwd.pinOrder !== optimistic) return rest;
+        const { pinOrder: _drop, ...cwdRest } = rest.cwd;
+        return { ...rest, cwd: snap?.pinOrder === undefined ? cwdRest : { ...cwdRest, pinOrder: snap.pinOrder } };
+      });
+      if (this.#connection?.isOpen === true) void this.request(machineId, { type: 'cwd.list.request' }).catch(() => undefined);
       throw err;
     }
+    this.#updateMachine(machineId, (m) => {
+      const { pinMoving: _done, ...rest } = m;
+      return rest;
+    });
   }
 
   async deleteSession(machineId: string, sessionId: string): Promise<void> {
@@ -2349,12 +2368,6 @@ export class CwdPinMoveError extends Error {
     this.name = 'CwdPinMoveError';
     this.code = code;
   }
-}
-
-/** 去尾 `/`（根目录保持 `/`），与列表分组同一口径 */
-function normalizeCwdPath(cwd: string): string {
-  const trimmed = cwd.replace(/\/+$/, '');
-  return trimmed === '' && cwd !== '' ? '/' : trimmed;
 }
 
 /** agent 拒绝了信任目录的增删（code 见协议 FilesTrustErrorCode） */

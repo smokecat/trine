@@ -379,6 +379,8 @@ export interface MachineState {
   stats: MachineStats | null;
   /** 本次打开页面以来的资源快照（按时间升序，最多 STATS_HISTORY_MAX 条），画趋势用 */
   statsHistory: MachineStats[];
+  /** 有一个置顶重排（cwd.pin.move）在途；只在内存，不落盘。每台机器同时只允许一个 */
+  pinMoving?: true;
 }
 
 /** 资源快照保留条数（详情页 5 秒一次 ≈ 5 分钟） */

@@ -39,10 +39,10 @@ import { DEFAULT_LIST_QUERY, filterSessions } from '../components/list/filtering
 // 会话 cwd 在系统临时目录下（测试约定），默认会被当成临时会话隐藏
 const LIST_QUERY = { ...DEFAULT_LIST_QUERY, showTemp: true };
 import { supportsSessionMutations } from '../components/list/session-actions.ts';
-import { CwdPinMoveError, FilesTrustError, FsRequestError, SessionMutateError, TrineClient } from './client.ts';
+import { CwdPinMoveError, FilesTrustError, FsRequestError, RequestTimeoutError, SessionMutateError, TrineClient } from './client.ts';
 import { LeaderElector } from './leader.ts';
 import { shouldAutoLoadHistory, type PermissionEntry, type TimelineEntry, type UserEntry } from './reducer.ts';
-import { KV_PEER, type PeerState } from './storage.ts';
+import { KV_PEER, loadMachineDoc, type PeerState } from './storage.ts';
 
 // ---------------------------------------------------------------------------
 // 夹具
@@ -1087,24 +1087,106 @@ describe('web lib · 信任目录 e2e', () => {
 });
 
 describe('web lib · 置顶工作区排序 e2e（pin-order）', () => {
-  test('能力位 → 乐观更新 → 以广播为准；被拒抛 CwdPinMoveError 且本地不变', async () => {
+  const START = ['/w/c', '/w/b', '/w/a'];
+  const order = (c: TrineClient = client) => c.machine('mbp')?.cwd?.pinOrder;
+  const failure = (p: Promise<unknown>) => p.then(() => 'ok', (e: unknown) => e);
+  const codeOf = (e: unknown) => (e instanceof CwdPinMoveError ? e.code : e instanceof Error ? e.message : String(e));
+  /** 配对、等能力位、置顶 a b c（新置顶插最前 → [c, b, a]） */
+  async function setup(): Promise<void> {
     await pair();
     await waitFor(() => client.machine('mbp')?.info?.cwd?.pinOrder === true, 'machine.info.cwd.pinOrder');
     for (const p of ['/w/a', '/w/b', '/w/c']) client.pinWorkspace('mbp', p, true);
-    await waitFor(() => client.machine('mbp')?.cwd?.pinOrder?.length === 3, 'pinOrder 三项');
-    expect(client.machine('mbp')?.cwd?.pinOrder).toEqual(['/w/c', '/w/b', '/w/a']);
+    await waitFor(() => order()?.length === 3, 'pinOrder 三项');
+    expect(order()).toEqual(START);
+  }
+  /** agent 写 cwd.json 失败：把文件位置换成目录（rename 会失败） */
+  const cwdFile = () => join(home, 'cwd.json');
+  function breakCwdWrites(): void {
+    rmSync(cwdFile(), { force: true });
+    mkdirSync(cwdFile());
+  }
 
-    const moving = client.movePinnedWorkspace('mbp', '/w/a', '/w/c');
-    // 乐观：请求发出时本地已经改了
-    expect(client.machine('mbp')?.cwd?.pinOrder).toEqual(['/w/a', '/w/c', '/w/b']);
-    await moving;
-    await waitFor(() => client.machine('mbp')?.cwd?.pinOrder?.[0] === '/w/a', 'cwd.updated 广播');
-    expect(client.machine('mbp')?.cwd?.pinOrder).toEqual(['/w/a', '/w/c', '/w/b']);
+  test('成功：乐观更新，另一台设备经 cwd.updated 广播收到同一顺序', async () => {
+    await setup();
+    const otherSockets = new ControlledSockets();
+    const other = await newClient({ kv: new MemoryKv(), docs: new MemoryDocStore(), sockets: otherSockets });
+    try {
+      await pair(other, otherSockets);
+      other.request('mbp', { type: 'cwd.list.request' }).catch(() => undefined);
+      await waitFor(() => order(other)?.length === 3, '第二台设备拿到 pinOrder');
 
-    const err = await client.movePinnedWorkspace('mbp', '/w/zzz', null).then(() => undefined, (e: unknown) => e);
-    expect(err instanceof CwdPinMoveError ? err.code : String(err)).toBe('not_pinned');
-    expect(client.machine('mbp')?.cwd?.pinOrder).toEqual(['/w/a', '/w/c', '/w/b']);
+      const moving = client.movePinnedWorkspace('mbp', '/w/a', '/w/c');
+      expect(order()).toEqual(['/w/a', '/w/c', '/w/b']);
+      expect(client.machine('mbp')?.pinMoving).toBe(true);
+      await moving;
+      expect(client.machine('mbp')?.pinMoving).toBeUndefined();
+      // 第二台设备没有乐观状态：它变了只能是广播带来的
+      await waitFor(() => order(other)?.[0] === '/w/a', '第二台设备收到 cwd.updated');
+      expect(order(other)).toEqual(['/w/a', '/w/c', '/w/b']);
+      expect(agent.app.cwdStore.snapshot().pinOrder).toEqual(['/w/a', '/w/c', '/w/b']);
+    } finally {
+      other.stop();
+    }
   }, 20_000);
+
+  test('有效路径被业务拒绝（agent 那边已取消置顶）：先回滚，再按重拉的快照收敛', async () => {
+    await setup();
+    await agent.app.cwdStore.setPinned('/w/b', false, 0); // 不广播：本地仍以为 b 已置顶
+    const moving = client.movePinnedWorkspace('mbp', '/w/b', '/w/c');
+    expect(order()).toEqual(['/w/b', '/w/c', '/w/a']);
+    expect(codeOf(await failure(moving))).toBe('not_pinned');
+    expect(order()).toEqual(START);
+    await waitFor(() => order()?.length === 2, '重拉 cwd.list');
+    expect(order()).toEqual(['/w/c', '/w/a']);
+    expect(client.machine('mbp')?.pinMoving).toBeUndefined();
+  }, 20_000);
+
+  test('写盘失败 + 在途时再移动被拒；连续两次失败都回到已确认的顺序（缓存也是）', async () => {
+    await setup();
+    breakCwdWrites();
+    try {
+      sockets.hold = (f) => f.type === 'relay';
+      const first = client.movePinnedWorkspace('mbp', '/w/a', '/w/c');
+      expect(order()).toEqual(['/w/a', '/w/c', '/w/b']);
+      // 每台机器只有一个在途移动：第二次直接拒绝，不叠乐观状态
+      expect(codeOf(await failure(client.movePinnedWorkspace('mbp', '/w/b', null)))).toBe('上一次调整还没完成');
+      expect(order()).toEqual(['/w/a', '/w/c', '/w/b']);
+      sockets.release();
+      expect(codeOf(await failure(first))).toBe('failed');
+      expect(order()).toEqual(START);
+      expect(codeOf(await failure(client.movePinnedWorkspace('mbp', '/w/b', null)))).toBe('failed');
+      expect(order()).toEqual(START);
+      await settle(100);
+      expect(order()).toEqual(START);
+      expect((await loadMachineDoc(docs, 'mbp'))?.cwd?.pinOrder).toEqual(START);
+      expect(agent.app.cwdStore.snapshot().pinOrder).toEqual(START);
+    } finally {
+      rmSync(cwdFile(), { recursive: true, force: true });
+    }
+  }, 20_000);
+
+  test('超时：回滚；与中继断开时直接拒绝、不改本地、不排队，重连后也不补发', async () => {
+    await setup();
+    // 帧被扣住（agent 收不到）→ 超时
+    sockets.hold = (f) => f.type === 'relay';
+    const timedOut = await failure(client.movePinnedWorkspace('mbp', '/w/a', '/w/c', { timeoutMs: 200 }));
+    expect(timedOut instanceof RequestTimeoutError).toBe(true);
+    expect(order()).toEqual(START);
+    expect(client.machine('mbp')?.pinMoving).toBeUndefined();
+    sockets.hold = null; // 扣住的帧丢掉，不放行
+
+    sockets.current.close();
+    await waitFor(() => client.connection.status !== 'open', '连接断开');
+    expect(client.machine('mbp')?.online).toBe(true); // 机器状态仍是在线：只看 online 拦不住
+    expect(codeOf(await failure(client.movePinnedWorkspace('mbp', '/w/a', '/w/c')))).toContain('中继');
+    expect(order()).toEqual(START);
+    expect(client.queuedCount).toBe(0);
+
+    await waitFor(() => client.connection.status === 'open', '重连', 10_000);
+    await settle(200);
+    expect(agent.app.cwdStore.snapshot().pinOrder).toEqual(START);
+    expect(order()).toEqual(START);
+  }, 30_000);
 });
 
 describe('web lib · 扩展（ext.*）', () => {

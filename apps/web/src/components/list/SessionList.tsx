@@ -137,7 +137,7 @@ export function SessionList({
       ? '搜索 / 筛选中不能调整顺序'
       : machines[group.machineId]?.online !== true
         ? '机器离线，暂不能调整顺序'
-        : null;
+        : (actions.pinMoveBlocked?.(group.machineId) ?? null);
     return {
       order,
       blocked,

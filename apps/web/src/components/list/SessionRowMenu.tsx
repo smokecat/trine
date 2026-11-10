@@ -81,6 +81,8 @@ export interface SessionRowActions {
   onMovePinnedWorkspace?: (machineId: string, cwd: string, before: string | null) => MaybePromise;
   /** 这台机器的 agent 认识 cwd.pin.move（machine.info.cwd.pinOrder）；不给 = 都不认识 */
   supportsPinOrder?: (machineId: string) => boolean;
+  /** 此刻不能重排的原因（与中继断开 / 有在途的移动）；null 或不给 = 可以（机器离线、筛选另由列表判） */
+  pinMoveBlocked?: (machineId: string) => string | null;
   /** 打开扩展的关联选择器（一个或一批同机器的会话）；supportsLinks 判这台机器有没有扩展 */
   onLink?: (machineId: string, sessionIds: string[]) => void;
   supportsLinks?: (machineId: string) => boolean;

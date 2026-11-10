@@ -314,3 +314,21 @@ describe('outbox · dropScope（会话被永久删除）', () => {
     ]);
   });
 });
+
+describe('outbox · cancelQueued（超时撤销未发出的请求）', () => {
+  test('撤掉待发队列与重发缓冲里的那一帧，重连后不补发；已发出的撤不回', () => {
+    const h = harness();
+    h.outbox.send('mbp', { type: 'cwd.pin.move', reqId: 'sent', path: '/a', before: null });
+    h.online.value = false;
+    h.outbox.send('mbp', { type: 'cwd.pin.move', reqId: 'm1', path: '/a', before: null });
+    h.outbox.send('mbp', { type: 'session.list.request', reqId: 'q' });
+    const isMove = (id: string) => (e: ClientToAgentEvent) => e.type === 'cwd.pin.move' && e.reqId === id;
+    expect(h.outbox.cancelQueued('mbp', isMove('sent'))).toBe(false);
+    expect(h.outbox.cancelQueued('mbp', isMove('m1'))).toBe(true);
+    expect(h.outbox.queuedCount).toBe(1);
+    expect(h.outbox.size('mbp', '')).toBe(2);
+    h.online.value = true;
+    h.outbox.flush();
+    expect(h.frames.map((f) => h.decrypt(f)).map((e) => ('reqId' in e ? e.reqId : e.type))).toEqual(['sent', 'q']);
+  });
+});

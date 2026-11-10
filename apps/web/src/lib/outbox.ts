@@ -186,6 +186,20 @@ export class Outbox {
     return dropped;
   }
 
+  /**
+   * 撤销还没发出去的帧（在待发队列里、匹配 match 的），同时从重发缓冲里拿掉，自愈重发也不会再发它。
+   * 留下的 seq 空洞无妨：服务端只要求单调递增。返回是否撤掉了。已经发出去的帧撤不回，返回 false。
+   */
+  cancelQueued(machineId: string, match: (event: ClientToAgentEvent) => boolean): boolean {
+    const i = this.#queue.findIndex((q) => q.machineId === machineId && match(q.event));
+    if (i < 0) return false;
+    const [item] = this.#queue.splice(i, 1);
+    const k = key(machineId, item!.event.sessionId ?? '');
+    const buffer = this.#buffers.get(k);
+    if (buffer !== undefined) this.#buffers.set(k, buffer.filter((e) => e.event !== item!.event));
+    return true;
+  }
+
   /** 缓冲里某 (scope, seq) 对应的 input.send 的 clientMsgId（input.parked 关联用） */
   clientMsgIdForSeq(machineId: string, sessionId: string, seq: number): string | undefined {
     const entry = this.#buffers.get(key(machineId, sessionId))?.find((e) => e.event.seq === seq);

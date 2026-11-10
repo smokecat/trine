@@ -765,6 +765,18 @@ describe('置顶空组与「在此目录新建会话」（plan §2 / §3）', ()
     render({}, { query: { groupBy: 'workspace' }, machines: orderMachines(true, true), actions: { ...actions, supportsPinOrder: () => false } });
     openMenu($$('session-group-menu')[1]!);
     expect($('group-menu-move-up')).toBeNull();
+    act(() => root?.unmount());
+    document.body.innerHTML = '';
+
+    // 与中继断开 / 有在途移动（pinMoveBlocked）：机器虽在线也禁用，并写明原因
+    render({}, {
+      query: { groupBy: 'workspace' },
+      machines: orderMachines(true, true),
+      actions: { ...actions, pinMoveBlocked: () => '与中继的连接已断开，暂不能调整顺序' },
+    });
+    openMenu($$('session-group-menu')[1]!);
+    expect($('group-menu-move-up')?.dataset.disabled).toBe('');
+    expect($('group-menu-move-up')?.getAttribute('title')).toContain('中继');
   });
 
   test('拖柄：只在精确指针、机器在线、agent 支持、没有筛选时出现；每台机器一段', () => {

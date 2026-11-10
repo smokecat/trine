@@ -29,6 +29,14 @@ export function useSessionActions(machineId?: string): SessionRowActions {
       .sort()
       .join(','),
   );
+  // 重排要与中继连着（不进离线队列），且这台机器没有在途的移动
+  const relayOpen = useTrine((s) => s.connection.status === 'open');
+  const pinMovingKey = useTrine((s) =>
+    Object.keys(s.machines)
+      .filter((id) => s.machines[id]?.pinMoving === true)
+      .sort()
+      .join(','),
+  );
   // 有扩展的机器才给「关联…」（具体哪个扩展提供关联，选择器里再看）
   const linkKey = useTrine((s) =>
     Object.keys(s.machines)
@@ -69,6 +77,12 @@ export function useSessionActions(machineId?: string): SessionRowActions {
         ? {}
         : {
             supportsPinOrder: (target: string) => pinOrderKey.split(',').includes(target),
+            pinMoveBlocked: (target: string) =>
+              !relayOpen
+                ? '与中继的连接已断开，暂不能调整顺序'
+                : pinMovingKey.split(',').includes(target)
+                  ? '正在调整顺序…'
+                  : null,
             onMovePinnedWorkspace: (target: string, cwd: string, before: string | null) =>
               client.movePinnedWorkspace(target, cwd, before).catch((err: unknown) => {
                 toast.error('调整置顶顺序失败', { description: err instanceof Error ? err.message : String(err) });
@@ -76,6 +90,6 @@ export function useSessionActions(machineId?: string): SessionRowActions {
               }),
           }),
     }),
-    [client, supportedKey, pinKey, pinOrderKey, linkKey, enginesKey, machineId],
+    [client, supportedKey, pinKey, pinOrderKey, relayOpen, pinMovingKey, linkKey, enginesKey, machineId],
   );
 }
