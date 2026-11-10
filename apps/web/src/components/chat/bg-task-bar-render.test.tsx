@@ -64,7 +64,7 @@ describe('BgTaskBar', () => {
     expect(rows).toHaveLength(2);
     expect(rows[0]!.dataset['status']).toBe('running');
     expect($(rows[0]!, 'bgtask-status')!.textContent).toBe('运行中 12s');
-    expect($(rows[1]!, 'bgtask-status')!.textContent).toBe('运行中 12s · Bash ×3');
+    expect($(rows[1]!, 'bgtask-status')!.textContent).toBe('运行中 12s · 最近 Bash · 共 3 次工具调用');
     const buttons = $$(el, 'bgtask-stop');
     expect(buttons).toHaveLength(2);
     act(() => buttons[1]!.click());

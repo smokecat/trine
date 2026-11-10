@@ -254,7 +254,7 @@ describe('ToolCard · 前台 / 后台与子任务状态（plan §7）', () => {
   test('结束后：显示 agent 的收尾摘要；没有收尾帧只有快照结束 → 状态词；快照陈旧 / 历史无证据 → 状态未知', () => {
     const done = agent({ status: 'ok', resultSummary: '✓ 3 次工具调用 · 0:20', subagent: { background: true, state: 'completed' } });
     expect($(mount(<ToolCard entry={done} runningElapsedMs={null} bgTask={bgTask({ status: 'completed' })} />), 'tool-subagent-status')?.textContent).toBe(
-      '✓ 3 次工具调用 · 0:20',
+      '✓ 已完成 · 3 次工具调用 · 0:20',
     );
     act(() => root?.unmount());
     const pending = agent({ ...launched, subagent: { background: true } });
@@ -285,10 +285,34 @@ describe('ToolCard · 前台 / 后台与子任务状态（plan §7）', () => {
   });
 
   test('评审 中9：显式后台但启动就失败 → 卡头显示失败摘要，不是状态未知', () => {
-    const entry = agent({ argSummary: '后台 · probe', status: 'error', resultSummary: '✗ Agent type not found · 0.1s', subagent: { background: true } });
+    const raw = `✗ Agent type 'nope' not found. Available agents: ${'general-purpose, '.repeat(20)}Explore · 0.1s`;
+    const entry = agent({ argSummary: '后台 · probe', status: 'error', resultSummary: raw, outputPreview: raw, subagent: { background: true } });
     const el = mount(<ToolCard entry={entry} runningElapsedMs={null} />);
-    expect($(el, 'tool-subagent-status')?.textContent).toBe('✗ Agent type not found · 0.1s');
+    // 卡头：图标 + 中文短语，不出英文原文；描述留最小宽度、状态可截断（手测：长错误把描述挤没）
+    expect($(el, 'tool-subagent-status')?.textContent).toBe('✗ 启动失败');
+    expect($(el, 'tool-subagent-status')?.className).toContain('truncate');
+    expect($(el, 'tool-arg-summary')?.className).toContain('min-w-[5rem]');
     expect(el.querySelector('[data-testid="entry-tool"]')?.getAttribute('data-subagent-state')).toBe('failed');
+    // 原文在展开区
+    click(header(el));
+    expect($(el, 'tool-result-full')?.textContent).toContain("Agent type 'nope' not found");
+  });
+
+  test('手测反馈：结束状态统一「图标 + 短语」；agent 收尾的失败 / 停止带统计', () => {
+    const failed = agent({ status: 'error', resultSummary: '✗ 子 agent 失败 · 2 次工具调用 · 5.0s', subagent: { background: true, state: 'failed' } });
+    expect($(mount(<ToolCard entry={failed} runningElapsedMs={null} />), 'tool-subagent-status')?.textContent).toBe('✗ 失败 · 2 次工具调用 · 5.0s');
+    act(() => root?.unmount());
+    const stopped = agent({ status: 'warn', resultSummary: '⏹ 子 agent 已停止', subagent: { background: true, state: 'stopped' } });
+    expect($(mount(<ToolCard entry={stopped} runningElapsedMs={null} />), 'tool-subagent-status')?.textContent).toBe('⊘ 已停止');
+    act(() => root?.unmount());
+    const fgFailed = agent({ status: 'error', resultSummary: '✗ API Error: overloaded · 3s' });
+    expect($(mount(<ToolCard entry={fgFailed} runningElapsedMs={null} />), 'tool-subagent-status')?.textContent).toBe('✗ 失败');
+  });
+
+  test('手测反馈：后台运行中的进度写明「最近 X · 共 N 次工具调用」', () => {
+    const entry = agent({ ...launched, subagent: { background: true } });
+    const el = mount(<ToolCard entry={entry} runningElapsedMs={null} bgTask={bgTask({ lastToolName: 'Read', toolUses: 4 })} now={2_000} />);
+    expect($(el, 'tool-subagent-progress')?.textContent).toBe('最近 Read · 共 4 次工具调用');
   });
 
   test('规格缺口：只知道已结束 → 「已结束 · 结果未知」，不显示成功', () => {
@@ -302,11 +326,36 @@ describe('ToolCard · 前台 / 后台与子任务状态（plan §7）', () => {
     expect(subagentSourceOf(perm, new Map())).toBe('子 thread …abcd1234');
   });
 
+  test('手测反馈：Codex 审批来源优先用昵称（角色），派生卡 / 子 thread id 两条路都是', () => {
+    const card: TimelineEntry = {
+      kind: 'tool',
+      id: 'call_1',
+      toolName: 'SubAgent',
+      argSummary: '派生子 agent · probe',
+      subagent: { agentId: 'thread-0000abcd1234', nickname: 'Meitner', agentType: 'worker' },
+      seq: 1,
+      ts: 1,
+    };
+    const viaCard: TimelineEntry = { kind: 'permission', id: 'p1', toolName: 'Shell', input: {}, requestedAt: 1, state: 'pending', parentToolUseId: 'call_1', seq: 1, ts: 1 };
+    const viaId: TimelineEntry = { kind: 'permission', id: 'p2', toolName: 'Shell', input: {}, requestedAt: 1, state: 'pending', subagentId: 'thread-0000abcd1234', seq: 1, ts: 1 };
+    const labels = toolLabels([card]);
+    expect(subagentSourceOf(viaCard, labels)).toBe('Meitner（worker）');
+    expect(subagentSourceOf(viaId, labels)).toBe('Meitner（worker）');
+    // 等待卡的子 agent 行也是昵称
+    const el = mount(
+      <ToolCard
+        entry={{ kind: 'tool', id: 'w', toolName: 'SubAgent', argSummary: '等待子 agent', status: 'ok', resultSummary: '调用完成 · 子 agent 运行中', subagent: { agentId: 'thread-0000abcd1234', nickname: 'Meitner', state: 'running' }, seq: 1, ts: 1 }}
+        runningElapsedMs={null}
+      />,
+    );
+    expect($(el, 'tool-subagent-line')?.textContent).toBe('子 agent：Meitner · 运行中');
+  });
+
   test('前台：标「前台」，结束照常显示结果摘要', () => {
     const el = mount(<ToolCard entry={agent({ status: 'ok', resultSummary: '✓ 2 次工具调用', subagent: { agentType: 'Plan' } })} runningElapsedMs={null} />);
     expect($(el, 'tool-name')?.textContent).toBe('Agent · Plan · 前台');
-    expect($(el, 'tool-result')?.textContent).toBe('✓ 2 次工具调用');
-    expect($(el, 'tool-subagent-status')).toBeNull();
+    // 结束状态与后台卡同一写法
+    expect($(el, 'tool-subagent-status')?.textContent).toBe('✓ 已完成 · 2 次工具调用');
   });
 
   test('时间线里并行的两个子 agent 各自计时：心跳只跟一个，另一个按自己的开始时刻走秒；后台的按快照', () => {

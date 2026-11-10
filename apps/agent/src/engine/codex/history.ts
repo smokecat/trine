@@ -262,8 +262,12 @@ function collabItem(item: Rec, id: string, ts: number): HistoryItem {
   const messages = entries.map(([, s]) => str(s['message'])).filter((m): m is string => m !== undefined && m !== '');
   const failed = (counts.get('failed') ?? 0) + (counts.get('not_found') ?? 0) > 0;
   const call = COLLAB_CALL_LABEL[str(item['status']) ?? ''];
-  const agents = [...counts].map(([state, n]) => `${AGENT_STATE_LABEL[state]} ${n}`).join(' · ');
-  const summary = [call, agents === '' ? undefined : `子 agent ${agents}`].filter((p) => p !== undefined).join(' · ');
+  // 「1 个子 agent 已完成」：数字放前面，不像状态的一部分（手测反馈）；只有一个目标时不写数
+  const total = [...counts.values()].reduce((a, b) => a + b, 0);
+  const agents = [...counts]
+    .map(([state, n]) => (total === 1 ? `子 agent ${AGENT_STATE_LABEL[state]}` : `${n} 个子 agent ${AGENT_STATE_LABEL[state]}`))
+    .join('，');
+  const summary = [call, agents === '' ? undefined : agents].filter((p) => p !== undefined).join(' · ');
   // 只有一个目标时，卡上的子 agent 信息就是它的
   const receivers = Array.isArray(item['receiverThreadIds']) ? item['receiverThreadIds'].filter((r): r is string => typeof r === 'string' && r !== '') : [];
   const targetId = receivers.length === 1 ? receivers[0] : entries.length === 1 ? entries[0]![0] : undefined;

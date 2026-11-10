@@ -38,7 +38,7 @@ describe('claudeSubagentView', () => {
       background: true,
       state: 'running',
       startedAt: 1_000,
-      progress: 'Read ×2',
+      progress: '最近 Read · 共 2 次工具调用',
     });
     expect(claudeSubagentView(entry, task(), true)?.state).toBe('unknown');
   });

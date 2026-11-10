@@ -1385,4 +1385,14 @@ describe('CodexSession · 子 agent thread（spike S2）', () => {
     h.engine.dispose();
     h2.engine.dispose();
   });
+
+  test('手测反馈：等待子 agent 的卡带上已知的昵称，不只是 thread 短 id', async () => {
+    const h = await spawned();
+    const wait = { type: 'collabAgentToolCall', id: 'w1', tool: 'wait', status: 'completed', receiverThreadIds: [CHILD], agentsStates: { [CHILD]: { status: 'running' } } };
+    h.notify('item/started', { item: { ...wait, status: 'inProgress', agentsStates: {} } });
+    h.notify('item/completed', { item: wait });
+    await h.flush();
+    expect(h.of('tool.end').find((e) => e.toolUseId === 'w1')?.subagent).toMatchObject({ agentId: CHILD, nickname: 'Meitner', state: 'running' });
+    h.engine.dispose();
+  });
 });

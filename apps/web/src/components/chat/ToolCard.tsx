@@ -139,6 +139,7 @@ function argLabel(toolName: string): string {
 
 /** 子 agent 卡右侧状态的号（运行中另画转圈） */
 const STATE_MARK: Partial<Record<SubagentState, string>> = {
+  pending: '…',
   completed: '✓',
   failed: '✗',
   stopped: '⊘',
@@ -164,23 +165,30 @@ export function backgroundStatusText(
   view: ClaudeSubagentView | undefined,
   now: number,
 ): { text: string; tone: string; running: boolean } | null {
-  if (view?.background !== true) return null;
+  if (view === undefined) return null;
   const { state } = view;
   if (state === 'running') {
-    // 启动工具还没返回：照常是「运行中」，由上层的通用分支画
-    if (view.startedAt === undefined) return null;
+    // 后台运行中：计时；前台 / 启动工具还没返回：照常是「运行中」，由上层的通用分支画
+    if (view.background !== true || view.startedAt === undefined) return null;
     const elapsed = now > 0 ? ` · ${formatDuration(Math.max(0, now - view.startedAt))}` : '';
     return { text: `后台运行中${elapsed}`, tone: 'text-brand', running: true };
   }
-  if (state === 'unknown') return { text: '? 状态未知', tone: 'text-text-3', running: false };
-  // 只有收尾帧（completed / failed / stopped）带来的摘要才是子 agent 的结果；启动失败的卡头给失败摘要
-  const fromAgent =
-    ((entry.subagent?.state === state && (state === 'completed' || state === 'failed' || state === 'stopped')) ||
-      (state === 'failed' && entry.status === 'error')) &&
-    entry.resultSummary !== undefined &&
-    entry.resultSummary !== '';
-  if (fromAgent) return { text: entry.resultSummary!, tone: stateTone(state), running: false };
-  return { text: `${STATE_MARK[state] ?? ''} ${subagentStateLabel(state)}`.trim(), tone: stateTone(state), running: false };
+  // 结束状态统一成「图标 + 短语」（手测反馈）：原始错误文本不进卡头，展开区看全文
+  const summary = entry.resultSummary ?? '';
+  // 后台卡没有 agent 的收尾帧却报错：是启动这一步失败了
+  const launchFailed = view.background === true && state === 'failed' && entry.status === 'error' && !summary.startsWith('✗ 子 agent ');
+  const phrase = launchFailed ? '启动失败' : subagentStateLabel(state);
+  // 子 agent 自报的统计（「3 次工具调用 · 18.3s」）附在后面；别的文字（报告、英文错误）不进卡头
+  const stats = summary.replace(/^[✓✗⏹⚠⊘]\s*/, '').replace(/^子 agent (?:已完成|失败|已停止)\s*(?:·\s*)?/, '');
+  const detail = !launchFailed && /^\d+ 次工具调用/.test(stats) ? ` · ${stats}` : '';
+  return { text: `${STATE_MARK[state] ?? ''} ${phrase}${detail}`.trim(), tone: stateTone(state), running: false };
+}
+
+/** 卡头摘要可能被截断（长错误）：展开区给完整的结果摘要 */
+function fullResultText(entry: ToolEntry): string | undefined {
+  const summary = entry.resultSummary;
+  if (summary === undefined || summary === '') return undefined;
+  return entry.status === 'error' || summary.length > ARG_EXPAND_MIN ? summary : undefined;
 }
 
 function FullArgs({ toolName, text }: { toolName: string; text: string }): React.JSX.Element {
@@ -257,11 +265,13 @@ export function ToolCard({
   const canLoad =
     sub && onLoadChildren !== undefined && entry.childrenLoaded !== true && status !== undefined && !live && bgStatus?.running !== true;
   const args = fullArgText(entry);
+  const fullResult = fullResultText(entry);
   const expandable =
     hasPreview ||
     args !== undefined ||
+    fullResult !== undefined ||
     (sub && (children.length > 0 || canLoad || entry.childrenLoaded === true || status === undefined || bgStatus?.running === true));
-  const progress = subagentProgressText(entry) ?? (bgStatus?.running === true && view?.progress !== undefined ? `最近：${view.progress}` : null);
+  const progress = subagentProgressText(entry) ?? (bgStatus?.running === true && view?.progress !== undefined ? view.progress : null);
   const codexLine = codexSubagentLine(entry);
   // 并行的子 agent 各自计时：心跳只跟踪一个工具，其余在跑的子 agent 卡按自己的开始时刻走秒
   const ownElapsed = sub && status === undefined && runningElapsedMs === null && now > 0 && entry.ts > 0 ? Math.max(0, now - entry.ts) : null;
@@ -313,14 +323,19 @@ export function ToolCard({
           <span data-testid="tool-name" className="shrink-0 font-semibold">
             {subagentTitle(entry, view)}
           </span>
-          <span className="text-text-2 min-w-0 flex-1 truncate font-mono text-[12px]" title={entry.argSummary === '' ? undefined : entry.argSummary}>
+          {/* 描述留最小宽度：右侧再长（长错误）也只能截断自己，不能把描述挤没（手测反馈） */}
+          <span
+            data-testid="tool-arg-summary"
+            className="text-text-2 min-w-[5rem] flex-1 truncate font-mono text-[12px]"
+            title={entry.argSummary === '' ? undefined : entry.argSummary}
+          >
             {subagentArgSummary(entry, view)}
           </span>
           {bgStatus !== null ? (
             <span
               data-testid="tool-subagent-status"
               title={toolTimeTitle(entry)}
-              className={cn('tabular shrink-0 font-mono text-[12px]', bgStatus.tone)}
+              className={cn('tabular min-w-0 max-w-[55%] truncate font-mono text-[12px]', bgStatus.tone)}
             >
               {bgStatus.running && (
                 <span aria-hidden className="mr-1 inline-block motion-safe:animate-spin">
@@ -343,7 +358,7 @@ export function ToolCard({
             <span
               data-testid="tool-result"
               title={toolTimeTitle(entry)}
-              className={cn('tabular shrink-0 font-mono text-[12px]', STATUS_CLASS[status])}
+              className={cn('tabular min-w-0 max-w-[55%] truncate font-mono text-[12px]', STATUS_CLASS[status])}
             >
               {resultText(entry, status)}
             </span>
@@ -378,6 +393,14 @@ export function ToolCard({
       {expandable && open && (
         <div className="border-border border-t">
           {args !== undefined && <FullArgs toolName={entry.toolName} text={args} />}
+          {fullResult !== undefined && (
+            <div data-testid="tool-result-full" className="border-border border-b px-3 py-1.5">
+              <div className="text-text-3 text-[11px]">结果</div>
+              <div className={cn('font-mono text-[11.5px] break-all whitespace-pre-wrap', status === undefined ? 'text-text-2' : STATUS_CLASS[status])}>
+                {fullResult}
+              </div>
+            </div>
+          )}
           {sub && (
             <SubagentChildren
               entry={entry}

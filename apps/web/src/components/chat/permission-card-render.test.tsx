@@ -108,5 +108,12 @@ describe('PermissionCard · 引擎给的决定选项', () => {
   test('已响应后不再显示选项按钮', () => {
     const html = render(entry({ options, state: 'resolved', verdict: 'allow' }));
     expect(html).not.toContain('perm-allow-session');
+    expect(html).toContain('已响应');
+  });
+
+  test('手测反馈：作废的卡卡头写「已失效」，不写「已响应」', () => {
+    const html = render(entry({ options, state: 'invalidated', reason: '子 agent 的这一轮已结束' }));
+    expect(html).toContain('已失效');
+    expect(html).not.toContain('已响应');
   });
 });

@@ -18,7 +18,7 @@ import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRe
 import { ArrowDownIcon } from 'lucide-react';
 import type { BgTask, ExtRecord } from '@trine/core';
 import { placeRecords, recordText } from '@/lib/ext-model.ts';
-import { bgTasksByToolUseId, claudeSubagentView, subagentTicking } from '@/lib/subagent-view.ts';
+import { bgTasksByToolUseId, claudeSubagentView, codexAgentName, subagentTicking } from '@/lib/subagent-view.ts';
 import { isSubagentTool } from '@/lib/tool-tree.ts';
 import { rewindTargetId, type TimelineEntry, type ToolEntry, type UserEntry } from '@/lib/reducer.ts';
 import { formatDayLabel } from '@/lib/format.ts';
@@ -81,7 +81,10 @@ export function toolLabels(entries: readonly TimelineEntry[]): Map<string, strin
   const out = new Map<string, string>();
   const walk = (tools: readonly ToolEntry[]): void => {
     for (const t of tools) {
-      out.set(t.id, t.argSummary);
+      // Codex 子 agent 卡：有昵称 / 角色就用它（手测反馈），并按子 thread id 也能查到
+      const name = t.toolName === 'SubAgent' && t.subagent !== undefined && (t.subagent.nickname ?? t.subagent.agentType) !== undefined ? codexAgentName(t.subagent) : undefined;
+      out.set(t.id, name ?? t.argSummary);
+      if (name !== undefined && t.subagent?.agentId !== undefined) out.set(`agent:${t.subagent.agentId}`, name);
       if (t.children !== undefined) walk(t.children);
     }
   };
@@ -95,7 +98,8 @@ export function toolLabels(entries: readonly TimelineEntry[]): Map<string, strin
  */
 export function subagentSourceOf(entry: TimelineEntry, labels: ReadonlyMap<string, string>): string | undefined {
   if (entry.kind !== 'permission') return undefined;
-  const short = entry.subagentId === undefined ? undefined : `子 thread …${entry.subagentId.slice(-8)}`;
+  const short =
+    entry.subagentId === undefined ? undefined : (labels.get(`agent:${entry.subagentId}`) ?? `子 thread …${entry.subagentId.slice(-8)}`);
   if (entry.parentToolUseId === undefined) return short;
   return labels.get(entry.parentToolUseId) ?? short ?? '';
 }
@@ -171,7 +175,10 @@ export function Timeline({
     [entries, records, recordsHideOlder],
   );
   const labels = useMemo(
-    () => (entries.some((e) => e.kind === 'permission' && e.parentToolUseId !== undefined) ? toolLabels(entries) : new Map<string, string>()),
+    () =>
+      entries.some((e) => e.kind === 'permission' && (e.parentToolUseId !== undefined || e.subagentId !== undefined))
+        ? toolLabels(entries)
+        : new Map<string, string>(),
     [entries],
   );
   const tasksByTool = useMemo(() => bgTasksByToolUseId(bgTasks), [bgTasks]);

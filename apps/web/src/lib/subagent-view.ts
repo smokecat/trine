@@ -98,7 +98,9 @@ export function claudeSubagentView(entry: ToolEntry, task: BgTask | undefined, s
     if (state === 'running') {
       if (stale) return { background, state: 'unknown' };
       const progress =
-        task.lastToolName === undefined ? undefined : `${task.lastToolName}${task.toolUses === undefined ? '' : ` ×${task.toolUses}`}`;
+        task.lastToolName === undefined
+          ? undefined
+          : `最近 ${task.lastToolName}${task.toolUses === undefined ? '' : ` · 共 ${task.toolUses} 次工具调用`}`;
       return { background, state, startedAt: task.startedAt, ...(progress === undefined ? {} : { progress }) };
     }
     return { background, state };

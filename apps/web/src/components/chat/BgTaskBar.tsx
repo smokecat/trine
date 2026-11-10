@@ -48,7 +48,7 @@ export function statusText(task: BgTask, now: number, stale = false): { text: st
       const elapsed = formatDuration(Math.max(0, now - task.startedAt));
       const progress =
         task.kind === 'agent' && task.lastToolName !== undefined
-          ? ` · ${task.lastToolName}${task.toolUses === undefined ? '' : ` ×${task.toolUses}`}`
+          ? ` · 最近 ${task.lastToolName}${task.toolUses === undefined ? '' : ` · 共 ${task.toolUses} 次工具调用`}`
           : '';
       return { text: `运行中 ${elapsed}${progress}`, tone: 'run' };
     }

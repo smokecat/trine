@@ -684,7 +684,7 @@ export class CodexSession implements EngineSession, CodexSessionEvents {
     if (this.#mergeChildActivity(item, false)) return;
     const converted = codexItemToHistory(item, this.#now());
     if (converted?.kind !== 'tool') return;
-    const subagent = this.#rememberSpawns(item, converted.argSummary, converted.subagent) ?? converted.subagent;
+    const subagent = this.#rememberSpawns(item, converted.argSummary, converted.subagent) ?? this.#withKnownNames(converted.subagent);
     this.#touch();
     this.#inFlightTools.set(id, this.#now());
     this.#heartbeat.noteToolStart(id, converted.toolName);
@@ -752,6 +752,22 @@ export class CodexSession implements EngineSession, CodexSessionEvents {
       .catch(() => {});
   }
 
+  /**
+   * 指向已知子 agent 的卡（wait / sendInput 等 collab 调用）：带上它的昵称 / 角色 / 模型，
+   * 卡上才不只是 thread 短 id（手测反馈）
+   */
+  #withKnownNames(info: SubagentInfo | undefined): SubagentInfo | undefined {
+    const known = info?.agentId === undefined ? undefined : this.#childAgents.get(info.agentId);
+    if (info === undefined || known === undefined) return info;
+    const { nickname, agentType, model } = known.info;
+    return {
+      ...(nickname === undefined ? {} : { nickname }),
+      ...(agentType === undefined ? {} : { agentType }),
+      ...(model === undefined ? {} : { model }),
+      ...info,
+    };
+  }
+
   /** 重发派生卡的 tool.start，只为更新子 agent 信息（client 原地合并，调用结果不动） */
   #emitChildCard(agent: ChildAgent): void {
     this.#emit({ type: 'tool.start', toolUseId: agent.cardId, toolName: 'SubAgent', argSummary: agent.argSummary, subagent: agent.info });
@@ -817,7 +833,7 @@ export class CodexSession implements EngineSession, CodexSessionEvents {
     }
     const converted = codexItemToHistory(item, this.#now());
     if (converted?.kind !== 'tool') return;
-    const subagent = this.#rememberSpawns(item, converted.argSummary, converted.subagent) ?? converted.subagent;
+    const subagent = this.#rememberSpawns(item, converted.argSummary, converted.subagent) ?? this.#withKnownNames(converted.subagent);
     const startedAt = this.#inFlightTools.get(id);
     this.#inFlightTools.delete(id);
     this.#fileChanges.delete(id);

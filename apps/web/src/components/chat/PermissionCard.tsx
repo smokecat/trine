@@ -127,7 +127,7 @@ export function PermissionCard({
             pending ? 'text-amber' : 'text-text-3',
           )}
         >
-          {pending ? `已等待 ${formatSeconds(Math.max(0, now - entry.requestedAt))}` : '已响应'}
+          {pending ? `已等待 ${formatSeconds(Math.max(0, now - entry.requestedAt))}` : entry.state === 'invalidated' ? '已失效' : '已响应'}
         </span>
       </div>
 

@@ -638,12 +638,12 @@ describe('M4：目录、斜杠菜单、子 agent 卡', () => {
       toolName: 'SubAgent',
       argSummary: '查一下',
       status: 'ok',
-      resultSummary: '调用完成 · 子 agent 已完成 1',
+      resultSummary: '调用完成 · 子 agent 已完成',
       outputPreview: '查完了',
       subagent: { agentId: 'x', state: 'completed' },
     });
     const wait = codexItemToHistory({ type: 'collabAgentToolCall', id: 'c2', tool: 'wait', status: 'completed', prompt: null, agentsStates: { x: { status: 'errored', message: null } } }, 5);
-    expect(wait).toMatchObject({ toolName: 'SubAgent', argSummary: '等待子 agent', status: 'error', resultSummary: '调用完成 · 子 agent 失败 1', subagent: { state: 'failed' } });
+    expect(wait).toMatchObject({ toolName: 'SubAgent', argSummary: '等待子 agent', status: 'error', resultSummary: '调用完成 · 子 agent 失败', subagent: { state: 'failed' } });
     expect(codexItemToHistory({ type: 'collabAgentToolCall', id: 'c3', status: 'interrupted' }, 5)).toMatchObject({ status: 'warn', resultSummary: '调用已中断' });
     expect(codexItemToHistory({ type: 'subAgentActivity', id: 's1', kind: 'completed', agentPath: 'root/a', agentThreadId: 't' }, 5)).toMatchObject({ toolName: 'SubAgent', argSummary: '子 agent 已完成 · root/a', status: 'ok' });
     // v2 的派生（spike S2）：subAgentActivity started 就是派生卡
@@ -651,6 +651,14 @@ describe('M4：目录、斜杠菜单、子 agent 卡', () => {
     expect(started).toMatchObject({ argSummary: '派生子 agent · probe', resultSummary: '已派生', subagent: { agentId: 'thr-c', model: 'm-1', state: 'running' } });
     expect(HistoryItemSchema.safeParse(spawn).success).toBe(true);
     expect(HistoryItemSchema.safeParse(started).success).toBe(true);
+  });
+
+  test('多个目标：计数放前面（「2 个子 agent 已完成，1 个子 agent 运行中」）', () => {
+    const wait = codexItemToHistory(
+      { type: 'collabAgentToolCall', id: 'w', tool: 'wait', status: 'completed', agentsStates: { a: { status: 'completed' }, b: { status: 'completed' }, c: { status: 'running' } } },
+      5,
+    );
+    expect(wait).toMatchObject({ resultSummary: '调用完成 · 2 个子 agent 已完成，1 个子 agent 运行中' });
   });
 
   test('全部 CollabAgentStatus 都有对应状态；不认识的不给', () => {
