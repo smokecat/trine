@@ -145,6 +145,19 @@ describe('NewSessionSheet 消费 intent', () => {
     expect($('ns-intent-missing')).toBeNull();
   });
 
+  test('无效机器 intent → 关闭 → 普通打开：照常默认选机器', async () => {
+    setup({ search: '?new=1&nm=gone&ncwd=/repo/x' });
+    await flush();
+    expect(selectedMachine()).toBeNull();
+    await act(async () => router!.navigate('/'));
+    await flush();
+    await act(async () => router!.navigate('/?new=1'));
+    await flush();
+    expect($('ns-intent-missing')).toBeNull();
+    expect(selectedMachine()).toBe('a');
+    expect(($('ns-create') as HTMLButtonElement).disabled).toBe(false);
+  });
+
   test('不带 intent 打开：沿用默认（在线优先的第一台）', async () => {
     setup({ search: '?new=1' }, { a: false, b: true });
     await flush();

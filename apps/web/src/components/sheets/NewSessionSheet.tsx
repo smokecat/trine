@@ -157,7 +157,8 @@ export function NewSessionSheet({
     if (machineId !== '' && machines[machineId] !== undefined) return;
     const first = machineList[0];
     if (first) setMachineId(first.machineId);
-  }, [open, machineId, machineList, machines]);
+    // intentMissing 清掉（上次无效 intent → 这次普通打开）时要重跑，才会补选默认机器
+  }, [open, intentMissing, machineId, machineList, machines]);
 
   // 换机器 / 打开时：对在线机器拉一次常用目录
   useEffect(() => {
