@@ -101,7 +101,9 @@ export function shortCwd(cwd: string, maxSegments = 2): string {
   const trimmed = cwd.replace(/\/+$/, '');
   if (trimmed === '') return cwd;
   const segments = trimmed.split('/');
-  if (segments.length <= maxSegments) return trimmed;
+  // 绝对路径开头是空段：`/srv/x` 只有两级，原样显示比「…/srv/x」更短也更准
+  const real = segments[0] === '' ? segments.length - 1 : segments.length;
+  if (real <= maxSegments) return trimmed;
   return `…/${segments.slice(-maxSegments).join('/')}`;
 }
 

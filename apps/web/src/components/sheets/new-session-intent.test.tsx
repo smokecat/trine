@@ -158,6 +158,18 @@ describe('NewSessionSheet 消费 intent', () => {
     expect(($('ns-create') as HTMLButtonElement).disabled).toBe(false);
   });
 
+  test('没有常用目录但 intent 预填了目录：不再提示「还没有常用目录…」', async () => {
+    setup({ search: '?new=1&nm=b&ncwd=/repo/elsewhere' });
+    act(() => {
+      store.setState((s) => ({
+        machines: { ...s.machines, b: { ...s.machines['b']!, cwd: { favorites: [], defaultCwd: '/repo/b' } } } as never,
+      }));
+    });
+    await flush();
+    expect($('cwd-custom')?.textContent).toContain('/repo/elsewhere');
+    expect($('cwd-empty-hint')).toBeNull();
+  });
+
   test('不带 intent 打开：沿用默认（在线优先的第一台）', async () => {
     setup({ search: '?new=1' }, { a: false, b: true });
     await flush();

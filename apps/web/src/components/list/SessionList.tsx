@@ -52,7 +52,13 @@ import {
   type SessionGroup,
 } from './filtering.ts';
 import { effectivePinOrder, pinDropTarget, pinMoveTarget, type PinMoveAction } from './pin-order.ts';
-import { PinnedDragHandle, PinnedSortableSegment, POINTER_FINE_QUERY, SortableGroup } from './PinnedSortable.tsx';
+import {
+  PinnedDragHandle,
+  PinnedSortableSegment,
+  POINTER_FINE_QUERY,
+  SortableGroup,
+  useInPinnedSortable,
+} from './PinnedSortable.tsx';
 import { useMediaQuery } from '@/components/shell/use-media-query.ts';
 import { useCollapsedGroups } from './collapsed-groups.ts';
 import {
@@ -256,6 +262,14 @@ export function SessionList({
   }
 
   const showMachine = query.machine === null;
+  // 组头的机器名：「全部机器」视图且不止一台机器时才有意义
+  const showGroupMachine = showMachine && Object.keys(machines).length > 1;
+  // 第一个非置顶组（前面有置顶组时）：在它前面画分隔线
+  const firstUnpinnedKey = (() => {
+    const groups = result.groups ?? [];
+    const i = groups.findIndex((g) => g.pinnedAt === undefined);
+    return i > 0 ? groups[i]!.key : undefined;
+  })();
   // 从归档视图点进会话：带上来源，手机上「返回」回到 /archived 而不是列表（评审 minor 9）
   const linkState = location.pathname === '/archived' ? { from: '/archived' } : undefined;
   const renderRow = (row: SessionRowData): React.JSX.Element => {
@@ -378,7 +392,21 @@ export function SessionList({
                   ))}
                 </PinnedSortableSegment>
               ) : (
-                seg.groups.map(renderGroup)
+                seg.groups.flatMap((g) =>
+                  g.key === firstUnpinnedKey
+                    ? [
+                        // 置顶区与其余工作区之间的细分隔线（两种主题都用 border token）
+                        <div
+                          key="pinned-divider"
+                          role="separator"
+                          aria-label="以上为置顶的工作区"
+                          data-testid="pinned-divider"
+                          className="border-border mx-1 border-t"
+                        />,
+                        renderGroup(g),
+                      ]
+                    : [renderGroup(g)],
+                )
               ),
             )}
         {tempNote}
@@ -394,7 +422,7 @@ export function SessionList({
                 group={group}
                 expanded={isGroupExpanded(group, collapsed, query)}
                 filtering={isFiltering(query)}
-                machineName={showMachine ? (machineNames[group.machineId] ?? group.machineId) : null}
+                machineName={showGroupMachine ? (machineNames[group.machineId] ?? group.machineId) : null}
                 compact={compact}
                 onToggle={(next) => setCollapsed(group.key, !next)}
                 {...(actions?.onPinWorkspace !== undefined &&
@@ -482,8 +510,11 @@ function GroupSection({
 }): React.JSX.Element {
   // 有待批准 / 搜索筛选中强制展开：点了也收不起来，别假装能收（评审 M5 / minor 3）
   const forced = group.waitingCount > 0 || filtering;
-  const label = group.cwd === '' ? groupLabel('') : shortCwd(group.cwd, compact ? 2 : 3);
+  // 目录名优先：末两级路径，全路径在 title 里
+  const label = group.cwd === '' ? groupLabel('') : shortCwd(group.cwd, 2);
   const pinned = group.pinnedAt !== undefined;
+  // 可拖的置顶组：拖柄平时藏着，组头悬停 / 聚焦时占用图钉的位置，不额外占宽
+  const sortable = useInPinnedSortable();
   const header = (
       <button
         type="button"
@@ -507,9 +538,28 @@ function GroupSection({
           aria-hidden
           className={cn('size-3.5 shrink-0 transition-transform', expanded && 'rotate-90', forced && 'opacity-40')}
         />
-        {pinned && <PinIcon aria-label="已置顶" data-testid="session-group-pinned" className="size-3 shrink-0" />}
-        <span className={cn('min-w-0 truncate font-mono', group.cwd === '' && 'font-sans italic')}>{label}</span>
-        {machineName !== null && <span className="text-text-3 shrink-0 truncate">· {machineName}</span>}
+        {pinned && (
+          <PinIcon
+            aria-label="已置顶"
+            data-testid="session-group-pinned"
+            className={cn(
+              'size-3 shrink-0',
+              sortable && 'group-focus-within/header:invisible group-hover/header:invisible',
+            )}
+          />
+        )}
+        <span
+          data-testid="session-group-label"
+          className={cn('min-w-0 shrink truncate font-mono', group.cwd === '' && 'font-sans italic')}
+        >
+          {label}
+        </span>
+        {/* 机器名先让位：它比目录名更早被截断 */}
+        {machineName !== null && (
+          <span data-testid="session-group-machine" className="text-text-3 max-w-24 min-w-0 shrink-[4] truncate">
+            · {machineName}
+          </span>
+        )}
         <span className="text-text-3 tabular shrink-0">{group.rows.length}</span>
         {!expanded && (group.waitingCount > 0 || group.runningCount > 0) && (
           <span className="ml-auto flex shrink-0 gap-1.5" data-testid="session-group-badges">
@@ -572,8 +622,8 @@ function GroupSection({
         header
       ) : (
         // 「+」「⋯」与按钮是兄弟（不嵌套交互元素）；右键整条组头也能出同一个菜单
-        <div className="group/header flex min-w-0 items-center gap-1">
-          {/* 可拖的置顶段里才有（PinnedSortable.tsx SortableGroup 经 context 给） */}
+        <div className="group/header relative flex min-w-0 items-center gap-1">
+          {/* 可拖的置顶段里才有（PinnedSortable.tsx SortableGroup 经 context 给）；绝对定位盖在图钉上 */}
           <PinnedDragHandle />
           <ContextMenu>
             <ContextMenuTrigger asChild>{header}</ContextMenuTrigger>
@@ -631,10 +681,12 @@ function GroupSection({
             {onNewSession !== undefined && (
               <Button
                 size="xs"
-                variant="outline"
+                variant="ghost"
                 data-testid="session-group-empty-new"
                 disabled={newSessionBlocked !== null}
                 onClick={onNewSession}
+                // 链接式的轻按钮；触屏用伪元素把点击区撑到 44px 高，不改变视觉大小
+                className="text-brand-ink relative h-auto px-1 py-0.5 pointer-coarse:after:absolute pointer-coarse:after:inset-x-0 pointer-coarse:after:-inset-y-3.5 pointer-coarse:after:content-['']"
               >
                 <PlusIcon />
                 新建会话

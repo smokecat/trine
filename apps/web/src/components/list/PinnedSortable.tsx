@@ -94,9 +94,22 @@ export function PinnedDragHandle(): React.ReactNode {
   return use(HandleContext);
 }
 
+/** 当前组在可拖的置顶段里（组头据此在悬停时把图钉让给拖柄） */
+export function useInPinnedSortable(): boolean {
+  return use(HandleContext) !== null;
+}
+
+/** 插入指示线落在被经过的组的哪一边：往上拖落在它上面，往下拖落在它下面 */
+export function dropIndicatorSide(index: number, activeIndex: number, isOver: boolean): 'before' | 'after' | null {
+  if (!isOver || activeIndex < 0 || activeIndex === index) return null;
+  return activeIndex > index ? 'before' : 'after';
+}
+
 /** 可拖的一组：包住 GroupSection，位移样式加在外层，拖柄经 context 交给组头 */
 export function SortableGroup({ id, label, children }: { id: string; label: string; children: React.ReactNode }): React.JSX.Element {
-  const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, transition, isDragging } = useSortable({ id });
+  const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, transition, isDragging, isOver, index, activeIndex } =
+    useSortable({ id });
+  const indicator = dropIndicatorSide(index, activeIndex, isOver);
   const handle = (
     <button
       type="button"
@@ -104,7 +117,12 @@ export function SortableGroup({ id, label, children }: { id: string; label: stri
       data-testid="session-group-drag"
       aria-label={`拖动调整「${label}」的顺序`}
       title="拖动调整顺序"
-      className="text-text-3 hover:text-text focus-visible:ring-ring flex size-5 shrink-0 cursor-grab touch-none items-center justify-center rounded outline-none focus-visible:ring-2 active:cursor-grabbing"
+      // 绝对定位盖在组头的图钉上（组头 px-1 + 箭头 14px + 间距 6px 之后）：平时透明、不占宽，
+      // 组头悬停 / 键盘聚焦 / 拖动中才显示
+      className={cn(
+        'text-text-3 hover:text-text focus-visible:ring-ring absolute top-1/2 left-5 z-10 flex size-5 -translate-y-1/2 cursor-grab touch-none items-center justify-center rounded opacity-0 outline-none group-hover/header:opacity-100 focus-visible:opacity-100 focus-visible:ring-2 active:cursor-grabbing',
+        isDragging && 'opacity-100',
+      )}
       {...attributes}
       {...listeners}
     >
@@ -115,9 +133,22 @@ export function SortableGroup({ id, label, children }: { id: string; label: stri
     <div
       ref={setNodeRef}
       data-testid="session-group-sortable"
+      data-dragging={isDragging || undefined}
+      data-drop-indicator={indicator ?? undefined}
       style={{ transform: CSS.Translate.toString(transform), transition }}
-      className={cn(isDragging && 'relative z-10 opacity-80')}
+      className={cn(
+        'relative rounded-lg',
+        // 被拖的组：浮起来（阴影 + 底色 + 轻微透明），一眼看得出拿着的是谁
+        isDragging && 'bg-surface ring-brand-border z-20 opacity-90 shadow-[var(--shadow-card)] ring-1',
+      )}
     >
+      {indicator !== null && (
+        <span
+          aria-hidden
+          data-testid="session-group-drop-line"
+          className={cn('bg-brand pointer-events-none absolute inset-x-1 h-0.5 rounded-full', indicator === 'before' ? '-top-1.5' : '-bottom-1.5')}
+        />
+      )}
       <HandleContext value={handle}>{children}</HandleContext>
     </div>
   );

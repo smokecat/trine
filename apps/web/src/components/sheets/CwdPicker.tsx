@@ -68,8 +68,11 @@ export function CwdPicker({
       {loading && favorites.length === 0 && (
         <p className="text-text-3 text-xs">正在从机器拉取常用目录…</p>
       )}
-      {!loading && favorites.length === 0 && (
-        <p className="text-text-3 text-xs">这台机器还没有常用目录，直接在下面输入一个路径。</p>
+      {/* 已经选了目录（含「在此目录新建」的预填）就不再提示去输入路径 */}
+      {!loading && favorites.length === 0 && value === '' && (
+        <p data-testid="cwd-empty-hint" className="text-text-3 text-xs">
+          这台机器还没有常用目录，直接在下面输入一个路径。
+        </p>
       )}
 
       {favorites.map((path) => {

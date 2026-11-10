@@ -104,6 +104,8 @@ describe('sessionTitle / shortCwd / displayModel', () => {
     expect(shortCwd('/Users/me/workspace/repo/trine/')).toBe('…/repo/trine');
     expect(shortCwd('~/repo')).toBe('~/repo');
     expect(shortCwd('/repo')).toBe('/repo');
+    expect(shortCwd('/srv/x')).toBe('/srv/x');
+    expect(shortCwd('/srv/x/y')).toBe('…/x/y');
     expect(shortCwd('')).toBe('');
   });
 
