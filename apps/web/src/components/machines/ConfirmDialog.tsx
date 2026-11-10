@@ -7,6 +7,7 @@
  *
  * 设置页的两个重置也用它，所以放在 machines/ 里但不绑定机器语义。
  */
+import { useRef } from 'react';
 import { Button } from '@/components/ui/button.tsx';
 import {
   Dialog,
@@ -40,9 +41,23 @@ export function ConfirmDialog({
   onConfirm: () => void;
   testId?: string;
 }): React.JSX.Element {
+  const returnFocus = useRef<HTMLElement | null>(null);
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent data-testid={testId} className="max-w-[min(28rem,calc(100vw-2rem))]">
+      <DialogContent
+        data-testid={testId}
+        className="max-w-[min(28rem,calc(100vw-2rem))]"
+        onOpenAutoFocus={() => {
+          // Controlled dialogs have no Radix Trigger to restore focus to.
+          returnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+        }}
+        onCloseAutoFocus={(event) => {
+          if (returnFocus.current?.isConnected) {
+            event.preventDefault();
+            returnFocus.current.focus({ preventScroll: true });
+          }
+        }}
+      >
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
           <DialogDescription asChild>

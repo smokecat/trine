@@ -106,3 +106,12 @@ Trine 是供长时间使用的远程 AI 工作台。设计以任务连续性、�
 - [Material 自适应布局](https://developer.android.com/design/ui/mobile/guides/layout-and-content/adapt-layout)：按可用空间调整面板组织。
 - [Carbon 空态](https://www.carbondesignsystem.com/building-blocks/core/patterns/empty-states)：解释状态并引导下一步。
 - [Carbon 输入框](https://www.carbondesignsystem.com/building-blocks/core/components/text-input/guidelines)：标签、辅助文本及错误提示保持明确。
+
+
+## 辅助页面与复杂组件补充验收
+
+2026-11 使用隔离 relay 与 echo agent，检查配对、设置、机器列表、机器详情、归档五页在 390/768/900/1440px 的浅深主题，共 40 组，无页面横向溢出；设置分区导航允许自身横向滚动，长内容在页面内部滚动。验证真实配对成功、无效配对码反馈、主题及自定义模型刷新保留、机器改名同步、重置与移除确认取消。
+
+使用实际 ExtView 和 ToolCard 的合成页面，检查长标题、长说明、状态徽章、扩展操作、嵌套工具展开与失败工具，在四种宽度的浅深主题下无页面横向溢出；扩展动作回调可达、触屏动作高 44px。触屏设置 Input 实测字号 16px、高 44px，配对 Textarea 字号 16px。
+
+确认弹窗通过 Tab 焦点约束、Escape/取消关闭检查；受控 ConfirmDialog 记录打开前的焦点，关闭后恢复到仍在文档中的打开控件，适用于设置和机器维护确认操作。上述为远程 Chromium 验收，物理设备待验项仍按前述清单执行。
