@@ -194,13 +194,35 @@ function pinnedLookup(pinned: PinnedCwds, machineId: string): Map<string, number
  * （sidebar-pin）；待批准靠组头角标和强制展开提示。组内 compareSessions。
  *
  * `createdAt` 给了就按它（全量会话推出来的，见 workspaceCreatedAt），没给的组用组内行算。
+ *
+ * `emptyPinnedFor` 给了：这些机器上置顶、但结果里没有行的工作区补成空组（plan §2），
+ * 按规范化 cwd 去重。调用方负责只在非归档、无搜索/筛选时给。
  */
 export function groupRows(
   rows: SessionRowData[],
-  ctx: { pinned?: PinnedCwds; createdAt?: ReadonlyMap<string, number> } = {},
+  ctx: { pinned?: PinnedCwds; createdAt?: ReadonlyMap<string, number>; emptyPinnedFor?: Iterable<string> } = {},
 ): SessionGroup[] {
   const map = new Map<string, SessionGroup>();
   const pins = new Map<string, Map<string, number>>();
+  for (const machineId of ctx.emptyPinnedFor ?? []) {
+    for (const [cwd, pinnedAt] of pinnedLookup(ctx.pinned ?? {}, machineId)) {
+      if (cwd === '') continue;
+      const key = groupKey(machineId, cwd);
+      if (map.has(key)) continue;
+      map.set(key, {
+        key,
+        machineId,
+        cwd,
+        rows: [],
+        rank: Number.POSITIVE_INFINITY,
+        lastActivityAt: 0,
+        createdAt: ctx.createdAt?.get(key) ?? Number.POSITIVE_INFINITY,
+        pinnedAt,
+        waitingCount: 0,
+        runningCount: 0,
+      });
+    }
+  }
   for (const row of rows) {
     const cwd = normalizeCwd(row.meta.cwd);
     const key = groupKey(row.machineId, cwd);
@@ -349,13 +371,22 @@ export function filterSessions(
 
   // 6 + 7. 分组 / 排序
   const rows = searched.sort(compareSessions);
+  // 置顶的空工作区照常显示（plan §2）：归档视图、搜索 / 筛选中不补——那时要看的是命中结果。
+  // 机器范围取 pinnedCwds 的键（调用方从现存机器建，被移除的机器自然不在）
+  const emptyPinnedFor =
+    query.archived || isFiltering(query)
+      ? []
+      : query.machine === null
+        ? Object.keys(pinnedCwds)
+        : [query.machine];
   const groups =
     query.groupBy === 'workspace'
-      ? groupRows(rows, { pinned: pinnedCwds, createdAt: workspaceCreatedAt(sessions) })
+      ? groupRows(rows, { pinned: pinnedCwds, createdAt: workspaceCreatedAt(sessions), emptyPinnedFor })
       : null;
 
   let empty: EmptyReason | null = null;
-  if (rows.length === 0) {
+  // 有可显示的分组（哪怕全是空的置顶组）就不走空态
+  if (rows.length === 0 && (groups === null || groups.length === 0)) {
     if (scoped.length === 0) empty = query.machine === null ? 'no-sessions' : 'machine-empty';
     else if (viewRows.length === 0) empty = query.archived ? 'archived-empty' : 'all-archived';
     else if (kept.length === 0) empty = 'all-temp';

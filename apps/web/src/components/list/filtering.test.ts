@@ -331,3 +331,58 @@ describe('引擎筛选', () => {
     expect(ids(null, 'codex')).toEqual(['x']);
   });
 });
+
+describe('置顶的空工作区（plan §2）', () => {
+  const ws = (over: Partial<ListQuery> = {}): ListQuery => ({ ...DEFAULT_LIST_QUERY, groupBy: 'workspace', ...over });
+  const keys = (r: ReturnType<typeof filterSessions>) => r.groups?.map((g) => [g.key, g.rows.length] as const);
+
+  test('全部会话已归档：置顶目录仍是空组，不走空态', () => {
+    const s = { m: { a: meta({ sessionId: 'a', cwd: '/p', archived: true }) } };
+    const r = filterSessions(s, ws(), {}, { m: { '/p': 5 } });
+    expect(r.empty).toBeNull();
+    expect(keys(r)).toEqual([[groupKey('m', '/p'), 0]]);
+    expect(r.groups![0]!.pinnedAt).toBe(5);
+  });
+
+  test('只有临时会话：置顶的空组照常显示', () => {
+    const s = { m: { t: meta({ sessionId: 't', cwd: '/tmp/x' }) } };
+    const r = filterSessions(s, ws(), {}, { m: { '/p': 5 } });
+    expect(r.empty).toBeNull();
+    expect(r.tempHidden).toBe(1);
+    expect(keys(r)).toEqual([[groupKey('m', '/p'), 0]]);
+  });
+
+  test('首次离线无缓存（没有 pinned）：照旧空态', () => {
+    expect(filterSessions({}, ws(), {}, {}).empty).toBe('no-sessions');
+  });
+
+  test('多机器：只补当前机器筛选范围内的；按规范化 cwd 去重，已有行的组不重复', () => {
+    const s = { m: { a: meta({ sessionId: 'a', cwd: '/p/' }) }, n: {} };
+    const pinned = { m: { '/p': 5, '/p/': 6, '/q': 7 }, n: { '/p': 1 } };
+    const all = filterSessions(s, ws(), {}, pinned);
+    expect(keys(all)).toEqual([
+      [groupKey('m', '/q'), 0],
+      [groupKey('m', '/p'), 1],
+      [groupKey('n', '/p'), 0],
+    ]);
+    const onlyN = filterSessions(s, ws({ machine: 'n' }), {}, pinned);
+    expect(keys(onlyN)).toEqual([[groupKey('n', '/p'), 0]]);
+  });
+
+  test('归档视图、搜索 / 状态 / 引擎筛选时不补空组', () => {
+    const s = { m: { a: meta({ sessionId: 'a', cwd: '/x' }) } };
+    const pinned = { m: { '/p': 5 } };
+    for (const over of [{ archived: true }, { search: 'x' }, { status: 'waiting' as const }, { engine: 'codex' }]) {
+      const r = filterSessions(s, ws(over), {}, pinned);
+      expect(r.groups?.some((g) => g.cwd === '/p')).toBe(false);
+    }
+    // 搜索筛空后仍是 search 空态
+    expect(filterSessions(s, ws({ search: 'zzz' }), {}, pinned).empty).toBe('search');
+  });
+
+  test('groupBy=none 不补', () => {
+    const r = filterSessions({}, q(), {}, { m: { '/p': 5 } });
+    expect(r.groups).toBeNull();
+    expect(r.empty).toBe('no-sessions');
+  });
+});

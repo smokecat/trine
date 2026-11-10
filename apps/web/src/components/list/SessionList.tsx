@@ -21,7 +21,7 @@
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useLocation } from 'react-router';
-import { ChevronRightIcon, MoreHorizontalIcon, PinIcon } from 'lucide-react';
+import { ChevronRightIcon, MoreHorizontalIcon, PinIcon, PlusIcon } from 'lucide-react';
 import type { SessionMeta } from '@trine/core';
 import type { MachineState } from '@/store/types.ts';
 import { capabilitiesOf, sessionEngineTag } from '@/lib/engine-model.ts';
@@ -79,6 +79,7 @@ export function SessionList({
   className,
   actions,
   onShowTemp,
+  onNewSessionIn,
 }: {
   sessions: Record<string, Record<string, SessionMeta>>;
   machines: Record<string, MachineState>;
@@ -90,6 +91,11 @@ export function SessionList({
   actions?: SessionRowActions;
   /** 临时会话提示旁的「显示 / 隐藏」按钮；不给就只有文字 */
   onShowTemp?: (value: boolean) => void;
+  /**
+   * 「在此目录新建会话」（组头「+」、空组按钮、组菜单）。由调用方决定怎么打开新建 sheet
+   * （侧栏 / 列表页 / 机器详情各自挂载点不同）；不给 = 不显示这些入口
+   */
+  onNewSessionIn?: (machineId: string, cwd: string) => void;
 }): React.JSX.Element {
   const location = useLocation();
   const compact = variant === 'compact';
@@ -342,6 +348,12 @@ export function SessionList({
                 {...(actions?.onCopyCwd !== undefined && group.cwd !== ''
                   ? { onCopyCwd: () => swallowRejection(actions.onCopyCwd?.(group.cwd)) }
                   : {})}
+                {...(onNewSessionIn !== undefined && group.cwd !== ''
+                  ? {
+                      onNewSession: () => onNewSessionIn(group.machineId, group.cwd),
+                      newSessionBlocked: newSessionBlockedReason(machines[group.machineId]),
+                    }
+                  : {})}
               >
                 {group.rows.map(renderRow)}
               </GroupSection>
@@ -363,6 +375,8 @@ function GroupSection({
   onPin,
   onWorkspace,
   onCopyCwd,
+  onNewSession,
+  newSessionBlocked = null,
   children,
 }: {
   group: SessionGroup;
@@ -379,6 +393,10 @@ function GroupSection({
   onWorkspace?: () => void;
   /** 复制工作区目录（不经 agent）；不给 = 没有这一项 */
   onCopyCwd?: () => void;
+  /** 在此目录新建会话；不给 = 没有这些入口（未知目录 / 调用方不支持） */
+  onNewSession?: () => void;
+  /** 不能新建的原因（机器离线）；null = 可以 */
+  newSessionBlocked?: string | null;
   children: React.ReactNode;
 }): React.JSX.Element {
   // 有待批准 / 搜索筛选中强制展开：点了也收不起来，别假装能收（评审 M5 / minor 3）
@@ -489,9 +507,40 @@ function GroupSection({
           </DropdownMenu>
         </div>
       )}
-      {expanded && children}
+      {expanded &&
+        (group.rows.length === 0 ? (
+          <div
+            data-testid="session-group-empty"
+            className={cn('text-text-3 flex flex-wrap items-center gap-2 px-6', compact ? 'text-[11.5px]' : 'text-xs')}
+          >
+            <span>暂无会话</span>
+            {onNewSession !== undefined && (
+              <Button
+                size="xs"
+                variant="outline"
+                data-testid="session-group-empty-new"
+                disabled={newSessionBlocked !== null}
+                onClick={onNewSession}
+              >
+                <PlusIcon />
+                新建会话
+              </Button>
+            )}
+            {onNewSession !== undefined && newSessionBlocked !== null && (
+              <span data-testid="session-group-empty-blocked">{newSessionBlocked}</span>
+            )}
+          </div>
+        ) : (
+          children
+        ))}
     </section>
   );
+}
+
+/** 组里「新建会话」为什么不能点：机器离线（缓存里的置顶组照常显示，但发不出请求） */
+export function newSessionBlockedReason(machine: MachineState | undefined): string | null {
+  if (machine === undefined) return '机器已移除';
+  return machine.online === true ? null : '机器离线，暂不能新建';
 }
 
 /** 回调的 reject 已由回调自己 toast，这里吞掉，不冒成未处理异常 */
