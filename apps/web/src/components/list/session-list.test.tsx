@@ -767,6 +767,123 @@ describe('置顶空组与「在此目录新建会话」（plan §2 / §3）', ()
     expect($('group-menu-move-up')).toBeNull();
   });
 
+  test('拖柄：只在精确指针、机器在线、agent 支持、没有筛选时出现；每台机器一段', () => {
+    const realMatchMedia = globalThis.matchMedia;
+    const setPointerFine = (fine: boolean): void => {
+      globalThis.matchMedia = ((q: string) => ({
+        matches: q === '(pointer: fine)' ? fine : realMatchMedia(q).matches,
+        media: q,
+        addEventListener: () => {},
+        removeEventListener: () => {},
+      })) as unknown as typeof matchMedia;
+    };
+    const two = (online: boolean) =>
+      Object.fromEntries(
+        ['m', 'n'].map((id) => [
+          id,
+          {
+            machineId: id,
+            name: id.toUpperCase(),
+            online,
+            lastSeenAt: 1,
+            parkedCount: 0,
+            info: { cwd: { pinOrder: true } },
+            cwd: { favorites: [], defaultCwd: '/', pinned: { '/a': 1, '/b': 2 } },
+          },
+        ]),
+      ) as unknown as Record<string, MachineState>;
+    const actions: Actions = { onPinWorkspace: () => {}, supportsPinOrder: () => true, onMovePinnedWorkspace: () => {} };
+    const reset = (): void => {
+      act(() => root?.unmount());
+      document.body.innerHTML = '';
+    };
+    try {
+      setPointerFine(true);
+      render({}, { query: { groupBy: 'workspace' }, machines: two(true), actions });
+      expect($$('session-group-drag')).toHaveLength(4);
+      expect($$('session-group-sortable')).toHaveLength(4);
+      // 拖柄是组头按钮的兄弟，键盘可聚焦
+      const handle = $$('session-group-drag')[0]!;
+      expect(handle.closest('[data-testid="session-group-header"]')).toBeNull();
+      expect(handle.getAttribute('aria-roledescription')).not.toBeNull();
+      reset();
+
+      render({}, { query: { groupBy: 'workspace' }, machines: two(false), actions });
+      expect($$('session-group-drag')).toHaveLength(0);
+      reset();
+
+      render({ m: { x: meta({ sessionId: 'x', cwd: '/a' }) } }, { query: { groupBy: 'workspace', search: 'a' }, machines: two(true), actions });
+      expect($$('session-group-drag')).toHaveLength(0);
+      reset();
+
+      setPointerFine(false);
+      render({}, { query: { groupBy: 'workspace' }, machines: two(true), actions });
+      expect($$('session-group-drag')).toHaveLength(0);
+      // 触屏仍有菜单里的上移 / 下移
+      openMenu($$('session-group-menu')[0]!);
+      expect($('group-menu-move-down')).not.toBeNull();
+    } finally {
+      globalThis.matchMedia = realMatchMedia;
+    }
+  });
+
+  test('拖柄的键盘操作：空格拿起 → ↓ → 空格放下 = 移到下一项之后', async () => {
+    const realMatchMedia = globalThis.matchMedia;
+    const realRect = window.HTMLElement.prototype.getBoundingClientRect;
+    globalThis.matchMedia = ((q: string) => ({
+      matches: q === '(pointer: fine)',
+      media: q,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    })) as unknown as typeof matchMedia;
+    // happy-dom 不排版：按组的先后给每个可拖组一个 40px 高的竖直位置
+    window.HTMLElement.prototype.getBoundingClientRect = function (this: HTMLElement) {
+      const sortable = this.closest<HTMLElement>('[data-testid="session-group-sortable"]');
+      const all = $$('session-group-sortable');
+      const i = sortable === null ? 0 : all.indexOf(sortable);
+      const top = i * 40;
+      return { x: 0, y: top, top, left: 0, right: 300, bottom: top + 40, width: 300, height: 40, toJSON: () => ({}) } as DOMRect;
+    };
+    const moves: [string, string | null][] = [];
+    try {
+      render(
+        {},
+        {
+          query: { groupBy: 'workspace' },
+          machines: {
+            m: {
+              machineId: 'm',
+              name: 'MBP',
+              online: true,
+              lastSeenAt: 1,
+              parkedCount: 0,
+              info: { cwd: { pinOrder: true } },
+              cwd: { favorites: [], defaultCwd: '/', pinned: { '/a': 1, '/b': 2, '/c': 3 }, pinOrder: ['/a', '/b', '/c'] },
+            },
+          } as unknown as Record<string, MachineState>,
+          actions: { onPinWorkspace: () => {}, supportsPinOrder: () => true, onMovePinnedWorkspace: (_m, c, b) => void moves.push([c, b]) },
+        },
+      );
+      const handle = $$('session-group-drag')[0]!;
+      const key = (code: string): void => {
+        act(() => {
+          handle.dispatchEvent(new window.KeyboardEvent('keydown', { code, key: code === 'Space' ? ' ' : code, bubbles: true, cancelable: true }));
+        });
+      };
+      act(() => handle.focus());
+      key('Space');
+      await act(async () => await new Promise((r) => setTimeout(r, 0)));
+      key('ArrowDown');
+      await act(async () => await new Promise((r) => setTimeout(r, 0)));
+      key('Space');
+      await act(async () => await new Promise((r) => setTimeout(r, 0)));
+      expect(moves).toEqual([['/a', '/c']]);
+    } finally {
+      globalThis.matchMedia = realMatchMedia;
+      window.HTMLElement.prototype.getBoundingClientRect = realRect;
+    }
+  });
+
   test('不给 onNewSessionIn：没有「+」', () => {
     render({ m: { a: meta({ sessionId: 'a', cwd: '/x' }) } }, { query: { groupBy: 'workspace' } });
     expect($('session-group-new')).toBeNull();

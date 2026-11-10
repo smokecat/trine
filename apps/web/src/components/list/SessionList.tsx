@@ -51,7 +51,9 @@ import {
   type PinOrders,
   type SessionGroup,
 } from './filtering.ts';
-import { effectivePinOrder, pinMoveTarget, type PinMoveAction } from './pin-order.ts';
+import { effectivePinOrder, pinDropTarget, pinMoveTarget, type PinMoveAction } from './pin-order.ts';
+import { PinnedDragHandle, PinnedSortableSegment, POINTER_FINE_QUERY, SortableGroup } from './PinnedSortable.tsx';
+import { useMediaQuery } from '@/components/shell/use-media-query.ts';
 import { useCollapsedGroups } from './collapsed-groups.ts';
 import {
   hasRowMenu,
@@ -143,6 +145,8 @@ export function SessionList({
     };
   };
   const { requestRename, requestDelete, dialogs } = useRowActionDialogs(actions);
+  // 拖柄只给精确指针（桌面鼠标 / 触控板）；触屏用组菜单的上移 / 下移
+  const pointerFine = useMediaQuery(POINTER_FINE_QUERY);
 
   // ---- 多选 ----
   const onArchiveMany = actions?.onArchiveMany;
@@ -353,7 +357,38 @@ export function SessionList({
         )}
         {result.groups === null
           ? result.rows.map(renderRow)
-          : result.groups.map((group) => (
+          : groupSegments(result.groups, (g) => pointerFine && pinMoveFor(g)?.blocked === null).flatMap((seg) =>
+              seg.sortable ? (
+                <PinnedSortableSegment
+                  key={`sortable:${seg.groups[0]!.machineId}`}
+                  items={seg.groups.map((g) => ({ id: g.key, label: groupLabel(g.cwd) }))}
+                  onMove={(activeKey, overKey) => {
+                    const active = seg.groups.find((g) => g.key === activeKey);
+                    const over = seg.groups.find((g) => g.key === overKey);
+                    const pm = active === undefined ? undefined : pinMoveFor(active);
+                    if (active === undefined || over === undefined || pm === undefined) return;
+                    const before = pinDropTarget(pm.order, active.cwd, over.cwd);
+                    if (before !== undefined) pm.move(before);
+                  }}
+                >
+                  {seg.groups.map((group) => (
+                    <SortableGroup key={group.key} id={group.key} label={groupLabel(group.cwd)}>
+                      {renderGroup(group)}
+                    </SortableGroup>
+                  ))}
+                </PinnedSortableSegment>
+              ) : (
+                seg.groups.map(renderGroup)
+              ),
+            )}
+        {tempNote}
+      </div>
+      {dialogs}
+    </>
+  );
+
+  function renderGroup(group: SessionGroup): React.JSX.Element {
+    return (
               <GroupSection
                 key={group.key}
                 group={group}
@@ -386,12 +421,26 @@ export function SessionList({
               >
                 {group.rows.map(renderRow)}
               </GroupSection>
-            ))}
-        {tempNote}
-      </div>
-      {dialogs}
-    </>
-  );
+    );
+  }
+}
+
+/**
+ * 把排好序的组切成段：连续的、同一台机器的可拖置顶组合成一段（各自一个 DndContext），
+ * 其余每组单独成段。置顶区按机器分段排好，所以同机器的置顶组本来就相邻。
+ */
+function groupSegments(
+  groups: readonly SessionGroup[],
+  sortable: (g: SessionGroup) => boolean,
+): { sortable: boolean; groups: SessionGroup[] }[] {
+  const out: { sortable: boolean; groups: SessionGroup[] }[] = [];
+  for (const g of groups) {
+    const s = sortable(g);
+    const last = out.at(-1);
+    if (s && last?.sortable === true && last.groups[0]!.machineId === g.machineId) last.groups.push(g);
+    else out.push({ sortable: s, groups: [g] });
+  }
+  return out;
 }
 
 function GroupSection({
@@ -524,6 +573,8 @@ function GroupSection({
       ) : (
         // 「+」「⋯」与按钮是兄弟（不嵌套交互元素）；右键整条组头也能出同一个菜单
         <div className="group/header flex min-w-0 items-center gap-1">
+          {/* 可拖的置顶段里才有（PinnedSortable.tsx SortableGroup 经 context 给） */}
+          <PinnedDragHandle />
           <ContextMenu>
             <ContextMenuTrigger asChild>{header}</ContextMenuTrigger>
             <ContextMenuContent data-testid="session-group-context-menu">
