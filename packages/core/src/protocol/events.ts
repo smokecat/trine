@@ -66,6 +66,7 @@ import {
   SessionMetaSchema,
   SessionStateSchema,
   SlashCommandSchema,
+  SubagentInfoSchema,
   TimestampSchema,
   ToolArgDetailSchema,
   ToolResultStatusSchema,
@@ -185,6 +186,11 @@ export const ToolStartSchema = z.object({
   argDetail: ToolArgDetailSchema.optional(),
   /** 子 agent 的工具调用：父 Agent/Task 工具的 toolUseId（见 ParentToolUseIdSchema） */
   parentToolUseId: ParentToolUseIdSchema.optional(),
+  /**
+   * 子 agent 卡的附加信息（类型、前台/后台、目标状态、昵称…，见 SubagentInfoSchema）。
+   * 同一 toolUseId 可重发 tool.start 只为更新它（client 原地合并，结果与子树保留）。
+   */
+  subagent: SubagentInfoSchema.optional(),
 });
 
 export const ToolEndSchema = z.object({
@@ -199,6 +205,11 @@ export const ToolEndSchema = z.object({
   outputPreview: z.string().optional(),
   /** 同 tool.start：子 agent 的工具调用带父 toolUseId */
   parentToolUseId: ParentToolUseIdSchema.optional(),
+  /**
+   * 同 tool.start 的 subagent。启动工具返回（tool.end）≠ 子 agent 结束：后台启动时带
+   * `background: true`；后台子 agent 结束时 agent 再发一帧同 id 的 tool.end 收尾并带 `state`
+   */
+  subagent: SubagentInfoSchema.optional(),
 });
 
 // ---------------------------------------------------------------------------

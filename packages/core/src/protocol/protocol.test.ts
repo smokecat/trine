@@ -686,6 +686,40 @@ describe('子 agent 过程（subagent-view）', () => {
     expect(AgentToClientEventSchema.safeParse(plain).success).toBe(true);
   });
 
+  test('tool.start / tool.end / history tool 条目可带 subagent（字段全可选，state 限枚举）', () => {
+    const start = {
+      type: 'tool.start',
+      ...a2c,
+      toolUseId: 't3',
+      toolName: 'Agent',
+      argSummary: 'probe',
+      subagent: { agentType: 'Explore', background: true },
+    };
+    expect(AgentToClientEventSchema.parse(start)).toEqual(start as never);
+    const end = {
+      type: 'tool.end',
+      ...a2c,
+      toolUseId: 't3',
+      status: 'ok',
+      durationMs: 5,
+      resultSummary: '✓',
+      subagent: { background: true, state: 'completed' },
+    };
+    expect(AgentToClientEventSchema.parse(end)).toEqual(end as never);
+    expect(AgentToClientEventSchema.safeParse({ ...end, subagent: { state: 'weird' } }).success).toBe(false);
+    expect(AgentToClientEventSchema.safeParse({ ...start, subagent: { agentType: '' } }).success).toBe(false);
+    const codex = { ...start, toolName: 'SubAgent', subagent: { nickname: 'n1', model: 'm1', agentId: 'thr-1', state: 'not_found' } };
+    expect(AgentToClientEventSchema.parse(codex)).toEqual(codex as never);
+    const history = {
+      type: 'session.history.response',
+      ...a2c,
+      reqId: 'r1',
+      items: [{ kind: 'tool', id: 't3', toolName: 'Agent', argSummary: 'x', subagent: { state: 'unknown', background: true }, ts }],
+      hasMore: false,
+    };
+    expect(AgentToClientEventSchema.parse(history)).toEqual(history as never);
+  });
+
   test('permission.request 可带 parentToolUseId', () => {
     const frame = {
       type: 'permission.request',

@@ -245,6 +245,52 @@ export const TOOL_ARG_DETAIL_MAX = 16_000;
 export const ToolArgDetailSchema = z.string().min(1).max(TOOL_ARG_DETAIL_MAX + 64);
 
 /**
+ * 子 agent 的目标状态（与「启动它的那次工具调用」的结果分开表达）。
+ *
+ * - Claude：后台子 agent 的 running → completed / failed / stopped；历史里拿不到结束证据时
+ *   为 `unknown`（状态未知）。
+ * - Codex：CollabAgentStatus 全部枚举一一对应：pendingInit → pending、running、interrupted、
+ *   completed、errored → failed、shutdown、notFound → not_found。
+ */
+export const SubagentStateSchema = z.enum([
+  'pending',
+  'running',
+  'completed',
+  'failed',
+  'stopped',
+  'interrupted',
+  'shutdown',
+  'not_found',
+  'unknown',
+]);
+export type SubagentState = z.infer<typeof SubagentStateSchema>;
+
+/** SubagentInfo 里短文本字段的上限 */
+export const SUBAGENT_LABEL_MAX = 128;
+const SubagentLabelSchema = z.string().min(1).max(SUBAGENT_LABEL_MAX);
+
+/**
+ * 子 agent 卡的附加信息（tool.start / tool.end / history tool 条目的 `subagent`，加法字段，
+ * 旧 client 忽略）。同一张卡可多次下发，client 按字段合并（后到的覆盖），所以每次只带
+ * 知道的字段。
+ *
+ * - `agentType`：Claude 的 `subagent_type` / Codex 的角色（agentRole）
+ * - `background`：Claude 子 agent 在后台跑（启动工具立即返回，任务另行结束）
+ * - `state`：目标子 agent 的状态（见 SubagentStateSchema）；Claude 后台运行中的状态由
+ *   client 从 `bgtask.snapshot` 派生，agent 只在结束 / 历史回填时给
+ * - `nickname` / `model` / `agentId`：Codex 子 thread 的昵称、模型、thread id（显示短 id 兜底）
+ */
+export const SubagentInfoSchema = z.object({
+  agentType: SubagentLabelSchema.optional(),
+  background: z.boolean().optional(),
+  state: SubagentStateSchema.optional(),
+  nickname: SubagentLabelSchema.optional(),
+  model: SubagentLabelSchema.optional(),
+  agentId: SubagentLabelSchema.optional(),
+});
+export type SubagentInfo = z.infer<typeof SubagentInfoSchema>;
+
+/**
  * 历史回看条目（`session.history.response`，决策 D8：agent 读本机会话存储按需拉取）。
  *
  * 形状刻意贴着 web 时间线的三种内容条目，id 与实时流同源，client 才能去重：
@@ -285,6 +331,8 @@ export const HistoryItemSchema = z.discriminatedUnion('kind', [
     durationMs: z.number().int().nonnegative().optional(),
     resultSummary: z.string().optional(),
     outputPreview: z.string().optional(),
+    /** 子 agent 卡的附加信息（见 SubagentInfoSchema；agent 回填最终状态 / 状态未知） */
+    subagent: SubagentInfoSchema.optional(),
     ts: TimestampSchema,
   }),
 ]);
