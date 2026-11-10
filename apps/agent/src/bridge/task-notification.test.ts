@@ -7,6 +7,7 @@ import {
   parseTaskNotification,
   parseTranscriptOrigins,
   readTranscriptOrigins,
+  scanTranscriptForTest,
   taskNotificationLines,
 } from './task-notification.ts';
 
@@ -49,27 +50,48 @@ describe('parseTaskNotification', () => {
 });
 
 describe('taskNotificationLines', () => {
-  const chain = [
-    msg('assistant', 'a1', [{ type: 'tool_use', id: 'toolu_a', name: 'Agent', input: {} }]),
-    msg('user', 'n1', NOTICE),
-  ];
+  // 后台启动回执里的 agentId 与通知的 task-id 一致（spike S1）
+  const launched = msg('user', 'r1', [
+    { type: 'tool_result', tool_use_id: 'toolu_a', content: 'Async agent launched successfully. (internal)\nagentId: task-1 (internal ID)' },
+  ]);
+  const chain = [msg('assistant', 'a1', [{ type: 'tool_use', id: 'toolu_a', name: 'Agent', input: {} }]), launched, msg('user', 'n1', NOTICE)];
 
-  test('无 origin：关联 id 是更早的工具调用才算', () => {
+  test('无 origin：关联 id 必须是更早的一次后台启动', () => {
     expect([...taskNotificationLines(chain).keys()]).toEqual(['n1']);
     // 通知在工具调用之前（不可能是它的结束通知）
-    expect(taskNotificationLines([chain[1]!, chain[0]!]).size).toBe(0);
+    expect(taskNotificationLines([chain[2]!, chain[0]!, chain[1]!]).size).toBe(0);
+  });
+
+  test('复审 部分5：普通前台调用 / 启动回执的任务 id 对不上：仍是用户消息', () => {
+    const foreground = msg('user', 'r1', [{ type: 'tool_result', tool_use_id: 'toolu_a', content: '前台跑完的报告' }]);
+    expect(taskNotificationLines([chain[0]!, foreground, chain[2]!]).size).toBe(0);
+    const bash = [
+      msg('assistant', 'a1', [{ type: 'tool_use', id: 'toolu_a', name: 'Bash', input: { command: 'ls' } }]),
+      msg('user', 'r1', [{ type: 'tool_result', tool_use_id: 'toolu_a', content: 'a.txt\nb.txt' }]),
+      msg('user', 'n1', NOTICE),
+    ];
+    expect(taskNotificationLines(bash).size).toBe(0);
+    const otherId = msg('user', 'r1', [{ type: 'tool_result', tool_use_id: 'toolu_a', content: 'Async agent launched successfully.\nagentId: other-task (x)' }]);
+    expect(taskNotificationLines([chain[0]!, otherId, chain[2]!]).size).toBe(0);
+    // 后台 Bash：回执 id 与 task-id 一致才算
+    const bgBash = [
+      msg('assistant', 'a1', [{ type: 'tool_use', id: 'toolu_a', name: 'Bash', input: { command: 'sleep 1', run_in_background: true } }]),
+      msg('user', 'r1', [{ type: 'tool_result', tool_use_id: 'toolu_a', content: 'Command running in background with ID: task-1. Output is being written to: /tmp/x' }]),
+      msg('user', 'n1', NOTICE),
+    ];
+    expect(taskNotificationLines(bgBash).has('n1')).toBe(true);
   });
 
   test('有 origin 以 origin 为准', () => {
     expect(taskNotificationLines(chain, new Map([['n1', 'human']])).size).toBe(0);
-    expect(taskNotificationLines([chain[1]!], new Map([['n1', 'task-notification']])).size).toBe(1);
+    expect(taskNotificationLines([chain[2]!], new Map([['n1', 'task-notification']])).size).toBe(1);
   });
 
   test('单个文本块的内容也认；子 agent 行不算', () => {
     const block = msg('user', 'n2', [{ type: 'text', text: NOTICE }]);
-    expect(taskNotificationLines([chain[0]!, block]).has('n2')).toBe(true);
+    expect(taskNotificationLines([chain[0]!, launched, block]).has('n2')).toBe(true);
     const sub = { ...block, parent_tool_use_id: 'toolu_a' } as SessionMessage;
-    expect(taskNotificationLines([chain[0]!, sub]).size).toBe(0);
+    expect(taskNotificationLines([chain[0]!, launched, sub]).size).toBe(0);
   });
 });
 
@@ -137,5 +159,32 @@ describe('parseTranscriptOrigins / readTranscriptOrigins', () => {
     expect(parsed.parents?.get('att1')).toBe('s1');
     expect(parsed.parents?.get('s1')).toBe('a1');
     expect(parsed.notices[0]?.parentUuid).toBe('s1');
+    expect(parsed.notices[0]?.uuid).toBe('att1');
+  });
+
+  test('复审 部分6：挂在附件 / system 行下的行（以 parentUuid 开头）记成子行', () => {
+    // 键顺序照真实转录：每行以 parentUuid 开头
+    const text = [
+      '{"parentUuid":"m1","type":"attachment","uuid":"att1","attachment":{"type":"queued_command","commandMode":"task-notification","prompt":' +
+        JSON.stringify(NOTICE) +
+        '}}',
+      '{"parentUuid":"att1","isSidechain":false,"type":"assistant","message":{"role":"assistant","content":[]},"uuid":"m2"}',
+      '{"parentUuid":"m2","isSidechain":false,"type":"user","message":{"role":"user","content":"hi"},"uuid":"m3"}',
+    ].join('\n');
+    const parsed = parseTranscriptOrigins(text);
+    expect(parsed.children?.get('att1')).toEqual(['m2']);
+    expect(parsed.children?.has('m2')).toBe(false);
+  });
+
+  test('复审 新低4：扫描中文件变长，跨上限的块只处理上限内的完整行', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'trine-origins-grow-'));
+    const path = join(root, 'grow.jsonl');
+    const first = JSON.stringify({ type: 'user', uuid: 'u-1', origin: { kind: 'human' }, message: { role: 'user', content: NOTICE } });
+    const later = JSON.stringify({ type: 'user', uuid: 'u-2', origin: { kind: 'task-notification' }, message: { role: 'user', content: NOTICE } });
+    await writeFile(path, `${first}\n${later}\n`);
+    // 上限 = 第一行之后又写了一半：以前整块丢弃，得到空结果
+    const limit = Buffer.byteLength(`${first}\n`) + 10;
+    const scanned = await scanTranscriptForTest(path, limit);
+    expect([...scanned.origins]).toEqual([['u-1', 'human']]);
   });
 });

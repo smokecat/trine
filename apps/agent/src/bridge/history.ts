@@ -194,6 +194,8 @@ export function toHistoryItems(
   messages: readonly SessionMessage[],
   attachments: ReadonlyMap<string, readonly HistoryAttachment[]> = new Map(),
   origins?: TranscriptOrigins,
+  /** 主链被待生效的回退截断过：末端不是真正的最新一条，附件通知不按「挂在末端」认（见 noticeOnChain） */
+  options: { cutAtRewind?: boolean } = {},
 ): HistoryItem[] {
   const items: HistoryItem[] = [];
   /** assistant message.id → items 下标（按 id 合并文本） */
@@ -204,7 +206,8 @@ export function toHistoryItems(
   const notificationLines = taskNotificationLines(messages, origins?.origins);
   // 附件通知只认能走回当前主链的：回退撤掉的分支上的不算（评审 中6）
   const chain = new Set(messages.map((m) => m.uuid));
-  const notices: TaskNotice[] = (origins?.notices ?? []).filter((n) => noticeOnChain(n, origins?.parents, chain));
+  const tail = options.cutAtRewind === true ? undefined : messages.at(-1)?.uuid;
+  const notices: TaskNotice[] = (origins?.notices ?? []).filter((n) => noticeOnChain(n, origins, chain, tail));
   let lastTs = 0;
 
   for (const message of messages) {

@@ -346,14 +346,34 @@ describe('toHistoryItems · 后台子 agent（spike S1）', () => {
   test('被吸收进轮次的通知（原始转录的 queued_command）也回填：要能沿父行走回当前主链', () => {
     const items = toHistoryItems(launch, new Map(), {
       origins: new Map(),
-      // 附件 att-2 → 附件 att-1 → 主链上的 r1
-      notices: [{ taskId: 't', toolUseId: 'toolu_bg', status: 'completed', result: 'r', usage: { tool_uses: 1 }, parentUuid: 'att-2' }],
-      parents: new Map([
-        ['att-2', 'att-1'],
-        ['att-1', 'r1'],
-      ]),
+      // 附件 att-2 挂在 r1 下，主链上的 a2 又挂在它下面：它在当前分支上
+      notices: [{ taskId: 't', toolUseId: 'toolu_bg', status: 'completed', result: 'r', usage: { tool_uses: 1 }, uuid: 'att-2', parentUuid: 'r1' }],
+      parents: new Map([['att-2', 'r1']]),
+      children: new Map([['att-2', ['a2']]]),
     });
     expect(items[0]).toMatchObject({ resultSummary: '✓ 1 次工具调用', subagent: { state: 'completed' } });
+  });
+
+  test('复审 部分6：旧分支附件直接挂在保留的消息上也不算；没有后代时只认挂在主链末端的', () => {
+    const notice = { taskId: 't', toolUseId: 'toolu_bg', status: 'completed', result: '旧分支报告', uuid: 'att-old', parentUuid: 'r1' };
+    // att-old 挂在保留的 r1 上，但它的后代 u-dropped 不在当前主链（被回退撤掉的分支）
+    const abandoned = toHistoryItems(launch, new Map(), {
+      origins: new Map(),
+      notices: [notice],
+      parents: new Map([['att-old', 'r1']]),
+      children: new Map([['att-old', ['u-dropped']]]),
+    });
+    expect(abandoned[0]).toMatchObject({ subagent: { state: 'unknown' } });
+    // 没有后代、挂在主链末端（a2）：刚写进去的，算
+    const atTail = { ...notice, parentUuid: 'a2' };
+    const tail = toHistoryItems(launch, new Map(), { origins: new Map(), notices: [atTail], parents: new Map([['att-old', 'a2']]) });
+    expect(tail[0]).toMatchObject({ subagent: { state: 'completed' } });
+    // 主链被待生效的回退截断过：末端不可信，不算
+    expect(toHistoryItems(launch, new Map(), { origins: new Map(), notices: [atTail] }, { cutAtRewind: true })[0]).toMatchObject({
+      subagent: { state: 'unknown' },
+    });
+    // 没有后代、挂在中间（r1）的：拿不准，不算
+    expect(toHistoryItems(launch, new Map(), { origins: new Map(), notices: [notice] })[0]).toMatchObject({ subagent: { state: 'unknown' } });
   });
 
   test('评审 中6：回退撤掉的分支上的附件通知不算（走不回当前主链 / 没有父行）', () => {
@@ -401,11 +421,12 @@ describe('toHistoryItems · 后台子 agent（spike S1）', () => {
   test('后台 Bash 的通知只过滤气泡，不改 Bash 卡', () => {
     const items = toHistoryItems([
       assistant('a1', 'msg_1', [{ type: 'tool_use', id: 'toolu_sh', name: 'Bash', input: { command: 'sleep 1', run_in_background: true } }], T0),
-      user('r1', [{ type: 'tool_result', tool_use_id: 'toolu_sh', content: 'Command running in background with ID: b1. Output is being written to: /tmp/x' }], T1),
+      // 回执 id 与通知的 task-id 一致（spike S1：后台 Bash 的任务 id 就是回执里的 ID）
+      user('r1', [{ type: 'tool_result', tool_use_id: 'toolu_sh', content: 'Command running in background with ID: task-fixture-1. Output is being written to: /tmp/x' }], T1),
       user('n1', notification('toolu_sh'), T2),
     ]);
     expect(items).toHaveLength(1);
-    expect(items[0]).toMatchObject({ toolName: 'Bash', resultSummary: '✓ 已在后台运行 · b1' });
+    expect(items[0]).toMatchObject({ toolName: 'Bash', resultSummary: '✓ 已在后台运行 · task-fixture-1' });
     expect('subagent' in items[0]!).toBe(false);
   });
 });

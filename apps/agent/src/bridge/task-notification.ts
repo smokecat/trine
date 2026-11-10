@@ -55,7 +55,8 @@ export interface TaskNotice {
   /** 子 agent 的报告 */
   result?: string;
   usage?: { tool_uses?: number; duration_ms?: number };
-  /** 附件通知的父行（沿它走回主链才算数，见文件头「回退分支」） */
+  /** 附件通知自己的 uuid 与父行（判断它在不在当前分支上，见 noticeOnChain） */
+  uuid?: string;
   parentUuid?: string;
 }
 
@@ -67,6 +68,8 @@ export interface TranscriptOrigins {
   notices: readonly TaskNotice[];
   /** 非消息行（附件 / system）的 uuid → parentUuid：附件通知沿它走回主链 */
   parents?: ReadonlyMap<string, string>;
+  /** 非消息行的 uuid → 直接子行 uuid（任意类型）：判断附件通知有没有落在当前分支上 */
+  children?: ReadonlyMap<string, readonly string[]>;
   /** 子转录 meta.json 说已结束（finished）的父工具调用 id：只证明结束，不证明成败 */
   finished?: ReadonlySet<string>;
 }
@@ -155,6 +158,8 @@ export function taskNotificationLines(
   const out = new Map<string, TaskNotice>();
   /** 已出现过的工具调用 id → 工具名 */
   const seenTools = new Map<string, string>();
+  /** 后台启动过的工具调用 id → 回执里的任务 id（认不出 ''） */
+  const launches = new Map<string, string>();
   for (const message of messages) {
     if (message.parent_tool_use_id !== null && message.parent_tool_use_id !== undefined) continue;
     if (message.type === 'assistant') {
@@ -167,6 +172,19 @@ export function taskNotificationLines(
       }
       continue;
     }
+    if (message.type !== 'user') continue;
+    const content = asRecord(message.message)?.['content'];
+    if (Array.isArray(content)) {
+      // 工具结果：记下哪些调用是「后台启动」，及启动回执里的任务 id
+      for (const block of content) {
+        const b = asRecord(block);
+        if (b?.['type'] !== 'tool_result' || typeof b['tool_use_id'] !== 'string') continue;
+        const tool = seenTools.get(b['tool_use_id']);
+        if (tool === undefined || b['is_error'] === true) continue;
+        const launch = backgroundLaunchId(tool, resultText(b['content']));
+        if (launch !== undefined) launches.set(b['tool_use_id'], launch);
+      }
+    }
     const notice = noticeOfLine(message);
     if (notice === undefined) continue;
     const kind = origins?.get(message.uuid);
@@ -174,19 +192,70 @@ export function taskNotificationLines(
       if (kind === TASK_NOTIFICATION_ORIGIN) out.set(message.uuid, notice);
       continue;
     }
-    // 来源不明：只有严格满足结构 + 关联才算，否则宁可当用户消息
-    const tool = notice.toolUseId === undefined ? undefined : seenTools.get(notice.toolUseId);
-    if (isCompleteEndNotice(notice) && tool !== undefined && NOTIFYING_TOOLS.has(tool)) out.set(message.uuid, notice);
+    // 来源不明：只有严格满足结构 + 关联才算——tool-use-id 必须是本转录里一次**后台启动**
+    //（启动回执认得出），回执里有任务 id 时还要与通知的 task-id 一致；否则宁可当用户消息（评审复审 部分5）
+    const launch = notice.toolUseId === undefined ? undefined : launches.get(notice.toolUseId);
+    if (isCompleteEndNotice(notice) && launch !== undefined && (launch === '' || launch === notice.taskId)) out.set(message.uuid, notice);
   }
   return out;
 }
 
-/** 附件通知能不能沿 parentUuid 走回当前主链（chain = 当前主链 uuid，已按回退截断） */
-export function noticeOnChain(notice: TaskNotice, parents: ReadonlyMap<string, string> | undefined, chain: ReadonlySet<string>): boolean {
-  let cur = notice.parentUuid;
+/** Bash 后台启动回执（同 summarize.ts）：`Command running in background with ID: <id>. …` */
+const BASH_BACKGROUND = /^Command running in background with ID:\s*([^\s.]+)/;
+/** Agent 后台启动回执（spike S1）：`Async agent launched successfully. … agentId: <id> (…)` */
+const AGENT_BACKGROUND = /^Async agent launched successfully/;
+const AGENT_ID = /agentId:\s*([A-Za-z0-9_-]+)/;
+
+/** 这次工具结果是不是后台启动：是就返回回执里的任务 id（认不出 id 时 ''），否则 undefined */
+function backgroundLaunchId(tool: string, text: string): string | undefined {
+  if (!NOTIFYING_TOOLS.has(tool)) return undefined;
+  if (tool === 'Bash') return BASH_BACKGROUND.exec(text)?.[1];
+  if (!AGENT_BACKGROUND.test(text)) return undefined;
+  return AGENT_ID.exec(text)?.[1] ?? '';
+}
+
+function resultText(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  return content
+    .map((b) => asRecord(b))
+    .map((b) => (typeof b?.['text'] === 'string' ? b['text'] : ''))
+    .join('');
+}
+
+/**
+ * 附件通知是不是当前分支上的（评审复审 部分6）。只看「祖先在主链上」不够：被撤掉的分支也可能
+ * 直接挂在保留的消息上。所以要求通知**本身**在当前链上——有一条当前主链消息是它的后代（经过
+ * 附件 / system 行）；或者它还没有后代、而它往上的第一条消息正是主链末端（刚写进去的最新一条）。
+ * `tail` 为 undefined（有待生效的回退截断等，末端不可信）时不认第二种。拿不准一律不算。
+ */
+export function noticeOnChain(
+  notice: TaskNotice,
+  origins: Pick<TranscriptOrigins, 'parents' | 'children'> | undefined,
+  chain: ReadonlySet<string>,
+  tail: string | undefined,
+): boolean {
+  if (notice.uuid === undefined || notice.parentUuid === undefined) return false;
+  if (chain.has(notice.uuid)) return true;
+  const children = origins?.children;
+  // 往下找：经附件 / system 行能不能走到当前主链的消息
+  const queue = [notice.uuid];
+  let hasChild = false;
+  for (let visited = 0; queue.length > 0 && visited < 10_000; visited++) {
+    const next = children?.get(queue.shift()!);
+    if (next === undefined) continue;
+    for (const child of next) {
+      hasChild = true;
+      if (chain.has(child)) return true;
+      queue.push(child);
+    }
+  }
+  if (hasChild || tail === undefined) return false;
+  // 没有后代：往上第一条消息是不是主链末端
+  let cur: string | undefined = notice.parentUuid;
   for (let guard = 0; cur !== undefined && guard < 10_000; guard++) {
-    if (chain.has(cur)) return true;
-    cur = parents?.get(cur);
+    if (chain.has(cur)) return cur === tail;
+    cur = origins?.parents?.get(cur);
   }
   return false;
 }
@@ -196,12 +265,18 @@ export class TranscriptOriginScanner {
   readonly #origins = new Map<string, string>();
   readonly #notices: TaskNotice[] = [];
   readonly #parents = new Map<string, string>();
+  readonly #children = new Map<string, string[]>();
+  /** 已见过的非消息行 uuid（它们的子行要解析出 uuid） */
+  readonly #between = new Set<string>();
 
   line(line: string): void {
     const notification = line.includes('task-notification');
-    // 附件 / system 行（夹在主链消息之间）记父子关系；其余行与通知无关，不解析
+    // 附件 / system 行（夹在主链消息之间）记父子关系；挂在它们下面的行要知道自己的 uuid；
+    // 其余行与通知无关，不解析。转录每行以 parentUuid 开头（实测），先便宜地取出来
     const between = line.includes('"type":"attachment"') || line.includes('"type":"system"');
-    if (!notification && !between) return;
+    const lead = LEADING_PARENT.exec(line)?.[1];
+    const underBetween = lead !== undefined && this.#between.has(lead);
+    if (!notification && !between && !underBetween) return;
     let rec: Record<string, unknown> | undefined;
     try {
       rec = asRecord(JSON.parse(line));
@@ -212,7 +287,15 @@ export class TranscriptOriginScanner {
     const type = rec['type'];
     const uuid = typeof rec['uuid'] === 'string' ? rec['uuid'] : undefined;
     const parentUuid = typeof rec['parentUuid'] === 'string' ? rec['parentUuid'] : undefined;
-    if ((type === 'attachment' || type === 'system') && uuid !== undefined && parentUuid !== undefined) this.#parents.set(uuid, parentUuid);
+    if ((type === 'attachment' || type === 'system') && uuid !== undefined) {
+      this.#between.add(uuid);
+      if (parentUuid !== undefined) this.#parents.set(uuid, parentUuid);
+    }
+    if (uuid !== undefined && parentUuid !== undefined && this.#between.has(parentUuid)) {
+      const list = this.#children.get(parentUuid);
+      if (list === undefined) this.#children.set(parentUuid, [uuid]);
+      else list.push(uuid);
+    }
     if (!notification) return;
     if (type === 'user' && uuid !== undefined) {
       const kind = asRecord(rec['origin'])?.['kind'];
@@ -225,13 +308,18 @@ export class TranscriptOriginScanner {
     if (att['commandMode'] !== TASK_NOTIFICATION_ORIGIN && originKind !== TASK_NOTIFICATION_ORIGIN) return;
     const prompt = att['prompt'];
     const notice = typeof prompt === 'string' ? parseTaskNotification(prompt) : undefined;
-    if (notice !== undefined) this.#notices.push({ ...notice, ...(parentUuid === undefined ? {} : { parentUuid }) });
+    if (notice !== undefined) {
+      this.#notices.push({ ...notice, ...(uuid === undefined ? {} : { uuid }), ...(parentUuid === undefined ? {} : { parentUuid }) });
+    }
   }
 
   result(): TranscriptOrigins {
-    return { origins: this.#origins, notices: this.#notices, parents: this.#parents };
+    return { origins: this.#origins, notices: this.#notices, parents: this.#parents, children: this.#children };
   }
 }
+
+/** 转录行开头的 parentUuid（每行都以它开头，实测） */
+const LEADING_PARENT = /^\{"parentUuid":"([^"]+)"/;
 
 /** 原始 jsonl 文本 → 来源信息 */
 export function parseTranscriptOrigins(text: string): TranscriptOrigins {
@@ -254,14 +342,20 @@ async function scanFile(path: string, limit: number): Promise<TranscriptOrigins>
   let read = 0;
   const reader = Bun.file(path).stream().getReader();
   for (;;) {
-    const { done, value: chunk } = await reader.read();
+    const { done, value } = await reader.read();
     if (done) break;
+    // 文件在扫的过程中还在长：只处理上限以内的前缀，不把跨上限的整块丢掉（评审复审 新低4）
+    const room = limit - read;
+    const truncated = value.byteLength > room;
+    const chunk = truncated ? value.subarray(0, Math.max(0, room)) : value;
     read += chunk.byteLength;
-    if (read > limit) {
-      await reader.cancel();
-      break;
-    }
     rest += decoder.decode(chunk, { stream: true });
+    if (truncated) {
+      await reader.cancel();
+      // 截在上限处的多半是半行（之后追加的内容）：只保留完整的行
+      const cut = rest.lastIndexOf('\n');
+      rest = cut < 0 ? '' : rest.slice(0, cut + 1);
+    }
     let start = 0;
     let at = rest.indexOf('\n', start);
     while (at >= 0) {
@@ -270,11 +364,15 @@ async function scanFile(path: string, limit: number): Promise<TranscriptOrigins>
       at = rest.indexOf('\n', start);
     }
     rest = rest.slice(start);
+    if (truncated) break;
   }
   rest += decoder.decode();
   if (rest !== '') scanner.line(rest);
   return scanner.result();
 }
+
+/** 测试用：直接扫一个路径（上限可指定，模拟扫描时文件还在长） */
+export const scanTranscriptForTest = scanFile;
 
 /** 读会话主转录的来源信息；找不到 / 读失败 / 过大返回 undefined（调用方退回结构校验） */
 export async function readTranscriptOrigins(

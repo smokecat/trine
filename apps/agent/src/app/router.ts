@@ -913,7 +913,7 @@ export class Router {
     const [all, origins] = await Promise.all([this.#readTranscript(sessionId), this.#readOrigins(sessionId)]);
     const messages = cutAtRewind(all, pending?.dropFrom);
     const attachments = (await this.#deps.attachments?.historyIndex(sessionId)) ?? new Map();
-    return toHistoryItems(messages, attachments, origins);
+    return toHistoryItems(messages, attachments, origins, { cutAtRewind: messages.length !== all.length });
   }
 
   /** 原始转录的来源信息（见 readTranscriptOriginsFn）；读不到 undefined，调用方退回结构校验 */
