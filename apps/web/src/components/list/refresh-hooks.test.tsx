@@ -15,9 +15,13 @@
  * 所以这里真的挂三个组件，各调一个真 hook，数最终发出了几次 listSessions。
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { act } from 'react';
-import { createRoot, type Root } from 'react-dom/client';
+import type { Root } from 'react-dom/client';
 import '@/lib/dom-test-env.ts';
+
+// react-dom 在模块初始化时探测 canUseDOM / `oninput` 支持：必须在 dom-test-env 之后
+// 动态 import，否则同进程里后跑的测试文件拿到的是没有 DOM 时初始化的 react-dom
+const { act } = await import('react');
+const { createRoot } = await import('react-dom/client');
 
 const { runtimeState, store } = await import('@/app/runtime.ts');
 const { resetFetchedForTest, connectionGeneration } = await import('./list-refresh-policy.ts');

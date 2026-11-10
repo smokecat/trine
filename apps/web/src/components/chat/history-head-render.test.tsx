@@ -2,12 +2,16 @@
  * 时间线顶部的历史回看行：四种状态各自的渲染与按钮回调，且确实挂在时间线最顶部。
  */
 import { afterEach, describe, expect, test } from 'bun:test';
-import { act } from 'react';
-import { createRoot, type Root } from 'react-dom/client';
+import type { Root } from 'react-dom/client';
 import '@/lib/dom-test-env.ts';
 import type { TimelineEntry } from '@/lib/reducer.ts';
 import { HistoryHead, type HistoryHeadState } from './Messages.tsx';
 import { Timeline, type TimelineHandlers } from './Timeline.tsx';
+
+// react-dom 在模块初始化时探测 canUseDOM / `oninput` 支持：必须在 dom-test-env 之后
+// 动态 import，否则同进程里后跑的测试文件拿到的是没有 DOM 时初始化的 react-dom
+const { act } = await import('react');
+const { createRoot } = await import('react-dom/client');
 
 const handlers: TimelineHandlers = {
   onUserAction: () => {},
