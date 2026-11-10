@@ -22,11 +22,13 @@
 import { sodiumReady } from '@trine/core/crypto';
 import { AuthClient, BlobClient, BlobClientError, httpBase, type AuthToken, type BlobConfig } from '@trine/core/net';
 import { ATTACHMENT_NAME_MAX } from '@trine/core/types';
+import { movePinOrder, normalizePinOrder } from '@trine/core/protocol';
 import { attachmentKind, attachmentRefs } from './attachment-model.ts';
 import { encryptFile, maybeCompressImage, xhrUpload, type UploadFn } from './attachment-transfer.ts';
 import type {
   AgentToClientEvent,
   AttachmentRef,
+  CwdPinMoveErrorCode,
   FsEntry,
   FilesTrustErrorCode,
   FsDeniedReason,
@@ -1335,6 +1337,47 @@ export class TrineClient {
     return this.send(machineId, { type: 'cwd.pin', path: cwd, pinned });
   }
 
+  /**
+   * 调整置顶工作区的顺序（pin-order，只对 `machine.info.cwd.pinOrder` 为真的 agent 调）：把 cwd 移到
+   * before 之前（null = 末尾）。先乐观改本地 pinOrder，以 agent 的应答 / `cwd.updated` 广播为准；
+   * 失败（被拒、超时、离线）时若本地仍是这次的乐观值就回滚，再重拉一次 cwd 快照，然后抛出
+   * （被拒是 `CwdPinMoveError`）。cwd / before 用规范化路径，agent 按字面或去尾 `/` 匹配。
+   */
+  async movePinnedWorkspace(machineId: string, cwd: string, before: string | null): Promise<void> {
+    const snap = this.#machines.get(machineId)?.cwd ?? null;
+    let optimistic: string[] | undefined;
+    if (snap?.pinned !== undefined) {
+      const order = normalizePinOrder(snap.pinOrder, snap.pinned);
+      const key = (p: string): string | undefined => order.find((k) => normalizeCwdPath(k) === normalizeCwdPath(p));
+      const from = key(cwd);
+      const to = before === null ? null : key(before);
+      const next = from === undefined || to === undefined ? undefined : movePinOrder(order, from, to);
+      if (Array.isArray(next)) {
+        optimistic = next;
+        this.#updateMachine(machineId, (m) => (m.cwd === null ? m : { ...m, cwd: { ...m.cwd, pinOrder: next } }));
+      }
+    }
+    try {
+      const res = await this.request<Extract<OutboundBody, { type: 'cwd.pin.move' }>>(machineId, {
+        type: 'cwd.pin.move',
+        path: cwd,
+        before,
+      });
+      if (res.type !== 'cwd.pin.move.response') throw new Error(`意外的应答 ${res.type}`);
+      if (!res.ok) throw new CwdPinMoveError(res.error?.code ?? 'failed', res.error?.message ?? '调整顺序失败');
+    } catch (err) {
+      if (optimistic !== undefined) {
+        this.#updateMachine(machineId, (m) => {
+          if (m.cwd === null || m.cwd.pinOrder !== optimistic) return m;
+          const { pinOrder: _drop, ...rest } = m.cwd;
+          return { ...m, cwd: snap?.pinOrder === undefined ? rest : { ...rest, pinOrder: snap.pinOrder } };
+        });
+      }
+      void this.request(machineId, { type: 'cwd.list.request' }).catch(() => undefined);
+      throw err;
+    }
+  }
+
   async deleteSession(machineId: string, sessionId: string): Promise<void> {
     await this.#mutate(machineId, { type: 'session.delete', sessionId });
     this.#removeSession(machineId, sessionId);
@@ -2296,6 +2339,22 @@ export class FsRequestError extends Error {
     this.code = code;
     this.reason = reason;
   }
+}
+
+/** agent 拒绝了置顶重排（code 见协议 CwdPinMoveErrorCode） */
+export class CwdPinMoveError extends Error {
+  readonly code: CwdPinMoveErrorCode;
+  constructor(code: CwdPinMoveErrorCode, message: string) {
+    super(message);
+    this.name = 'CwdPinMoveError';
+    this.code = code;
+  }
+}
+
+/** 去尾 `/`（根目录保持 `/`），与列表分组同一口径 */
+function normalizeCwdPath(cwd: string): string {
+  const trimmed = cwd.replace(/\/+$/, '');
+  return trimmed === '' && cwd !== '' ? '/' : trimmed;
 }
 
 /** agent 拒绝了信任目录的增删（code 见协议 FilesTrustErrorCode） */

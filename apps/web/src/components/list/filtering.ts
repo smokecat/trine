@@ -188,8 +188,42 @@ function pinnedLookup(pinned: PinnedCwds, machineId: string): Map<string, number
   return out;
 }
 
+/** 机器 → 置顶工作区的有效顺序（规范化 cwd，见 pin-order.ts effectivePinOrder） */
+export type PinOrders = Record<string, readonly string[] | undefined>;
+
+/** 置顶排序的上下文（plan §1） */
+export interface PinSortContext {
+  /** 每台机器的手动顺序；某台没有 = 按置顶时间倒序（旧 agent） */
+  pinOrder?: PinOrders;
+  /** 稳定的机器顺序：置顶区按它分段；不在里面的排后面、按 machineId */
+  machineOrder?: readonly string[];
+}
+
 /**
- * 按工作空间分组。组序：置顶（越晚置顶越靠上）→ 工作区创建时间倒序（新的在上）→ key。
+ * 置顶组之间的先后：先按机器分段（稳定的机器顺序），段内按该机器的手动顺序，没有就按置顶时间倒序。
+ * 只在两组都置顶时有意义。
+ */
+function comparePinnedGroups(a: SessionGroup, b: SessionGroup, ctx: PinSortContext, machineRank: Map<string, number>): number {
+  if (a.machineId !== b.machineId) {
+    const ra = machineRank.get(a.machineId) ?? Number.POSITIVE_INFINITY;
+    const rb = machineRank.get(b.machineId) ?? Number.POSITIVE_INFINITY;
+    if (ra !== rb) return ra < rb ? -1 : 1;
+    return a.machineId < b.machineId ? -1 : 1;
+  }
+  const order = ctx.pinOrder?.[a.machineId];
+  if (order !== undefined) {
+    const ia = order.indexOf(a.cwd);
+    const ib = order.indexOf(b.cwd);
+    const pa = ia < 0 ? Number.POSITIVE_INFINITY : ia;
+    const pb = ib < 0 ? Number.POSITIVE_INFINITY : ib;
+    if (pa !== pb) return pa < pb ? -1 : 1;
+  }
+  return comparePinned(a.pinnedAt, b.pinnedAt);
+}
+
+/**
+ * 按工作空间分组。组序：置顶区（按机器分段，段内按手动顺序 / 置顶时间倒序，见 comparePinnedGroups）
+ * → 工作区创建时间倒序（新的在上）→ key。
  * 刻意不看组内状态与最后活动——组不该因为某个会话开始跑或在等批准就跳位置
  * （sidebar-pin）；待批准靠组头角标和强制展开提示。组内 compareSessions。
  *
@@ -200,7 +234,11 @@ function pinnedLookup(pinned: PinnedCwds, machineId: string): Map<string, number
  */
 export function groupRows(
   rows: SessionRowData[],
-  ctx: { pinned?: PinnedCwds; createdAt?: ReadonlyMap<string, number>; emptyPinnedFor?: Iterable<string> } = {},
+  ctx: {
+    pinned?: PinnedCwds;
+    createdAt?: ReadonlyMap<string, number>;
+    emptyPinnedFor?: Iterable<string>;
+  } & PinSortContext = {},
 ): SessionGroup[] {
   const map = new Map<string, SessionGroup>();
   const pins = new Map<string, Map<string, number>>();
@@ -259,12 +297,17 @@ export function groupRows(
   }
   const groups = [...map.values()];
   for (const g of groups) g.rows.sort(compareSessions);
-  return groups.sort(
-    (a, b) =>
-      comparePinned(a.pinnedAt, b.pinnedAt) ||
+  const machineRank = new Map((ctx.machineOrder ?? []).map((id, i) => [id, i] as const));
+  return groups.sort((a, b) => {
+    const ap = a.pinnedAt !== undefined;
+    const bp = b.pinnedAt !== undefined;
+    if (ap !== bp) return ap ? -1 : 1;
+    return (
+      (ap ? comparePinnedGroups(a, b, ctx, machineRank) : 0) ||
       b.createdAt - a.createdAt ||
-      (a.key < b.key ? -1 : a.key > b.key ? 1 : 0),
-  );
+      (a.key < b.key ? -1 : a.key > b.key ? 1 : 0)
+    );
+  });
 }
 
 /**
@@ -329,6 +372,7 @@ export function filterSessions(
   query: ListQuery,
   machineNames: Record<string, string> = {},
   pinnedCwds: PinnedCwds = {},
+  pinSort: PinSortContext = {},
 ): FilterResult {
   // 1. 机器
   const scoped: SessionRowData[] = [];
@@ -381,7 +425,7 @@ export function filterSessions(
         : [query.machine];
   const groups =
     query.groupBy === 'workspace'
-      ? groupRows(rows, { pinned: pinnedCwds, createdAt: workspaceCreatedAt(sessions), emptyPinnedFor })
+      ? groupRows(rows, { ...pinSort, pinned: pinnedCwds, createdAt: workspaceCreatedAt(sessions), emptyPinnedFor })
       : null;
 
   let empty: EmptyReason | null = null;

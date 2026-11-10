@@ -77,6 +77,10 @@ export interface SessionRowActions {
   onPin?: (machineId: string, sessionId: string, pinned: boolean) => MaybePromise;
   /** 工作区（组）置顶 / 取消置顶；cwd 是规范化后的组 cwd */
   onPinWorkspace?: (machineId: string, cwd: string, pinned: boolean) => void;
+  /** 调整置顶工作区顺序：把 cwd 移到 before 之前（null = 末尾）；失败时回调自己 toast 再 reject */
+  onMovePinnedWorkspace?: (machineId: string, cwd: string, before: string | null) => MaybePromise;
+  /** 这台机器的 agent 认识 cwd.pin.move（machine.info.cwd.pinOrder）；不给 = 都不认识 */
+  supportsPinOrder?: (machineId: string) => boolean;
   /** 打开扩展的关联选择器（一个或一批同机器的会话）；supportsLinks 判这台机器有没有扩展 */
   onLink?: (machineId: string, sessionIds: string[]) => void;
   supportsLinks?: (machineId: string) => boolean;

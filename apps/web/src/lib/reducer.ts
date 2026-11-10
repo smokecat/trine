@@ -358,6 +358,8 @@ export interface MachineCwd {
   favorites: string[];
   defaultCwd: string;
   pinned?: Record<string, number>;
+  /** 置顶工作区的手动顺序（pinned 的键，越前越靠上）；`machine.info.cwd.pinOrder` 为真的 agent 才带 */
+  pinOrder?: string[];
 }
 
 export interface MachineState {
@@ -782,6 +784,7 @@ export function applyEvent(tl: Timeline, event: AgentToClientEvent): Timeline {
     case 'machine.stats':
     case 'cwd.list.response':
     case 'cwd.updated':
+    case 'cwd.pin.move.response':
     case 'ext.catalog.response':
     case 'ext.read.response':
     case 'ext.action.plan':
@@ -1429,6 +1432,7 @@ export function applyMachineEvent(machine: MachineState, event: AgentToClientEve
           favorites: event.favorites,
           defaultCwd: event.defaultCwd,
           ...(event.pinned === undefined ? {} : { pinned: event.pinned }),
+          ...(event.pinOrder === undefined ? {} : { pinOrder: event.pinOrder }),
         },
       };
     case 'machine.stats': {

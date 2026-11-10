@@ -494,6 +494,8 @@ const MachineDocFrameSchema = z.object({
       favorites: z.array(z.string()),
       defaultCwd: z.string(),
       pinned: z.record(z.string(), z.number()).optional(),
+      /** 置顶工作区的手动顺序；形状不对只丢它自己（退回时间序），不连带丢整份快照 */
+      pinOrder: z.array(z.string()).optional().catch(undefined),
     })
     .nullable(),
   /** sessionId → 完整 SessionMeta（来源 session.list.response / created / updated） */

@@ -16,12 +16,19 @@ import { openLinkPicker, openWorkspacePanel } from '@/components/ext/use-ext.ts'
 import { copyText } from '@/lib/clipboard.ts';
 import { buildCopyCwd, buildSessionActions, supportedMachinesKey, supportsPin } from './session-actions.ts';
 import type { SessionRowActions } from './SessionRowMenu.tsx';
+import { supportsPinOrder } from './pin-order.ts';
 
 export function useSessionActions(machineId?: string): SessionRowActions {
   const client = useClient();
   // 标量 selector：机器的 online / lastSeenAt 翻转不会让回调换引用
   const supportedKey = useTrine((s) => supportedMachinesKey(s.machines));
   const pinKey = useTrine((s) => supportedMachinesKey(s.machines, supportsPin));
+  const pinOrderKey = useTrine((s) =>
+    Object.keys(s.machines)
+      .filter((id) => supportsPinOrder(s.machines[id]?.info))
+      .sort()
+      .join(','),
+  );
   // 有扩展的机器才给「关联…」（具体哪个扩展提供关联，选择器里再看）
   const linkKey = useTrine((s) =>
     Object.keys(s.machines)
@@ -58,7 +65,17 @@ export function useSessionActions(machineId?: string): SessionRowActions {
       onLink: (target: string, sessionIds: string[]) => openLinkPicker({ machineId: target, sessionIds }),
       onOpenWorkspace: (target: string, cwd: string) => openWorkspacePanel({ machineId: target, cwd }),
       supportsLinks: (target: string) => linkKey.split(',').includes(target),
+      ...(client === null || pinOrderKey === ''
+        ? {}
+        : {
+            supportsPinOrder: (target: string) => pinOrderKey.split(',').includes(target),
+            onMovePinnedWorkspace: (target: string, cwd: string, before: string | null) =>
+              client.movePinnedWorkspace(target, cwd, before).catch((err: unknown) => {
+                toast.error('调整置顶顺序失败', { description: err instanceof Error ? err.message : String(err) });
+                throw err;
+              }),
+          }),
     }),
-    [client, supportedKey, pinKey, linkKey, enginesKey, machineId],
+    [client, supportedKey, pinKey, pinOrderKey, linkKey, enginesKey, machineId],
   );
 }

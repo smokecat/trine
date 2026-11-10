@@ -402,6 +402,11 @@ describe('reducer · sessions / machine / prefs', () => {
     expect(m.cwd).toEqual({ favorites: ['/a'], defaultCwd: '/a' });
     m = applyMachineEvent(m, ev({ type: 'cwd.updated', favorites: ['/a'], defaultCwd: '/a', pinned: { '/a': 5 } }));
     expect(m.cwd).toEqual({ favorites: ['/a'], defaultCwd: '/a', pinned: { '/a': 5 } });
+    m = applyMachineEvent(m, ev({ type: 'cwd.list.response', reqId: 'q', favorites: [], defaultCwd: '/', pinned: { '/a': 5, '/b': 6 }, pinOrder: ['/a', '/b'] }));
+    expect(m.cwd).toEqual({ favorites: [], defaultCwd: '/', pinned: { '/a': 5, '/b': 6 }, pinOrder: ['/a', '/b'] });
+    // 旧 agent 的快照不带 pinOrder：整份替换，顺序跟着消失（退回时间序）
+    m = applyMachineEvent(m, ev({ type: 'cwd.updated', favorites: [], defaultCwd: '/', pinned: { '/a': 5 } }));
+    expect(m.cwd?.pinOrder).toBeUndefined();
   });
 
   test('machine.stats：存最新与历史（限条数），晚到的旧快照忽略', () => {

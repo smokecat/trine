@@ -39,7 +39,7 @@ import { DEFAULT_LIST_QUERY, filterSessions } from '../components/list/filtering
 // 会话 cwd 在系统临时目录下（测试约定），默认会被当成临时会话隐藏
 const LIST_QUERY = { ...DEFAULT_LIST_QUERY, showTemp: true };
 import { supportsSessionMutations } from '../components/list/session-actions.ts';
-import { FilesTrustError, FsRequestError, SessionMutateError, TrineClient } from './client.ts';
+import { CwdPinMoveError, FilesTrustError, FsRequestError, SessionMutateError, TrineClient } from './client.ts';
 import { LeaderElector } from './leader.ts';
 import { shouldAutoLoadHistory, type PermissionEntry, type TimelineEntry, type UserEntry } from './reducer.ts';
 import { KV_PEER, type PeerState } from './storage.ts';
@@ -1083,6 +1083,27 @@ describe('web lib · 信任目录 e2e', () => {
     } finally {
       await rm(parent, { recursive: true, force: true });
     }
+  }, 20_000);
+});
+
+describe('web lib · 置顶工作区排序 e2e（pin-order）', () => {
+  test('能力位 → 乐观更新 → 以广播为准；被拒抛 CwdPinMoveError 且本地不变', async () => {
+    await pair();
+    await waitFor(() => client.machine('mbp')?.info?.cwd?.pinOrder === true, 'machine.info.cwd.pinOrder');
+    for (const p of ['/w/a', '/w/b', '/w/c']) client.pinWorkspace('mbp', p, true);
+    await waitFor(() => client.machine('mbp')?.cwd?.pinOrder?.length === 3, 'pinOrder 三项');
+    expect(client.machine('mbp')?.cwd?.pinOrder).toEqual(['/w/c', '/w/b', '/w/a']);
+
+    const moving = client.movePinnedWorkspace('mbp', '/w/a', '/w/c');
+    // 乐观：请求发出时本地已经改了
+    expect(client.machine('mbp')?.cwd?.pinOrder).toEqual(['/w/a', '/w/c', '/w/b']);
+    await moving;
+    await waitFor(() => client.machine('mbp')?.cwd?.pinOrder?.[0] === '/w/a', 'cwd.updated 广播');
+    expect(client.machine('mbp')?.cwd?.pinOrder).toEqual(['/w/a', '/w/c', '/w/b']);
+
+    const err = await client.movePinnedWorkspace('mbp', '/w/zzz', null).then(() => undefined, (e: unknown) => e);
+    expect(err instanceof CwdPinMoveError ? err.code : String(err)).toBe('not_pinned');
+    expect(client.machine('mbp')?.cwd?.pinOrder).toEqual(['/w/a', '/w/c', '/w/b']);
   }, 20_000);
 });
 

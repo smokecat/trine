@@ -721,6 +721,52 @@ describe('置顶空组与「在此目录新建会话」（plan §2 / §3）', ()
     expect(calls).toEqual(['/x']);
   });
 
+  test('置顶组菜单：上移 / 下移 / 移到本机最前，按有效顺序算 before；旧 agent 没有这些项；离线禁用', () => {
+    const moves: [string, string, string | null][] = [];
+    const orderMachines = (online: boolean, pinOrder: boolean) =>
+      ({
+        m: {
+          machineId: 'm',
+          name: 'MBP',
+          online,
+          lastSeenAt: 1,
+          parkedCount: 0,
+          info: pinOrder ? { cwd: { pinOrder: true } } : null,
+          cwd: { favorites: [], defaultCwd: '/', pinned: { '/a': 1, '/b': 2, '/c': 3 }, pinOrder: ['/a', '/b', '/c'] },
+        },
+      }) as unknown as Record<string, MachineState>;
+    const actions: Actions = {
+      onPinWorkspace: () => {},
+      supportsPinOrder: () => true,
+      onMovePinnedWorkspace: (m, c, b) => {
+        moves.push([m, c, b]);
+      },
+    };
+    render({}, { query: { groupBy: 'workspace' }, machines: orderMachines(true, true), actions });
+    expect($$('session-group').map((g) => g.dataset.groupKey)).toEqual(['/a', '/b', '/c'].map((c) => groupKey('m', c)));
+    openMenu($$('session-group-menu')[1]!);
+    expect(($('group-menu-move-up') as HTMLElement).dataset.disabled).toBeUndefined();
+    click($('group-menu-move-down')!);
+    openMenu($$('session-group-menu')[2]!);
+    click($('group-menu-move-top')!);
+    expect(moves).toEqual([
+      ['m', '/b', null],
+      ['m', '/c', '/a'],
+    ]);
+    act(() => root?.unmount());
+    document.body.innerHTML = '';
+
+    render({}, { query: { groupBy: 'workspace' }, machines: orderMachines(false, true), actions });
+    openMenu($$('session-group-menu')[1]!);
+    expect($('group-menu-move-up')?.dataset.disabled).toBe('');
+    act(() => root?.unmount());
+    document.body.innerHTML = '';
+
+    render({}, { query: { groupBy: 'workspace' }, machines: orderMachines(true, true), actions: { ...actions, supportsPinOrder: () => false } });
+    openMenu($$('session-group-menu')[1]!);
+    expect($('group-menu-move-up')).toBeNull();
+  });
+
   test('不给 onNewSessionIn：没有「+」', () => {
     render({ m: { a: meta({ sessionId: 'a', cwd: '/x' }) } }, { query: { groupBy: 'workspace' } });
     expect($('session-group-new')).toBeNull();

@@ -277,4 +277,17 @@ describe('MachineDoc：一条坏会话行不该丢掉整份快照（N7）', () =
     expect(Object.keys(doc!.sessions)).toEqual(['a']);
     expect(dropped).toEqual([]);
   });
+
+  test('cwd 快照带 pinOrder：往返保留；形状不对只丢 pinOrder 自己', async () => {
+    const docs = new MemoryDocStore();
+    const pinnedCwd = { favorites: [], defaultCwd: '/', pinned: { '/a': 1, '/b': 2 }, pinOrder: ['/a', '/b'] };
+    await saveMachineDoc(docs, 'mbp', { info, cwd: pinnedCwd, sessions: {} });
+    expect((await loadMachineDoc(docs, 'mbp'))?.cwd).toEqual(pinnedCwd);
+
+    await docs.set('machine:mbp', { v: 1, info, cwd: { ...pinnedCwd, pinOrder: 'garbage' }, sessions: {} });
+    const doc = await loadMachineDoc(docs, 'mbp');
+    expect(doc?.info).toEqual(info);
+    expect(doc?.cwd?.pinned).toEqual({ '/a': 1, '/b': 2 });
+    expect(doc?.cwd?.pinOrder).toBeUndefined();
+  });
 });

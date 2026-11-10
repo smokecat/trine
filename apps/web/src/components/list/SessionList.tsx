@@ -48,8 +48,10 @@ import {
   isGroupExpanded,
   type ListQuery,
   type PinnedCwds,
+  type PinOrders,
   type SessionGroup,
 } from './filtering.ts';
+import { effectivePinOrder, pinMoveTarget, type PinMoveAction } from './pin-order.ts';
 import { useCollapsedGroups } from './collapsed-groups.ts';
 import {
   hasRowMenu,
@@ -110,10 +112,36 @@ export function SessionList({
     for (const [id, m] of Object.entries(machines)) if (m.cwd?.pinned !== undefined) out[id] = m.cwd.pinned;
     return out;
   }, [machines]);
+  // 置顶顺序（plan §1）：每台机器的有效顺序 + 稳定的机器顺序（名字、再 id；不按在线与否跳）
+  const pinSort = useMemo(() => {
+    const pinOrder: PinOrders = {};
+    for (const [id, m] of Object.entries(machines)) if (m.cwd?.pinned !== undefined) pinOrder[id] = effectivePinOrder(m.cwd);
+    const machineOrder = Object.values(machines)
+      .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : a.machineId < b.machineId ? -1 : 1))
+      .map((m) => m.machineId);
+    return { pinOrder, machineOrder };
+  }, [machines]);
   const result = useMemo(
-    () => filterSessions(sessions, query, machineNames, pinnedCwds),
-    [sessions, query, machineNames, pinnedCwds],
+    () => filterSessions(sessions, query, machineNames, pinnedCwds, pinSort),
+    [sessions, query, machineNames, pinnedCwds, pinSort],
   );
+  /** 置顶组的重排入口：旧 agent 不给（undefined）；离线 / 搜索筛选中给原因（禁用） */
+  const pinMoveFor = (group: SessionGroup): PinMoveProps | undefined => {
+    const move = actions?.onMovePinnedWorkspace;
+    if (move === undefined || group.pinnedAt === undefined || query.archived) return undefined;
+    if (actions?.supportsPinOrder?.(group.machineId) !== true) return undefined;
+    const order = pinSort.pinOrder[group.machineId] ?? [];
+    const blocked = isFiltering(query)
+      ? '搜索 / 筛选中不能调整顺序'
+      : machines[group.machineId]?.online !== true
+        ? '机器离线，暂不能调整顺序'
+        : null;
+    return {
+      order,
+      blocked,
+      move: (before) => swallowRejection(move(group.machineId, group.cwd, before)),
+    };
+  };
   const { requestRename, requestDelete, dialogs } = useRowActionDialogs(actions);
 
   // ---- 多选 ----
@@ -348,6 +376,7 @@ export function SessionList({
                 {...(actions?.onCopyCwd !== undefined && group.cwd !== ''
                   ? { onCopyCwd: () => swallowRejection(actions.onCopyCwd?.(group.cwd)) }
                   : {})}
+                pinMove={pinMoveFor(group)}
                 {...(onNewSessionIn !== undefined && group.cwd !== ''
                   ? {
                       onNewSession: () => onNewSessionIn(group.machineId, group.cwd),
@@ -377,6 +406,7 @@ function GroupSection({
   onCopyCwd,
   onNewSession,
   newSessionBlocked = null,
+  pinMove,
   children,
 }: {
   group: SessionGroup;
@@ -397,6 +427,8 @@ function GroupSection({
   onNewSession?: () => void;
   /** 不能新建的原因（机器离线）；null = 可以 */
   newSessionBlocked?: string | null;
+  /** 置顶组的重排（上移 / 下移 / 移到本机最前）；不给 = 不显示这些项 */
+  pinMove?: PinMoveProps | undefined;
   children: React.ReactNode;
 }): React.JSX.Element {
   // 有待批准 / 搜索筛选中强制展开：点了也收不起来，别假装能收（评审 M5 / minor 3）
@@ -453,6 +485,20 @@ function GroupSection({
   }
   if (onPin !== undefined) {
     menuItems.push({ id: 'pin', label: pinned ? '取消置顶工作区' : '置顶工作区', onSelect: () => onPin(!pinned) });
+  }
+  if (pinMove !== undefined) {
+    for (const [action, label] of PIN_MOVE_ITEMS) {
+      const before = pinMoveTarget(pinMove.order, group.cwd, action);
+      menuItems.push({
+        id: `move-${action}`,
+        label,
+        disabled: pinMove.blocked !== null || before === undefined,
+        ...(pinMove.blocked === null ? {} : { title: pinMove.blocked }),
+        onSelect: () => {
+          if (before !== undefined) pinMove.move(before);
+        },
+      });
+    }
   }
   if (onWorkspace !== undefined) menuItems.push({ id: 'workspace', label: '扩展面板…', onSelect: onWorkspace });
   if (onCopyCwd !== undefined) menuItems.push({ id: 'copy-cwd', label: '复制目录', title: group.cwd, onSelect: onCopyCwd });
@@ -553,6 +599,19 @@ function GroupSection({
     </section>
   );
 }
+
+/** 置顶组重排：本机的有效顺序、不能重排的原因（null = 可以）、发起移动 */
+interface PinMoveProps {
+  order: readonly string[];
+  blocked: string | null;
+  move: (before: string | null) => void;
+}
+
+const PIN_MOVE_ITEMS: readonly (readonly [PinMoveAction, string])[] = [
+  ['up', '上移'],
+  ['down', '下移'],
+  ['top', '移到本机最前'],
+];
 
 interface GroupMenuItem {
   /** testid 后缀：`group-menu-<id>` */
