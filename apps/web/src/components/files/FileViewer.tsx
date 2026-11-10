@@ -84,7 +84,8 @@ function TextBody({ opened, mode, wrap }: { opened: OpenedFile; mode: 'rendered'
   if (text === '') return <div className="text-text-3 p-4 text-[13px]">（空文件）</div>;
   if (file.kind === 'markdown' && mode === 'rendered' && small) {
     return (
-      <div data-testid="file-markdown" className="px-4 py-3 sm:px-6">
+      // data-file-preview：目录与锚点定位从这里读标题（MarkdownToc 的 PREVIEW_ROOT_ATTR）
+      <div data-testid="file-markdown" data-file-preview="" className="min-w-0 px-4 py-3 sm:px-6">
         <Markdown text={text} streaming={false} fileBase={file.path} />
       </div>
     );

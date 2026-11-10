@@ -56,7 +56,15 @@ import { defaultRehypePlugins, Streamdown, type StreamdownProps } from 'streamdo
 import { code } from '@streamdown/code';
 import { ImageIcon } from 'lucide-react';
 import { decodeHref, detectPath, isLocalHref, resolveRelative, type DetectedPath } from '@/components/files/file-model.ts';
-import { FileBaseContext, targetForClick, useFileLinks, type FileOpenIntent, type FileOpenTarget } from '@/components/files/file-links.ts';
+import {
+  FileBaseContext,
+  FileDocAnchorContext,
+  targetForClick,
+  useFileLinks,
+  type FileOpenIntent,
+  type FileOpenTarget,
+} from '@/components/files/file-links.ts';
+import { createSlugger, splitHref } from '@/components/files/toc-model.ts';
 import { cn } from '@/lib/utils.ts';
 
 /** 识别出的路径 → 打开 intent（以 `/` 结尾的是目录） */
@@ -118,20 +126,45 @@ function FileAwareLink({
 }: React.ComponentProps<'a'> & { node?: unknown; 'data-file-href'?: string }): React.JSX.Element {
   const links = useFileLinks();
   const base = useContext(FileBaseContext);
+  const anchors = useContext(FileDocAnchorContext);
   if (links !== null && typeof fileHref === 'string') {
-    // 先去掉 ?query / #锚点 再解码（文件名里的 %23 解码后是 #，不能再被当锚点切掉）
-    const href = decodeHref(fileHref.replace(/[?#].*$/, ''));
+    // 同文件锚点（只在文件预览里被保护下来）：在预览自己的滚动容器里定位，不动地址栏
+    if (fileHref.startsWith('#')) {
+      const fragment = decodeHref(fileHref.slice(1));
+      if (anchors === null || fragment === '') return <span className={className}>{children}</span>;
+      return (
+        <a
+          href={fileHref}
+          data-testid="file-anchor-link"
+          data-fragment={fragment}
+          onClick={(e) => {
+            // Ctrl/Cmd/Shift 点击不劫持
+            if (e.ctrlKey || e.metaKey || e.shiftKey) return;
+            e.preventDefault();
+            anchors.jump(fragment);
+          }}
+          className={cn('text-brand-ink underline', className)}
+        >
+          {children}
+        </a>
+      );
+    }
+    // 先去掉 ?query / #锚点 再解码（文件名里的 %23 解码后是 #，不能再被当锚点切掉）；锚点单独带给打开 intent
+    const { path: href, fragment } = splitHref(fileHref);
     const target = base === undefined ? href : resolveRelative(base, href);
     // 聊天里只认像路径的（`[x](foo)` 这种裸词不算）；文件里的相对链接都当文件
     const detected = base === undefined ? detectPath(target) : { path: target, dir: target.endsWith('/') };
     if (detected !== undefined) {
+      // 指回本文件的 `a.md#x`：当成同文件锚点
+      const sameFile = anchors !== null && base !== undefined && !detected.dir && detected.path === base && fragment !== undefined;
       return (
         <button
           type="button"
           data-testid="file-link"
           data-path={detected.path}
+          {...(fragment === undefined ? {} : { 'data-fragment': fragment })}
           title={detected.path}
-          onClick={(e) => links.open(intentFor(detected, targetForClick(e)))}
+          onClick={(e) => (sameFile ? anchors.jump(fragment) : links.open(intentFor(detected, targetForClick(e), fragment)))}
           className={cn('text-brand-ink cursor-pointer text-left underline', className)}
         >
           {children}
@@ -171,33 +204,90 @@ function FileDocImage({
   );
 }
 
+type HeadingProps = React.ComponentProps<'h1'> & { node?: unknown; 'data-heading-slug'?: string };
+
+/** streamdown 默认标题的样式（h1–h3 另由 Markdown 的 className 覆盖） */
+const HEADING_CLASS = ['text-3xl', 'text-2xl', 'text-xl', 'text-lg', 'text-base', 'text-sm'] as const;
+
+/**
+ * 文件预览里的标题：slug 由 rehype 插件写进 `data-heading-slug`（每次转换重新编号），
+ * id 在这里加上本预览实例的前缀——同屏多个预览（抽屉 + 工作区）不会撞 id。
+ */
+function DocHeading({ level, node: _node, id: _id, className, children, ...props }: HeadingProps & { level: 1 | 2 | 3 | 4 | 5 | 6 }): React.JSX.Element {
+  const anchors = useContext(FileDocAnchorContext);
+  const slug = props['data-heading-slug'];
+  const Tag = `h${level}` as const;
+  return (
+    <Tag
+      {...props}
+      {...(anchors !== null && slug !== undefined ? { id: `${anchors.ns}-${slug}` } : {})}
+      data-streamdown={`heading-${level}`}
+      className={cn('mt-6 mb-2 scroll-mt-2 font-semibold', HEADING_CLASS[level - 1], className)}
+    >
+      {children}
+    </Tag>
+  );
+}
+const DocH1 = (p: HeadingProps): React.JSX.Element => <DocHeading level={1} {...p} />;
+const DocH2 = (p: HeadingProps): React.JSX.Element => <DocHeading level={2} {...p} />;
+const DocH3 = (p: HeadingProps): React.JSX.Element => <DocHeading level={3} {...p} />;
+const DocH4 = (p: HeadingProps): React.JSX.Element => <DocHeading level={4} {...p} />;
+const DocH5 = (p: HeadingProps): React.JSX.Element => <DocHeading level={5} {...p} />;
+const DocH6 = (p: HeadingProps): React.JSX.Element => <DocHeading level={6} {...p} />;
+
 const fileComponents = { source: (): null => null, inlineCode: FileAwareInlineCode, a: FileAwareLink };
-const fileDocComponents = { ...fileComponents, img: FileDocImage };
+const fileDocComponents = { ...fileComponents, img: FileDocImage, h1: DocH1, h2: DocH2, h3: DocH3, h4: DocH4, h5: DocH5, h6: DocH6 };
 
 interface HastNode {
   type: string;
   tagName?: string;
+  value?: string;
   properties?: Record<string, unknown>;
   children?: HastNode[];
+}
+
+function hastText(node: HastNode): string {
+  if (node.type === 'text') return node.value ?? '';
+  return (node.children ?? []).map(hastText).join('');
+}
+
+/**
+ * 标题 slug（方案 §6）：放在 sanitize 之后（sanitize 会给 id 加 `user-content-` 前缀，这里不用 id，
+ * 只写 `data-heading-slug`）、harden 之前。slugger 在**每次转换**里新建——streamdown 缓存的是
+ * 处理器，插件闭包里不能留跨转换的计数，也不往外回调（标题列表由预览在提交后从 DOM 读）。
+ */
+function addHeadingSlugs(tree: HastNode, slugger: (text: string) => string): void {
+  if (tree.type === 'element' && tree.properties !== undefined && /^h[1-6]$/.test(tree.tagName ?? '')) {
+    tree.properties['dataHeadingSlug'] = slugger(hastText(tree));
+    return;
+  }
+  for (const child of tree.children ?? []) addHeadingSlugs(child, slugger);
+}
+
+// 名字与其他插件都不同（streamdown 按插件函数名缓存处理器）
+function rehypeFileDocHeadingSlugs() {
+  return (tree: HastNode): void => addHeadingSlugs(tree, createSlugger());
 }
 
 /**
  * 在 harden 之前把本地链接（以及文件预览里的本地图片）的**原始**地址存进 `data-file-href`，
  * 地址本身换成占位 `/`：harden 会把 `../x.md` 归一成 `/x.md`、把 `docs/a.md` 这种裸相对路径
  * 直接拦成 [blocked]，组件拿不到原文就没法按文件目录解析。放在 sanitize 之后，自定义属性不会被剥。
+ * 文件预览（`doc`）里同文件锚点 `#x` 也要保护（harden 同样会拦），聊天里照旧。
  */
-function stashLocalUrls(tree: HastNode, images: boolean): void {
+function stashLocalUrls(tree: HastNode, doc: boolean): void {
   const props = tree.properties;
   if (tree.type === 'element' && props !== undefined) {
-    if (tree.tagName === 'a' && typeof props['href'] === 'string' && isLocalHref(props['href'])) {
-      props['dataFileHref'] = props['href'];
+    const href = props['href'];
+    if (tree.tagName === 'a' && typeof href === 'string' && (isLocalHref(href) || (doc && href.length > 1 && href.startsWith('#')))) {
+      props['dataFileHref'] = href;
       props['href'] = '/'; // harden 认得的同源路径（`#`、裸相对路径会被它拦掉）；组件不用它
-    } else if (images && tree.tagName === 'img' && typeof props['src'] === 'string' && isLocalHref(props['src'])) {
+    } else if (doc && tree.tagName === 'img' && typeof props['src'] === 'string' && isLocalHref(props['src'])) {
       props['dataFileHref'] = props['src'];
       props['src'] = '/';
     }
   }
-  for (const child of tree.children ?? []) stashLocalUrls(child, images);
+  for (const child of tree.children ?? []) stashLocalUrls(child, doc);
 }
 
 // 两个插件必须是**不同名**的具名函数：streamdown 按插件函数名缓存 unified 处理器，
@@ -212,7 +302,8 @@ function rehypeStashFileLinksAndImages() {
 type Pluggable = NonNullable<StreamdownProps['rehypePlugins']>[number];
 const { raw, sanitize, harden } = defaultRehypePlugins as Record<'raw' | 'sanitize' | 'harden', Pluggable>;
 const fileRehypePlugins: Pluggable[] = [raw, sanitize, rehypeStashFileLinks, harden];
-const fileDocRehypePlugins: Pluggable[] = [raw, sanitize, rehypeStashFileLinksAndImages, harden];
+// 文件预览：raw → sanitize → 文件链接保护 / 标题 slug → harden（不放宽 sanitize）
+const fileDocRehypePlugins: Pluggable[] = [raw, sanitize, rehypeStashFileLinksAndImages, rehypeFileDocHeadingSlugs, harden];
 
 /**
  * 扩展给的详情文本（`restricted`）更严：图片一律不渲染（同源相对图片也会把文本带进请求 URL、

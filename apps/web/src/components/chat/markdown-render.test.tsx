@@ -15,7 +15,7 @@
 import { describe, expect, test } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { Markdown } from './Markdown.tsx';
-import { FileLinksContext, type FileLinks } from '@/components/files/file-links.ts';
+import { FileDocAnchorContext, FileLinksContext, type FileLinks } from '@/components/files/file-links.ts';
 
 const EVIL = 'evil.example';
 
@@ -157,5 +157,64 @@ describe('Markdown 文件链接（FileLinksContext）：路径可点，外连拦
 
   test('没有 provider：不出现文件链接', () => {
     expect(render('`docs/plan.md` [x](docs/a.md)')).not.toContain('file-link');
+  });
+});
+
+describe('Markdown 文件预览：标题 slug 与锚点（§6）', () => {
+  const links: FileLinks = { open: () => {} };
+  const BASE = '/w/repo/docs/a.md';
+  const DOC = '# Hello, World!\n\n## 安装步骤\n\n## 用法\n\n## 用法\n\n见 [安装](#安装步骤)、[编码](#%E7%94%A8%E6%B3%95-1)、[部署](./b.md#%E9%83%A8%E7%BD%B2)、[本文](./a.md#用法)';
+  const renderDoc = (text: string, ns?: string): string =>
+    renderToStaticMarkup(
+      <FileLinksContext.Provider value={links}>
+        {ns === undefined ? (
+          <Markdown text={text} streaming={false} fileBase={BASE} />
+        ) : (
+          <FileDocAnchorContext.Provider value={{ ns, jump: () => true }}>
+            <Markdown text={text} streaming={false} fileBase={BASE} />
+          </FileDocAnchorContext.Provider>
+        )}
+      </FileLinksContext.Provider>,
+    );
+  const renderChat = (text: string): string =>
+    renderToStaticMarkup(
+      <FileLinksContext.Provider value={links}>
+        <Markdown text={text} streaming={false} />
+      </FileLinksContext.Provider>,
+    );
+  const slugs = (html: string): string[] => [...html.matchAll(/data-heading-slug="([^"]*)"/g)].map((m) => m[1]!);
+
+  test('中文、标点、重复标题的 slug；有预览实例时 id 带命名空间', () => {
+    const html = renderDoc(DOC, 'p1');
+    expect(slugs(html)).toEqual(['hello-world', '安装步骤', '用法', '用法-1']);
+    expect(html).toContain('id="p1-安装步骤"');
+    expect(html).toContain('id="p1-用法-1"');
+    // 没有预览实例：只有 slug，不出 id
+    expect(renderDoc(DOC)).not.toContain(' id="');
+  });
+
+  test('同文件锚点保护下来（不被 harden 拦），百分号编码解码；跨文件锚点单独带上', () => {
+    const html = renderDoc(DOC, 'p1');
+    expect(html).not.toContain('[blocked]');
+    expect(html).toContain('data-testid="file-anchor-link" data-fragment="安装步骤"');
+    expect(html).toContain('data-fragment="用法-1"');
+    expect(html).toMatch(/data-path="\/w\/repo\/docs\/b.md" data-fragment="部署"/);
+    expect(html).toMatch(/data-path="\/w\/repo\/docs\/a.md" data-fragment="用法"/);
+  });
+
+  test('交替渲染聊天与预览：处理器不串、每次转换 slug 重新编号', () => {
+    const first = slugs(renderDoc(DOC));
+    const chat = renderChat(DOC);
+    expect(chat).not.toContain('data-heading-slug');
+    expect(chat).not.toContain('file-anchor-link');
+    expect(slugs(renderDoc(DOC))).toEqual(first);
+    expect(slugs(renderDoc('## 用法\n\n## 用法'))).toEqual(['用法', '用法-1']);
+  });
+
+  test('raw HTML 标题照样有 slug；sanitize 不放宽（脚本仍被剥掉）', () => {
+    const html = renderDoc('<h2 id="x" onclick="alert(1)">原始 <b>标题</b></h2>\n\n<script>alert(1)</script>', 'p1');
+    expect(slugs(html)).toEqual(['原始-标题']);
+    expect(html).not.toContain('onclick');
+    expect(html).not.toContain('<script');
   });
 });
