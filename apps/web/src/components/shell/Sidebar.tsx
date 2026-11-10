@@ -133,6 +133,8 @@ function SessionListSlot(): React.JSX.Element {
   const [, setShowTemp] = useListShowTemp();
   const actions = useSessionActions();
   const now = useNow();
+  // 组头「+」：sheet 挂在本侧栏（见 Sidebar 底部的 NewSessionSheetRoute），写 intent 即可
+  const [, , openNewSessionIn] = useNewSessionSheet();
   return (
     <>
       <SessionList
@@ -141,6 +143,7 @@ function SessionListSlot(): React.JSX.Element {
         query={query}
         actions={actions}
         onShowTemp={setShowTemp}
+        onNewSessionIn={openNewSessionIn}
         variant="compact"
         now={now}
         className="px-2.5 pb-3"

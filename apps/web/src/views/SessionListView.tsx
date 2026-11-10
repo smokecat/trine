@@ -40,7 +40,7 @@ export function SessionListView(): React.JSX.Element {
   const { engine, setEngine, options: engineOptions } = useEngineFilter();
   const query = useListQuery({ archived: false });
   const actions = useSessionActions();
-  const [sheetOpen, setSheetOpen] = useNewSessionSheet();
+  const [sheetOpen, setSheetOpen, openNewSessionIn, newSessionIntent] = useNewSessionSheet();
   const { refresh, refreshing, error, canRefresh } = useSessionRefresh();
   const now = useNow();
 
@@ -151,6 +151,7 @@ export function SessionListView(): React.JSX.Element {
           now={now}
           actions={actions}
           onShowTemp={setShowTemp}
+          onNewSessionIn={openNewSessionIn}
         />
       </div>
 
@@ -164,7 +165,7 @@ export function SessionListView(): React.JSX.Element {
         <PlusIcon className="size-6" />
       </Button>
 
-      <NewSessionSheet open={sheetOpen} onOpenChange={setSheetOpen} />
+      <NewSessionSheet open={sheetOpen} onOpenChange={setSheetOpen} intent={newSessionIntent} />
     </div>
   );
 }

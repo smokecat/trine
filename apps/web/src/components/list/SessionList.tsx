@@ -446,34 +446,55 @@ function GroupSection({
         )}
       </button>
   );
-  const pinLabel = pinned ? '取消置顶工作区' : '置顶工作区';
+  // 组菜单项：「⋯」下拉与右键菜单共用一份
+  const menuItems: GroupMenuItem[] = [];
+  if (onNewSession !== undefined) {
+    menuItems.push({ id: 'new-session', label: '在此目录新建会话', onSelect: onNewSession });
+  }
+  if (onPin !== undefined) {
+    menuItems.push({ id: 'pin', label: pinned ? '取消置顶工作区' : '置顶工作区', onSelect: () => onPin(!pinned) });
+  }
+  if (onWorkspace !== undefined) menuItems.push({ id: 'workspace', label: '扩展面板…', onSelect: onWorkspace });
+  if (onCopyCwd !== undefined) menuItems.push({ id: 'copy-cwd', label: '复制目录', title: group.cwd, onSelect: onCopyCwd });
+  const plus =
+    onNewSession === undefined ? null : (
+      <Button
+        size="icon-xs"
+        variant="ghost"
+        data-testid="session-group-new"
+        aria-label={`在「${groupLabel(group.cwd)}」新建会话`}
+        title={newSessionBlocked === null ? '在此目录新建会话' : `在此目录新建会话（${newSessionBlocked}）`}
+        onClick={onNewSession}
+        // 常显、低调；触屏把点击区放大到 44px（负外边距抵掉，组头不变高）
+        className="text-text-3 hover:text-text size-5 shrink-0 pointer-coarse:-my-3 pointer-coarse:size-11"
+      >
+        <PlusIcon />
+      </Button>
+    );
   return (
     <section data-testid="session-group" data-group-key={group.key} data-expanded={expanded} data-pinned={pinned || undefined} className="flex flex-col gap-2">
-      {onPin === undefined && onWorkspace === undefined && onCopyCwd === undefined ? (
+      {menuItems.length === 0 ? (
         header
       ) : (
-        // 「⋯」与按钮是兄弟（不嵌套交互元素）；右键整条组头也能出同一个菜单
+        // 「+」「⋯」与按钮是兄弟（不嵌套交互元素）；右键整条组头也能出同一个菜单
         <div className="group/header flex min-w-0 items-center gap-1">
           <ContextMenu>
             <ContextMenuTrigger asChild>{header}</ContextMenuTrigger>
             <ContextMenuContent data-testid="session-group-context-menu">
-              {onPin !== undefined && (
-                <ContextMenuItem data-testid="group-menu-pin" onSelect={() => onPin(!pinned)}>
-                  {pinLabel}
+              {menuItems.map((item) => (
+                <ContextMenuItem
+                  key={item.id}
+                  data-testid={`group-menu-${item.id}`}
+                  disabled={item.disabled}
+                  {...(item.title === undefined ? {} : { title: item.title })}
+                  onSelect={item.onSelect}
+                >
+                  {item.label}
                 </ContextMenuItem>
-              )}
-              {onWorkspace !== undefined && (
-                <ContextMenuItem data-testid="group-menu-workspace" onSelect={onWorkspace}>
-                  扩展面板…
-                </ContextMenuItem>
-              )}
-              {onCopyCwd !== undefined && (
-                <ContextMenuItem data-testid="group-menu-copy-cwd" title={group.cwd} onSelect={onCopyCwd}>
-                  复制目录
-                </ContextMenuItem>
-              )}
+              ))}
             </ContextMenuContent>
           </ContextMenu>
+          {plus}
           <DropdownMenu modal={false}>
             <DropdownMenuTrigger asChild>
               <Button
@@ -488,21 +509,17 @@ function GroupSection({
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-auto min-w-36" data-testid="session-group-menu-content">
-              {onPin !== undefined && (
-                <DropdownMenuItem data-testid="group-menu-pin" onSelect={() => onPin(!pinned)}>
-                  {pinLabel}
+              {menuItems.map((item) => (
+                <DropdownMenuItem
+                  key={item.id}
+                  data-testid={`group-menu-${item.id}`}
+                  disabled={item.disabled}
+                  {...(item.title === undefined ? {} : { title: item.title })}
+                  onSelect={item.onSelect}
+                >
+                  {item.label}
                 </DropdownMenuItem>
-              )}
-              {onWorkspace !== undefined && (
-                <DropdownMenuItem data-testid="group-menu-workspace" onSelect={onWorkspace}>
-                  扩展面板…
-                </DropdownMenuItem>
-              )}
-              {onCopyCwd !== undefined && (
-                <DropdownMenuItem data-testid="group-menu-copy-cwd" title={group.cwd} onSelect={onCopyCwd}>
-                  复制目录
-                </DropdownMenuItem>
-              )}
+              ))}
             </DropdownMenuContent>
           </DropdownMenu>
         </div>
@@ -535,6 +552,15 @@ function GroupSection({
         ))}
     </section>
   );
+}
+
+interface GroupMenuItem {
+  /** testid 后缀：`group-menu-<id>` */
+  id: string;
+  label: string;
+  title?: string;
+  disabled?: boolean;
+  onSelect: () => void;
 }
 
 /** 组里「新建会话」为什么不能点：机器离线（缓存里的置顶组照常显示，但发不出请求） */

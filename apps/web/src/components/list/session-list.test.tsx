@@ -47,16 +47,23 @@ let router: ReturnType<typeof createMemoryRouter> | null = null;
 
 function render(
   sessions: Record<string, Record<string, SessionMeta>>,
-  opts: { actions?: Actions; query?: Partial<Query>; at?: '/' | '/archived' } = {},
+  opts: {
+    actions?: Actions;
+    query?: Partial<Query>;
+    at?: '/' | '/archived';
+    machines?: Record<string, MachineState>;
+    onNewSessionIn?: (machineId: string, cwd: string) => void;
+  } = {},
 ): void {
   const query: Query = { ...DEFAULT_LIST_QUERY, groupBy: 'none', ...opts.query };
   const list = (
     <SessionList
       sessions={sessions}
-      machines={machines}
+      machines={opts.machines ?? machines}
       query={query}
       now={2}
       {...(opts.actions === undefined ? {} : { actions: opts.actions })}
+      {...(opts.onNewSessionIn === undefined ? {} : { onNewSessionIn: opts.onNewSessionIn })}
     />
   );
   router = createMemoryRouter(
@@ -670,5 +677,52 @@ describe('多引擎：行标签与菜单', () => {
     expect(show({ engines }, meta({ sessionId: 'a', engine: 'codex' }))).toContain('Codex');
     expect(show({ engines }, meta({ sessionId: 'a' }))).toContain('Claude');
     expect(show({ engines: [engines[0]] }, meta({ sessionId: 'a' }))).toBeUndefined();
+  });
+});
+
+describe('置顶空组与「在此目录新建会话」（plan §2 / §3）', () => {
+  const withCwd = (online: boolean, pinned: Record<string, number>) =>
+    ({
+      m: { machineId: 'm', name: 'MBP', online, lastSeenAt: 1, parkedCount: 0, cwd: { favorites: [], defaultCwd: '/', pinned } },
+    }) as unknown as Record<string, MachineState>;
+
+  test('全部会话已归档：置顶目录显示为空组，带「暂无会话」与新建按钮', () => {
+    const calls: [string, string][] = [];
+    render(
+      { m: { a: meta({ sessionId: 'a', cwd: '/p', archived: true }) } },
+      { query: { groupBy: 'workspace' }, machines: withCwd(true, { '/p': 1 }), onNewSessionIn: (m, c) => calls.push([m, c]) },
+    );
+    expect($('session-list-empty')).toBeNull();
+    expect($('session-group-empty')?.textContent).toContain('暂无会话');
+    click($('session-group-empty-new')!);
+    click($('session-group-new')!);
+    expect(calls).toEqual([
+      ['m', '/p'],
+      ['m', '/p'],
+    ]);
+  });
+
+  test('离线机器：缓存的置顶照常显示，空组新建按钮禁用并说明；组头「+」仍可打开（sheet 里说明原因）', () => {
+    render({}, { query: { groupBy: 'workspace' }, machines: withCwd(false, { '/p': 1 }), onNewSessionIn: () => {} });
+    expect(($('session-group-empty-new') as HTMLButtonElement).disabled).toBe(true);
+    expect($('session-group-empty-blocked')?.textContent).toContain('离线');
+    expect(($('session-group-new') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  test('组菜单有「在此目录新建会话」；未知目录组不显示入口', () => {
+    const calls: string[] = [];
+    render(
+      { m: { a: meta({ sessionId: 'a', cwd: '/x' }), b: meta({ sessionId: 'b', cwd: '' }) } },
+      { query: { groupBy: 'workspace' }, onNewSessionIn: (_m, c) => calls.push(c) },
+    );
+    expect($$('session-group-new')).toHaveLength(1);
+    openMenu($$('session-group-menu')[0]!);
+    click($('group-menu-new-session')!);
+    expect(calls).toEqual(['/x']);
+  });
+
+  test('不给 onNewSessionIn：没有「+」', () => {
+    render({ m: { a: meta({ sessionId: 'a', cwd: '/x' }) } }, { query: { groupBy: 'workspace' } });
+    expect($('session-group-new')).toBeNull();
   });
 });

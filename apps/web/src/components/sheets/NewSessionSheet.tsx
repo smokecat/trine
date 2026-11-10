@@ -47,10 +47,23 @@ import {
   type ModePickerState,
 } from './permission-mode.ts';
 import { EngineIcon } from '@/components/shell/EngineIcon.tsx';
+import type { NewSessionIntent } from './new-session-route.tsx';
 
 /** 分区标题（原型 `.form-row .lbl`） */
 /** 复制工作目录：与会话列表同一套 toast 文案 */
 const copyCwd = buildCopyCwd(copyText, toast);
+
+/**
+ * intent → 本次打开的机器 / 目录。机器不在本设备上：不选机器（`missing`），由界面说明原因，
+ * 绝不悄悄换成别的机器；离线机器照选，sheet 自己的离线提示会说明为什么建不了。
+ */
+export function resolveNewSessionIntent(
+  intent: NewSessionIntent,
+  machines: Record<string, unknown>,
+): { machineId: string; cwd: string; missing: boolean } {
+  if (machines[intent.machineId] === undefined) return { machineId: '', cwd: '', missing: true };
+  return { machineId: intent.machineId, cwd: intent.cwd, missing: false };
+}
 
 function Label({ children }: { children: React.ReactNode }): React.JSX.Element {
   return (
@@ -58,12 +71,18 @@ function Label({ children }: { children: React.ReactNode }): React.JSX.Element {
   );
 }
 
+/** intent 指定的机器不在本设备上时的提示（不静默换成别的机器） */
+export const INTENT_MISSING_HINT = '指定的机器不在本设备上（可能已移除），请另选一台。';
+
 export function NewSessionSheet({
   open,
   onOpenChange,
+  intent = null,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /** 一次性预选（plan §3）：每次打开时消费，覆盖上次的机器 / 目录选择 */
+  intent?: NewSessionIntent | null;
 }): React.JSX.Element {
   const client = useClient();
   const navigate = useNavigate();
@@ -129,9 +148,12 @@ export function NewSessionSheet({
     if (next !== cwd) changeStart(null);
   };
 
+  /** intent 指定、但本设备没有的机器 id；非 null 时不自动选默认机器 */
+  const [intentMissing, setIntentMissing] = useState<string | null>(null);
+
   // 打开时选默认机器（在线优先）
   useEffect(() => {
-    if (!open) return;
+    if (!open || intentMissing !== null) return;
     if (machineId !== '' && machines[machineId] !== undefined) return;
     const first = machineList[0];
     if (first) setMachineId(first.machineId);
@@ -157,6 +179,25 @@ export function NewSessionSheet({
     const next = fav?.defaultCwd ?? recent?.cwd ?? '';
     setCwd((cur) => (cur === '' ? next : cur));
   }, [open, machineId, machines, sessions]);
+
+  // 消费预选 intent：放在上面两个默认值 effect 之后，同一次提交里后写的覆盖先写的。
+  // 只在打开 / intent 变化时跑——machines 刷新不能冲掉用户随后的改选
+  const intentMachine = intent?.machineId;
+  const intentCwd = intent?.cwd;
+  useEffect(() => {
+    if (!open) return;
+    if (intentMachine === undefined || intentCwd === undefined) {
+      setIntentMissing(null);
+      return;
+    }
+    const resolved = resolveNewSessionIntent({ machineId: intentMachine, cwd: intentCwd }, machines);
+    setMachineId(resolved.machineId);
+    setCwd(resolved.cwd);
+    setIntentMissing(resolved.missing ? intentMachine : null);
+    setStart(null);
+    setPrompt('');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, intentMachine, intentCwd]);
 
   // 每次打开按设置页的默认值预选（上次没建成的选择不留到下次）
   useEffect(() => {
@@ -281,6 +322,7 @@ export function NewSessionSheet({
                       onClick={() => {
                         setMachineId(m.machineId);
                         setCwd('');
+                        setIntentMissing(null);
                         changeStart(null);
                       }}
                     >
@@ -292,6 +334,11 @@ export function NewSessionSheet({
                 {offline && (
                   <p data-testid="ns-offline" className="text-amber mt-1.5 text-[11.5px]">
                     {OFFLINE_HINT}
+                  </p>
+                )}
+                {intentMissing !== null && machineId === '' && (
+                  <p data-testid="ns-intent-missing" className="text-amber mt-1.5 text-[11.5px]">
+                    {INTENT_MISSING_HINT}
                   </p>
                 )}
               </section>

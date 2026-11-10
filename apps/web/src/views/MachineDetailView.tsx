@@ -38,7 +38,9 @@ import { MachineUsageRows, PlanUsageRefreshButton } from '@/components/usage/Pla
 import { enginesOf, enginesWithLimits, hasMultipleEngines } from '@/lib/engine-model.ts';
 import { supportsUsageRefresh } from '@/components/usage/usage-model.ts';
 import { useSessionActions } from '@/components/list/use-session-actions.ts';
-import { useListShowTemp } from '@/components/list/use-list-query.ts';
+import { useListGroupBy, useListShowTemp } from '@/components/list/use-list-query.ts';
+import { NewSessionSheetRoute, useNewSessionSheet } from '@/components/sheets/new-session-route.tsx';
+import { useIsDesktop } from '@/components/shell/use-media-query.ts';
 import { useClient, useTrine } from '@/app/runtime.ts';
 import { MachineStatsSection } from '@/components/machines/MachineStats.tsx';
 import { TrustedDirsSection } from '@/components/files/TrustedDirsSection.tsx';
@@ -61,10 +63,14 @@ export function MachineDetailView(): React.JSX.Element {
   // 稳定引用：SessionList 内 useMemo 以 query 为依赖，每次渲染新建对象会让它失效（评审 minor 7）。
   // 放在早退之前（hooks 规则）
   const [showTemp, setShowTemp] = useListShowTemp();
+  // 跟列表页同一个分组偏好：按工作空间分组时组头有「+」、置顶的空目录也在（plan §2 / §3）
+  const [groupBy] = useListGroupBy();
   const listQuery: ListQuery = useMemo(
-    () => ({ ...DEFAULT_LIST_QUERY, machine: machineId, groupBy: 'none', showTemp }),
-    [machineId, showTemp],
+    () => ({ ...DEFAULT_LIST_QUERY, machine: machineId, groupBy, showTemp }),
+    [machineId, groupBy, showTemp],
   );
+  const isDesktop = useIsDesktop();
+  const [, , openNewSessionIn] = useNewSessionSheet();
   // 资源数据：详情页打开时 5 秒一次；设置里关了自动刷新就只在打开时取一次
   const statsOff = useListStatsInterval() === null;
   const statsInterval = statsOff ? null : DETAIL_STATS_INTERVAL_MS;
@@ -254,9 +260,12 @@ export function MachineDetailView(): React.JSX.Element {
             query={listQuery}
             actions={sessionActions}
             onShowTemp={setShowTemp}
+            onNewSessionIn={openNewSessionIn}
             variant="compact"
             now={now}
           />
+          {/* PC 的新建 sheet 挂在侧栏；移动端没有侧栏，这一页自己挂 */}
+          {!isDesktop && <NewSessionSheetRoute />}
         </section>
 
         <Separator />
