@@ -122,6 +122,7 @@ import {
   transcriptImages,
 } from '../bridge/history.ts';
 import { readSubagentTranscript } from '../bridge/subagent-history.ts';
+import { readTranscriptOrigins, type TranscriptOrigins } from '../bridge/task-notification.ts';
 import {
   ConcurrencyLimitError,
   seedFromInfo,
@@ -315,6 +316,11 @@ export interface RouterDeps {
   getSessionMessagesFn?: typeof getSessionMessages;
   /** 读子 agent 转录（subagent.history.request）；测试注入假实现，默认读本机文件 */
   readSubagentTranscriptFn?: typeof readSubagentTranscript;
+  /**
+   * 读原始转录里的来源信息（任务通知的 origin、被吸收进轮次的通知，见 task-notification.ts）。
+   * 缺省：getSessionMessagesFn 是真实现时读本机文件；注入了假转录（测试）时不读，按结构校验
+   */
+  readTranscriptOriginsFn?: typeof readTranscriptOrigins;
   /**
    * 斜杠命令探测（session.commands.request，见 commands-probe.ts）。
    * 缺省 = 不探测、一律回空数组（测试 / 无 claude 场景）
@@ -894,9 +900,19 @@ export class Router {
     const live = this.#deps.manager.get(sessionId);
     const pending =
       (live !== undefined && isRewindable(live) ? live.pendingRewind : undefined) ?? this.#deps.state.pendingRewind(sessionId);
-    const messages = cutAtRewind(await this.#readTranscript(sessionId), pending?.dropFrom);
+    const [all, origins] = await Promise.all([this.#readTranscript(sessionId), this.#readOrigins(sessionId)]);
+    const messages = cutAtRewind(all, pending?.dropFrom);
     const attachments = (await this.#deps.attachments?.historyIndex(sessionId)) ?? new Map();
-    return toHistoryItems(messages, attachments);
+    return toHistoryItems(messages, attachments, origins);
+  }
+
+  /** 原始转录的来源信息（见 readTranscriptOriginsFn）；读不到 undefined，调用方退回结构校验 */
+  async #readOrigins(sessionId: string): Promise<TranscriptOrigins | undefined> {
+    const read =
+      this.#deps.readTranscriptOriginsFn ?? (this.#deps.getSessionMessagesFn === undefined ? readTranscriptOrigins : undefined);
+    if (read === undefined) return undefined;
+    const cwd = this.#deps.state.sessionParams(sessionId)?.cwd ?? this.#deps.manager.metaOf(sessionId)?.cwd;
+    return read(sessionId, { cwd }).catch(() => undefined);
   }
 
   /**
@@ -1049,6 +1065,7 @@ export class Router {
   ): Promise<void> {
     const deps: RewindDeps = {
       readMessages: (sid) => this.#readTranscript(sid),
+      readOrigins: async (sid) => (await this.#readOrigins(sid))?.origins,
       setPendingRewind: (sid, point) => this.#deps.state.setPendingRewind(sid, point),
     };
     const reply = (body: EventBody): void => {

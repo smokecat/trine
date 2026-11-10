@@ -34,7 +34,19 @@
 import type { SessionMessage } from '@anthropic-ai/claude-agent-sdk';
 import type { HistoryAttachment, HistoryItem } from '@trine/core';
 import { stripAttachedFiles, transcriptImageMeta, type TranscriptImage } from './attachments.ts';
-import { outputPreview, subagentReportText, summarizeToolArgs, summarizeToolResult, withArgDetail, withFilePath } from './summarize.ts';
+import {
+  backgroundSubagentEnd,
+  isAsyncLaunch,
+  isClaudeSubagentTool,
+  outputPreview,
+  subagentReportText,
+  summarizeToolArgs,
+  summarizeToolResult,
+  withArgDetail,
+  withFilePath,
+  withSubagentStart,
+} from './summarize.ts';
+import { taskNotificationLines, type TaskNotice, type TranscriptOrigins } from './task-notification.ts';
 
 /** 单条 user/assistant 文本上限（字符数），超出截断并标注 */
 export const HISTORY_TEXT_MAX = 8 * 1024;
@@ -140,8 +152,10 @@ export function transcriptImages(content: unknown): TranscriptImage[] {
  * （子代理行、工具结果载体、本地命令输出、空文本）。与 toHistoryItems 出 user 条目
  * 的口径一致——回退只能指向历史里看得见的用户消息。
  */
-export function humanUserText(message: SessionMessage): string | undefined {
+export function humanUserText(message: SessionMessage, notifications?: ReadonlyMap<string, unknown>): string | undefined {
   if (message.type !== 'user') return undefined;
+  // 系统来源的任务通知（taskNotificationLines）：不是用户说的话
+  if (notifications?.has(message.uuid) === true) return undefined;
   if (message.parent_tool_use_id !== null && message.parent_tool_use_id !== undefined) return undefined;
   const raw = asRecord(message.message);
   if (raw === undefined) return undefined;
@@ -171,10 +185,15 @@ export function cutAtRewind(messages: readonly SessionMessage[], dropFrom: strin
  *
  * 附件：经 trine 发的消息按 `attachments`（转录 uuid → manifest 里的列表）还原；
  * 其余（CLI 里直接粘贴的图片）取转录里的图片块，只给元数据，字节按需拉。
+ *
+ * 后台子 agent（spike S1）：启动回执配到的 Agent/Task 条目标 `subagent.background`；
+ * 系统来源的任务通知（主链 user 行，或 `origins.notices` 里被吸收进轮次的）不出用户气泡，
+ * 而是给对应的 Agent/Task 条目回填最终状态；没有任何结束证据的后台条目标 `state: unknown`。
  */
 export function toHistoryItems(
   messages: readonly SessionMessage[],
   attachments: ReadonlyMap<string, readonly HistoryAttachment[]> = new Map(),
+  origins?: TranscriptOrigins,
 ): HistoryItem[] {
   const items: HistoryItem[] = [];
   /** assistant message.id → items 下标（按 id 合并文本） */
@@ -182,10 +201,17 @@ export function toHistoryItems(
   /** toolUseId → items 下标（配对 tool_result） */
   const toolIdx = new Map<string, number>();
   const seenUser = new Set<string>();
+  const notificationLines = taskNotificationLines(messages, origins?.origins);
+  const notices: TaskNotice[] = [...(origins?.notices ?? [])];
   let lastTs = 0;
 
   for (const message of messages) {
     if (message.parent_tool_use_id !== null && message.parent_tool_use_id !== undefined) continue;
+    const notice = notificationLines.get(message.uuid);
+    if (notice !== undefined) {
+      notices.push(notice);
+      continue;
+    }
     const ts = lineTs(message) ?? lastTs;
     lastTs = ts;
     const raw = asRecord(message.message);
@@ -221,6 +247,7 @@ export function toHistoryItems(
             argSummary,
             ...withFilePath(toolName, b['input']),
             ...withArgDetail(toolName, b['input'], argSummary),
+            ...withSubagentStart(toolName, b['input']),
             ts,
           });
         }
@@ -254,14 +281,16 @@ export function toHistoryItems(
           durationMs,
           ...(structured === undefined ? {} : { structured }),
         });
-        const isSubagentTool = tool.toolName === 'Agent' || tool.toolName === 'Task';
+        const isSubagentTool = isClaudeSubagentTool(tool.toolName);
         const preview = outputPreview(isSubagentTool && !isError ? subagentReportText(structured, text) : text);
+        const background = isSubagentTool && !isError && isAsyncLaunch(structured, text);
         items[at] = {
           ...tool,
           status,
           durationMs,
           resultSummary,
           ...(preview === undefined ? {} : { outputPreview: preview }),
+          ...(background ? { subagent: { ...tool.subagent, background: true } } : {}),
         };
       }
       continue;
@@ -274,10 +303,42 @@ export function toHistoryItems(
     items.push({ kind: 'user', id: message.uuid, text, ...(files.length === 0 ? {} : { attachments: [...files] }), ts });
   }
 
+  backfillSubagentEnds(items, toolIdx, notices);
+
   // 截断放最后：合并期间要拼的是全文
   return items.map((item) =>
     item.kind === 'tool' || item.text.length <= HISTORY_TEXT_MAX ? item : { ...item, text: truncateText(item.text) },
   );
+}
+
+/**
+ * 后台子 agent 的最终状态回填（原地改 items）：通知按 tool-use-id 对上 Agent/Task 条目，
+ * 与实时流的收尾 tool.end 同口径（backgroundSubagentEnd）；对不上的通知（后台 Bash、
+ * 别的会话）忽略。之后仍没有结束证据的后台条目标「状态未知」——宁可说不知道，也不让它
+ * 看着像还在跑或已经成功。
+ */
+function backfillSubagentEnds(items: HistoryItem[], toolIdx: ReadonlyMap<string, number>, notices: readonly TaskNotice[]): void {
+  for (const notice of notices) {
+    if (notice.toolUseId === undefined) continue;
+    const at = toolIdx.get(notice.toolUseId);
+    if (at === undefined) continue;
+    const tool = items[at] as ToolItem;
+    if (!isClaudeSubagentTool(tool.toolName)) continue;
+    const end = backgroundSubagentEnd(notice.status, notice.usage, notice.result ?? notice.summary);
+    items[at] = {
+      ...tool,
+      status: end.status,
+      durationMs: end.durationMs,
+      resultSummary: end.resultSummary,
+      ...(end.outputPreview === undefined ? {} : { outputPreview: end.outputPreview }),
+      subagent: { ...tool.subagent, ...end.subagent },
+    };
+  }
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i]!;
+    if (item.kind !== 'tool' || item.subagent?.background !== true || item.subagent.state !== undefined) continue;
+    items[i] = { ...item, subagent: { ...item.subagent, state: 'unknown' } };
+  }
 }
 
 /**

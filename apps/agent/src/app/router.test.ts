@@ -250,6 +250,8 @@ async function makeHarness(options: {
   /** 时间线记录卡（扩展）；省略 = 不支持 */
   records?: SessionRecordsStore;
   codexEngine?: RouterCodexEngine;
+  /** 原始转录的来源信息；省略 = 不注入（注入了假转录时 router 不读真文件） */
+  readTranscriptOriginsFn?: RouterDeps['readTranscriptOriginsFn'];
 } = {}) {
   const probeCalls: string[] = [];
   const historyCalls: { sessionId: string; dir: string | undefined }[] = [];
@@ -349,6 +351,7 @@ async function makeHarness(options: {
       subagentCalls.push({ sessionId, toolUseId, cwd: locator?.cwd });
       return options.subagentTranscripts?.[`${sessionId}/${toolUseId}`] ?? [];
     },
+    ...(options.readTranscriptOriginsFn === undefined ? {} : { readTranscriptOriginsFn: options.readTranscriptOriginsFn }),
     ...(options.attachments === undefined ? {} : { attachments: options.attachments }),
     ...(options.files === undefined ? {} : { files: options.files }),
     ...(options.links === undefined ? {} : { links: options.links, machineId: 'mbp-id' }),
@@ -2389,6 +2392,36 @@ describe('Router · 回退', () => {
     expect(h.state.pendingRewind('old')).toBeUndefined();
     expect(h.byType('session.rewound')).toHaveLength(0);
     expect(h.byType('error.fatal')).toHaveLength(0);
+  });
+
+  test('系统来源的任务通知行：历史里不是用户消息，也不能选为回退目标（两处口径一致）', async () => {
+    const notice = '<task-notification>\n<task-id>t1</task-id>\n<tool-use-id>toolu_bg</tool-use-id>\n<status>completed</status>\n<result>r</result>\n</task-notification>';
+    const lines: SessionMessage[] = [
+      ...transcript(1),
+      tline('assistant', 'a-bg', { id: 'msg_bg', role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_bg', name: 'Agent', input: { description: 'd' } }] }, 10),
+      tline('user', 'r-bg', { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_bg', content: 'Async agent launched successfully.' }] }, 11),
+      tline('user', 'n1', { role: 'user', content: notice }, 12),
+      tline('assistant', 'a-n', { id: 'msg_n', role: 'assistant', content: [{ type: 'text', text: 'ok' }] }, 13),
+    ];
+    const run = async (origins: RouterDeps['readTranscriptOriginsFn']) => {
+      const h = await makeHarness({ transcripts: { old: lines }, ...(origins === undefined ? {} : { readTranscriptOriginsFn: origins }) });
+      h.state.rememberSession('old', params);
+      await h.router.handle({ type: 'session.history.request', ...c2a('old'), reqId: 'h1' }, phone);
+      await h.router.handle({ type: 'session.rewind', ...c2a('old'), reqId: 'r1', targetMessageId: 'n1', mode: 'conversation' }, phone);
+      const history = (h.byType('session.history.response') as Ev<'session.history.response'>[])[0]!;
+      const rewind = (h.byType('session.rewind.response') as Ev<'session.rewind.response'>[])[0]!;
+      return { ids: history.items.map((i) => `${i.kind}:${i.id}`), tool: history.items.find((i) => i.id === 'toolu_bg'), rewind };
+    };
+    // 不注入来源：按结构 + 关联 id 认出
+    const plain = await run(undefined);
+    expect(plain.ids).not.toContain('user:n1');
+    expect(plain.tool).toMatchObject({ subagent: { background: true, state: 'completed' } });
+    expect(plain.rewind.error?.code).toBe('invalid');
+    // 原始转录说这行是人发的：照常是用户消息、可回退
+    const human = await run(async () => ({ origins: new Map([['n1', 'human']]), notices: [] }));
+    expect(human.ids).toContain('user:n1');
+    expect(human.tool).toMatchObject({ subagent: { state: 'unknown' } });
+    expect(human.rewind.ok).toBe(true);
   });
 
   test('目标给 clientMsgId：映射回转录 uuid，广播带上两种 id', async () => {

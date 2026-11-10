@@ -18,6 +18,7 @@ import type { SessionMessage } from '@anthropic-ai/claude-agent-sdk';
 import type { RewindErrorCode, RewindFilesStat, RewindMode } from '@trine/core';
 import { cutAtRewind, humanUserText } from '../bridge/history.ts';
 import type { RewindPoint } from '../bridge/session.ts';
+import { taskNotificationLines } from '../bridge/task-notification.ts';
 import type { RewindableSession } from '../engine/types.ts';
 import { errorText } from '../bridge/errors.ts';
 import { toSingleLine } from '../bridge/summarize.ts';
@@ -25,6 +26,11 @@ import { toSingleLine } from '../bridge/summarize.ts';
 export interface RewindDeps {
   /** 读会话主链（router 的转录读取，含 cwd 猜不中时的兜底） */
   readMessages: (sessionId: string) => Promise<readonly SessionMessage[]>;
+  /**
+   * 原始转录里 user 行的 origin（uuid → kind），用来认出系统来源的任务通知（与历史的
+   * 用户消息判定一致，见 task-notification.ts）。不给 / 读不到时退回结构 + 关联校验
+   */
+  readOrigins?: (sessionId: string) => Promise<ReadonlyMap<string, string> | undefined>;
   /** 持久化截断点（state.json） */
   setPendingRewind: (sessionId: string, point: RewindPoint) => void;
 }
@@ -142,15 +148,21 @@ async function locate(
 ): Promise<{ ok: true; target: Located } | RewindFailure> {
   const uuid = session.userMessageUuid(targetMessageId) ?? targetMessageId;
   let chain: readonly SessionMessage[];
+  let origins: ReadonlyMap<string, string> | undefined;
   try {
-    chain = cutAtRewind(await deps.readMessages(session.sessionId), session.pendingRewind?.dropFrom);
+    const [messages, read] = await Promise.all([
+      deps.readMessages(session.sessionId),
+      deps.readOrigins?.(session.sessionId).catch(() => undefined),
+    ]);
+    chain = cutAtRewind(messages, session.pendingRewind?.dropFrom);
+    origins = read;
   } catch (err) {
     return fail('io', toSingleLine(`读取会话转录失败：${errorText(err)}`, 300));
   }
   const at = chain.findIndex((m) => m.uuid === uuid);
   const message = at < 0 ? undefined : chain[at];
   if (message === undefined) return fail('not_found', '对话里找不到这条消息（可能已经被回退，或者还没写进转录）');
-  const text = humanUserText(message);
+  const text = humanUserText(message, taskNotificationLines(chain, origins));
   if (text === undefined) return fail('invalid', '只能回退到你发的消息');
   const clientMsgId = session.clientMsgIdOf(uuid);
   const ids = [...new Set([targetMessageId, uuid, ...(clientMsgId === undefined ? [] : [clientMsgId])])];

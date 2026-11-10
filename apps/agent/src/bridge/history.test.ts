@@ -272,6 +272,96 @@ describe('toHistoryItems · Agent/Task 结果（subagent-view）', () => {
   });
 });
 
+/** 合成的任务通知文本（形状照 spike S1；id 与内容都是假的） */
+function notification(toolUseId: string, status = 'completed', result = '报告正文'): string {
+  return [
+    '<task-notification>',
+    '<task-id>task-fixture-1</task-id>',
+    `<tool-use-id>${toolUseId}</tool-use-id>`,
+    '<output-file>/tmp/out-fixture</output-file>',
+    `<status>${status}</status>`,
+    '<summary>Agent "probe" finished</summary>',
+    `<result>${result}</result>`,
+    '<usage><subagent_tokens>100</subagent_tokens><tool_uses>2</tool_uses><duration_ms>9000</duration_ms></usage>',
+    '</task-notification>',
+  ].join('\n');
+}
+
+describe('toHistoryItems · 后台子 agent（spike S1）', () => {
+  const launch = [
+    assistant('a1', 'msg_1', [{ type: 'tool_use', id: 'toolu_bg', name: 'Agent', input: { description: 'probe', prompt: 'p', subagent_type: 'Explore' } }], T0),
+    user('r1', [{ type: 'tool_result', tool_use_id: 'toolu_bg', content: [{ type: 'text', text: 'Async agent launched successfully. (internal)' }] }], T1),
+    assistant('a2', 'msg_2', [{ type: 'text', text: 'launched' }], T1),
+  ];
+
+  test('没有结束证据：标后台 + 状态未知；带类型与 prompt', () => {
+    const items = toHistoryItems(launch);
+    expect(items[0]).toMatchObject({
+      kind: 'tool',
+      resultSummary: '✓ 后台子 agent 已启动',
+      argDetail: 'p',
+      subagent: { agentType: 'Explore', background: true, state: 'unknown' },
+    });
+  });
+
+  test('主链上的通知行（关联 id 对得上）：不出用户气泡，回填最终状态与报告', () => {
+    const items = toHistoryItems([...launch, user('n1', notification('toolu_bg'), T2), assistant('a3', 'msg_3', [{ type: 'text', text: 'ok' }], T3)]);
+    expect(items.map((i) => i.kind)).toEqual(['tool', 'assistant', 'assistant']);
+    expect(items[0]).toMatchObject({
+      status: 'ok',
+      resultSummary: '✓ 2 次工具调用 · 9.0s',
+      durationMs: 9000,
+      outputPreview: '报告正文',
+      subagent: { background: true, state: 'completed' },
+    });
+  });
+
+  test('失败 / 已停止 映射到 error / warn', () => {
+    const failed = toHistoryItems([...launch, user('n1', notification('toolu_bg', 'failed'), T2)]);
+    expect(failed[0]).toMatchObject({ status: 'error', subagent: { state: 'failed' } });
+    const stopped = toHistoryItems([...launch, user('n1', notification('toolu_bg', 'killed'), T2)]);
+    expect(stopped[0]).toMatchObject({ status: 'warn', subagent: { state: 'stopped' } });
+  });
+
+  test('来源校验：origin 说是人发的就照常显示；没有 origin 且关联 id 对不上也照常显示', () => {
+    const human = toHistoryItems([...launch, user('n1', notification('toolu_bg'), T2)], new Map(), { origins: new Map([['n1', 'human']]), notices: [] });
+    expect(human.some((i) => i.kind === 'user' && i.id === 'n1')).toBe(true);
+    expect(human[0]).toMatchObject({ subagent: { state: 'unknown' } });
+    const stranger = toHistoryItems([...launch, user('n1', notification('toolu_other'), T2)]);
+    expect(stranger.some((i) => i.kind === 'user' && i.id === 'n1')).toBe(true);
+    // 不完整的通知（只有前缀）不算
+    const partial = toHistoryItems([...launch, user('n1', '<task-notification>\n<task-id>x</task-id>', T2)]);
+    expect(partial.some((i) => i.kind === 'user' && i.id === 'n1')).toBe(true);
+  });
+
+  test('origin 标为 task-notification：即使关联 id 不在本页也不出气泡', () => {
+    const items = toHistoryItems([user('n1', notification('toolu_far'), T2)], new Map(), {
+      origins: new Map([['n1', 'task-notification']]),
+      notices: [],
+    });
+    expect(items).toEqual([]);
+  });
+
+  test('被吸收进轮次的通知（原始转录的 queued_command）也回填', () => {
+    const items = toHistoryItems(launch, new Map(), {
+      origins: new Map(),
+      notices: [{ taskId: 't', toolUseId: 'toolu_bg', status: 'completed', result: 'r', usage: { tool_uses: 1 } }],
+    });
+    expect(items[0]).toMatchObject({ resultSummary: '✓ 1 次工具调用', subagent: { state: 'completed' } });
+  });
+
+  test('后台 Bash 的通知只过滤气泡，不改 Bash 卡', () => {
+    const items = toHistoryItems([
+      assistant('a1', 'msg_1', [{ type: 'tool_use', id: 'toolu_sh', name: 'Bash', input: { command: 'sleep 1', run_in_background: true } }], T0),
+      user('r1', [{ type: 'tool_result', tool_use_id: 'toolu_sh', content: 'Command running in background with ID: b1. Output is being written to: /tmp/x' }], T1),
+      user('n1', notification('toolu_sh'), T2),
+    ]);
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ toolName: 'Bash', resultSummary: '✓ 已在后台运行 · b1' });
+    expect('subagent' in items[0]!).toBe(false);
+  });
+});
+
 describe('回退辅助（humanUserText / cutAtRewind）', () => {
   test('humanUserText：只认主线程里用户说的话', () => {
     expect(humanUserText(user('u1', '改一下 README', T0))).toBe('改一下 README');
@@ -287,6 +377,9 @@ describe('回退辅助（humanUserText / cutAtRewind）', () => {
     expect(humanUserText(user('u6', 'sub', T0, 'toolu_parent'))).toBeUndefined();
     expect(humanUserText(user('u7', '   ', T0))).toBeUndefined();
     expect(humanUserText(assistant('a1', 'msg_1', [{ type: 'text', text: 'x' }], T0))).toBeUndefined();
+    // 系统来源的任务通知（taskNotificationLines 认出的）不是用户说的话
+    expect(humanUserText(user('n1', notification('toolu_bg'), T0), new Map([['n1', {}]]))).toBeUndefined();
+    expect(humanUserText(user('n1', notification('toolu_bg'), T0))).toContain('<task-notification>');
   });
 
   test('cutAtRewind：从 dropFrom 起截掉；没有 / 找不到原样返回', () => {

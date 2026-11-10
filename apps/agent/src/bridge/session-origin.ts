@@ -129,6 +129,20 @@ async function scanPaths(projects: string, wanted: ReadonlySet<string>): Promise
   return out;
 }
 
+/** 单个会话的主转录路径（cwd 猜 → 扫描兜底）；找不到 undefined */
+export async function locateTranscript(
+  sessionId: string,
+  options: { cwd?: string | undefined; projectsDir?: string } = {},
+): Promise<string | undefined> {
+  // sessionId 会拼进路径：只认安全字符
+  if (!/^[A-Za-z0-9_-]+$/.test(sessionId)) return undefined;
+  const projects = options.projectsDir ?? defaultProjectsDir();
+  for (const path of await guessPaths(projects, { sessionId, cwd: options.cwd })) {
+    if (await exists(path)) return path;
+  }
+  return (await scanPaths(projects, new Set([sessionId]))).get(sessionId);
+}
+
 export function createHeadlessProbe(options: { projectsDir?: string } = {}): HeadlessProbe {
   const cache = new Map<string, boolean>();
   return async (sessions) => {
