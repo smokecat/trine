@@ -33,6 +33,8 @@
   --accent: #087f82;
   --accent-ink: #066b70;
   --accent-soft: rgba(8, 127, 130, 0.08);
+  /* 选区：不用 accent-soft（8% 太淡，用户气泡本身就是这个底色）；不透明，任何底色上都一样清楚 */
+  --selection: #badbdc;
   --accent-border: rgba(8, 127, 130, 0.3);
   /* accent 底上的前景色：浅色主题下 accent 是深青，配白字 */
   --accent-fg: #ffffff;
@@ -90,6 +92,7 @@
     --accent: #63d4cf;
     --accent-ink: #7cddd7;
     --accent-soft: rgba(99, 212, 207, 0.1);
+    --selection: #2f555a;
     --accent-border: rgba(99, 212, 207, 0.32);
     /* 深色下 accent 是亮青，白字对比度不够，原型用的是深青底色文字 */
     --accent-fg: #08211c;
@@ -127,6 +130,7 @@
   --accent: #63d4cf;
   --accent-ink: #7cddd7;
   --accent-soft: rgba(99, 212, 207, 0.1);
+  --selection: #2f555a;
   --accent-border: rgba(99, 212, 207, 0.32);
   --accent-fg: #08211c;
   --amber: #e8a83e;
@@ -274,7 +278,7 @@
 
 /* Shared interaction details; component-specific layout stays with the component. */
 @layer base {
-  ::selection { background: var(--accent-soft); color: var(--text); }
+  ::selection { background: var(--selection); color: var(--text); }
   button, a, input, textarea { -webkit-tap-highlight-color: transparent; }
   * { scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
 }
