@@ -221,27 +221,38 @@ export function mergeSubagent(
   return cur === undefined ? next : { ...cur, ...next };
 }
 
-/** 子 agent 的最终状态（到了就不该被「运行中 / 状态未知」改回去） */
-const FINAL_SUBAGENT_STATES: ReadonlySet<string> = new Set(['completed', 'failed', 'stopped', 'interrupted', 'shutdown', 'not_found', 'ended']);
+/** 明确的结果（成败已知）：到了就不再被任何历史状态改掉 */
+const EXPLICIT_SUBAGENT_STATES: ReadonlySet<string> = new Set(['completed', 'failed', 'stopped', 'interrupted', 'shutdown', 'not_found']);
 
 /**
- * 历史对账已有卡片的子 agent 信息（评审 中7）：历史是 agent 读权威存储得出的，能修正本地
- * 缓存里因重启 / 掉线而永远「运行中」的卡。规则：缺的字段补上；状态以历史为准，但已经是最终
- * 状态的不被历史的非最终状态（运行中 / 状态未知）覆盖。没有变化返回 undefined。
+ * 历史对账已有卡片的子 agent 信息（评审 中7 / 复审 新中2）：历史是 agent 读权威存储得出的，能
+ * 修正本地缓存里因重启 / 掉线而永远「运行中」的卡。只允许升级、不允许降级：
+ * - 已是明确结果（完成 / 失败 / 停止…）→ 状态不动；
+ * - 已是「已结束 · 结果未知」→ 只能升级成明确结果；
+ * - 其余（运行中 / 等待 / 状态未知 / 没有）→ 以历史为准。
+ * 缺的字段补上。没有变化返回 undefined；`adoptResult` = 状态升级成了明确结果，卡上的结果摘要
+ * 也该跟着换成历史的（复审 新中3）。
  */
 export function reconcileSubagent(
   cur: ToolEntry['subagent'],
   history: NonNullable<ToolEntry['subagent']>,
-): ToolEntry['subagent'] | undefined {
+): { subagent: NonNullable<ToolEntry['subagent']>; adoptResult: boolean } | undefined {
   const merged = { ...history, ...cur };
   const curState = cur?.state;
   const histState = history.state;
-  if (histState !== undefined && curState !== histState && !(curState !== undefined && FINAL_SUBAGENT_STATES.has(curState) && !FINAL_SUBAGENT_STATES.has(histState))) {
-    merged.state = histState;
+  let adoptResult = false;
+  if (histState !== undefined && curState !== histState) {
+    const curExplicit = curState !== undefined && EXPLICIT_SUBAGENT_STATES.has(curState);
+    const histExplicit = EXPLICIT_SUBAGENT_STATES.has(histState);
+    const allowed = !curExplicit && (curState !== 'ended' || histExplicit);
+    if (allowed) {
+      merged.state = histState;
+      adoptResult = histExplicit;
+    }
   }
   const before = cur ?? {};
   const keys = new Set([...Object.keys(before), ...Object.keys(merged)]) as Set<keyof typeof merged>;
-  for (const k of keys) if (before[k] !== merged[k]) return merged;
+  for (const k of keys) if (before[k] !== merged[k]) return { subagent: merged, adoptResult };
   return undefined;
 }
 
@@ -1245,8 +1256,23 @@ export function mergeHistory(
     if (item.kind === 'tool' && item.subagent !== undefined && seen.has(key)) {
       const base = reconciled ?? tl.entries;
       const cur = findTool(base, item.id);
-      const subagent = cur === undefined ? undefined : reconcileSubagent(cur.subagent, item.subagent);
-      if (subagent !== undefined) reconciled = updateTool(base, item.id, (t) => ({ ...t, subagent })) ?? reconciled;
+      const change = cur === undefined ? undefined : reconcileSubagent(cur.subagent, item.subagent);
+      if (change !== undefined) {
+        reconciled =
+          updateTool(base, item.id, (t) => ({
+            ...t,
+            subagent: change.subagent,
+            // 升级成明确结果：卡头摘要、报告、耗时与状态一起换成历史的，别留着「已启动」
+            ...(change.adoptResult
+              ? {
+                  ...(item.status === undefined ? {} : { status: item.status }),
+                  ...(item.resultSummary === undefined ? {} : { resultSummary: item.resultSummary }),
+                  ...(item.outputPreview === undefined ? {} : { outputPreview: item.outputPreview }),
+                  ...(item.durationMs === undefined ? {} : { durationMs: item.durationMs }),
+                }
+              : {}),
+          })) ?? reconciled;
+      }
     }
     if (item.ts >= cutoff) continue;
     if (seen.has(key)) continue;

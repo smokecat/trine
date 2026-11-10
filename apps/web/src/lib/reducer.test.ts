@@ -147,8 +147,35 @@ describe('reducer · tool / permission 原地更新', () => {
     expect(tl.entries[0]).toMatchObject({ subagent: { state: 'unknown', nickname: 'n', agentId: 'c1' } });
     expect(tl.entries[1]).toMatchObject({ subagent: { state: 'completed' } });
     expect(mergeHistory(tl, page)).toBe(tl);
-    expect(reconcileSubagent({ state: 'running' }, { state: 'completed' })).toEqual({ state: 'completed' });
-    expect(reconcileSubagent({ state: 'ended' }, { state: 'failed' })).toEqual({ state: 'failed' });
+    expect(reconcileSubagent({ state: 'running' }, { state: 'completed' })).toEqual({ subagent: { state: 'completed' }, adoptResult: true });
+    expect(reconcileSubagent({ state: 'ended' }, { state: 'failed' })).toEqual({ subagent: { state: 'failed' }, adoptResult: true });
+  });
+
+  test('复审 新中2：明确结果不被降级成 ended / unknown；ended 不被 unknown 覆盖', () => {
+    expect(reconcileSubagent({ state: 'failed' }, { state: 'ended' })).toBeUndefined();
+    expect(reconcileSubagent({ state: 'completed' }, { state: 'unknown' })).toBeUndefined();
+    expect(reconcileSubagent({ state: 'completed' }, { state: 'failed' })).toBeUndefined();
+    expect(reconcileSubagent({ state: 'ended' }, { state: 'unknown' })).toBeUndefined();
+    expect(reconcileSubagent({ state: 'unknown' }, { state: 'ended' })).toEqual({ subagent: { state: 'ended' }, adoptResult: false });
+  });
+
+  test('复审 新中3：历史把已有卡升级成明确结果时，摘要 / 报告 / 耗时一起更新；不升级时不动', () => {
+    let tl = apply(
+      emptyTimeline(),
+      ev({ type: 'tool.start', ...S, toolUseId: 'a1', toolName: 'Agent', argSummary: 'd' }),
+      ev({ type: 'tool.end', ...S, toolUseId: 'a1', status: 'ok', durationMs: 5, resultSummary: '✓ 后台子 agent 已启动', subagent: { background: true } }),
+      ev({ type: 'tool.start', ...S, toolUseId: 'a2', toolName: 'Agent', argSummary: 'd' }),
+      ev({ type: 'tool.end', ...S, toolUseId: 'a2', status: 'error', durationMs: 7, resultSummary: '✗ 子 agent 失败', subagent: { background: true, state: 'failed' } }),
+    );
+    tl = mergeHistory(tl, {
+      items: [
+        { kind: 'tool', id: 'a1', toolName: 'Agent', argSummary: 'd', status: 'ok', durationMs: 9000, resultSummary: '✓ 2 次工具调用 · 9.0s', outputPreview: '报告', subagent: { background: true, state: 'completed' }, ts: 1 },
+        { kind: 'tool', id: 'a2', toolName: 'Agent', argSummary: 'd', status: 'ok', resultSummary: '✓ 后台子 agent 已启动', subagent: { background: true, state: 'ended' }, ts: 1 },
+      ],
+      hasMore: false,
+    });
+    expect(tl.entries[0]).toMatchObject({ status: 'ok', resultSummary: '✓ 2 次工具调用 · 9.0s', outputPreview: '报告', durationMs: 9000, subagent: { state: 'completed' } });
+    expect(tl.entries[1]).toMatchObject({ status: 'error', resultSummary: '✗ 子 agent 失败', durationMs: 7, subagent: { state: 'failed' } });
   });
 
   test('评审 中8：子 thread 来源（subagentId）进条目', () => {
