@@ -135,7 +135,7 @@ import type { SessionRecordsStore } from '../ext/records-store.ts';
 import type { ExtensionService, ExtHost } from '../ext/service.ts';
 import type { Recipient } from '../net/recipients.ts';
 import type { MachineStatsWatcher } from './machine-stats.ts';
-import type { CwdStore } from './cwd-store.ts';
+import { CwdPinMoveError, type CwdStore } from './cwd-store.ts';
 import type { ClaudeUpdateOutcome } from './claude-cli.ts';
 import type { EngineCheckOutcome } from '../engine/codex/update.ts';
 import type { ClaudeCheckOutcome } from './claude-latest.ts';
@@ -181,6 +181,7 @@ const MACHINE_LEVEL_TYPES = new Set<ClientToAgentEvent['type']>([
   'cwd.remove',
   'cwd.setDefault',
   'cwd.pin',
+  'cwd.pin.move',
   'files.trust.add',
   'files.trust.remove',
   'ext.catalog.request',
@@ -984,6 +985,26 @@ export class Router {
     this.#deps.emitter.emit(body, sessionId, { to: sender.deviceId });
   }
 
+  /**
+   * 置顶工作区重排（pin-order）。应答只给请求方；成功（含幂等的重复请求）广播 cwd.updated——
+   * 发起端做了乐观更新，以广播为准收敛；失败不广播，发起端按应答回滚。
+   */
+  async #movePin(event: Extract<ClientToAgentEvent, { type: 'cwd.pin.move' }>, sender: Recipient): Promise<void> {
+    const { cwdStore } = this.#deps;
+    let body: EventBody;
+    try {
+      await cwdStore.movePin(event.path, event.before);
+      body = { type: 'cwd.pin.move.response', reqId: event.reqId, ok: true };
+    } catch (err) {
+      const code = err instanceof CwdPinMoveError ? err.code : 'failed';
+      const message = (err instanceof Error ? err.message : String(err)).slice(0, 300);
+      if (code === 'failed') this.#log(`[router] 置顶重排失败：${message}`);
+      body = { type: 'cwd.pin.move.response', reqId: event.reqId, ok: false, error: { code, message } };
+    }
+    this.#deps.emitter.emit(body, null, { to: sender.deviceId });
+    if (body.ok) this.#emitMachine({ type: 'cwd.updated', ...cwdStore.snapshot() });
+  }
+
   /** 信任目录增删（机器级链上串行：都写 files.json）。成功后重发 machine.info，应答只给请求方 */
   async #filesTrust(event: Extract<ClientToAgentEvent, { type: 'files.trust.add' | 'files.trust.remove' }>, sender: Recipient): Promise<void> {
     const files = this.#deps.files;
@@ -1512,6 +1533,9 @@ export class Router {
         await cwdStore.setPinned(event.path, event.pinned, this.#now());
         // 幂等的重复请求也广播：发起端可能是因为本地状态过期才重发
         this.#emitMachine({ type: 'cwd.updated', ...cwdStore.snapshot() });
+        return;
+      case 'cwd.pin.move':
+        await this.#movePin(event, sender);
         return;
       case 'files.trust.add':
       case 'files.trust.remove':

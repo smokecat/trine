@@ -205,7 +205,10 @@ agent 侧所有产出 SessionMeta 的出口（list、session.created、session.u
 
 - `session.pin { sessionId, reqId, pinned: boolean }` — 会话置顶 / 取消置顶。会话级帧，与 §2.2 同一套处理：不 resume、应答走 `session.mutate.response`（未知会话 → `not_found`），成功广播 `session.updated`（带或不带 `pinnedAt`）。不看会话忙不忙；重复置顶保留原时间。**归档会清掉置顶**，取消归档不恢复；删除一并清掉
 - `cwd.pin { path, pinned: boolean }` — 工作区置顶 / 取消置顶（机器级，fire-and-forget，同 `cwd.add`）。工作区不是实体，是 client 按（机器, 去尾 `/` 的 cwd）分出来的组；path 按这个规范化 cwd 发，agent 按字面存进 `~/.trine/cwd.json` 的 `pinned: {cwd: ts}`（最多 100 条，超出丢最早置顶的），随 `cwd.updated` / `cwd.list.response` 的 `pinned` 下发
-- 排序（client）：分组时组序 = 置顶组（越晚置顶越靠上）→ 工作区创建时间倒序（该机器该 cwd 下**全部**会话含已归档的最早 `createdAt`，缺省退回 `lastActivityAt`）；不再看组内状态与最后活动，组不随会话状态跳动。组内 / 平铺时：置顶会话（越晚置顶越靠上）→ 等待批准 → 运行中 → 其余按最后活动时间
+- 置顶顺序（pin-order，`machine.info.cwd.pinOrder: true` 的 agent）：`cwd.json` 另存可选的 `pinOrder: string[]`（pinned 的键，越前越靠上），随 `cwd.updated` / `cwd.list.response` 的 `pinOrder` 下发，同一台机器的各设备一致。agent 读取时规范化：去重、剔除没置顶的、缺的按置顶时间倒序补到末尾；`pinOrder` 坏了只退化它自己（回到时间序），不连带清空收藏 / 默认目录。新置顶插最前，取消置顶移除，100 条上限从 `pinOrder` 末尾淘汰。旧 agent 重写文件会丢掉 `pinOrder`（退回时间序）
+- `cwd.pin.move { reqId, path, before: string | null }` — 把置顶的 path 移到 before 之前（`null` = 末尾）。应答 `cwd.pin.move.response { reqId, ok, error?: { code, message } }` 只回请求方，`code ∈ not_pinned | before_not_pinned | invalid（path = before）| failed（写盘失败）`，不隐式置顶；成功（含顺序没变的重复请求）另广播 `cwd.updated`。agent 先在候选快照上算好、写盘成功才替换内存。path / before 先按字面匹配 pinned 的键，再按去尾 `/` 匹配。只发给有能力位的 agent（旧 agent 会判 `schema_invalid`）
+- 排序（client）：分组时组序 = 置顶组 → 工作区创建时间倒序。置顶组按 `pinOrder`（没有就按置顶时间倒序）；「全部机器」视图下置顶区先按机器分段（机器名、再 machineId 的稳定顺序），段内按该机器的 `pinOrder`。重排入口（组菜单「上移 / 下移 / 移到本机最前」、桌面拖柄）只在 agent 有能力位、机器在线、没有搜索 / 筛选时可用；乐观更新，失败回滚并重拉 `cwd.list`
+- 排序（client，续）：非置顶组按工作区创建时间倒序（该机器该 cwd 下**全部**会话含已归档的最早 `createdAt`，缺省退回 `lastActivityAt`）；不再看组内状态与最后活动，组不随会话状态跳动。组内 / 平铺时：置顶会话（越晚置顶越靠上）→ 等待批准 → 运行中 → 其余按最后活动时间
 - client 拉会话列表时顺带发一次 `cwd.list.request`，拿到置顶工作区
 - 互操作：按 `machine.info.agentVersion` ≥ 0.14.0 探测，版本不够时隐藏置顶菜单；旧 client 丢弃不认识的 `pinnedAt` / `pinned`
 
@@ -295,10 +298,11 @@ agent 侧所有产出 SessionMeta 的出口（list、session.created、session.u
 
 ### 6.2 工作目录管理（agent 端持久化，每机器一份）
 
-- `cwd.list`（req/resp）— `{ favorites: [path], defaultCwd, pinned? }`；机器详情/新建会话/会话设置三处共用；`pinned` 是置顶工作区（§2.3）
+- `cwd.list`（req/resp）— `{ favorites: [path], defaultCwd, pinned?, pinOrder? }`；机器详情/新建会话/会话设置三处共用；`pinned` 是置顶工作区、`pinOrder` 是它们的手动顺序（§2.3）
 - `cwd.add` / `cwd.remove` — `{ path }`
 - `cwd.setDefault` — `{ path }`；新建会话表单以 defaultCwd 预选
 - `cwd.pin` — `{ path, pinned }`；置顶工作区（§2.3）
+- `cwd.pin.move`（req/resp）— `{ path, before }`；调整置顶工作区顺序（§2.3）
 - 变更广播 `cwd.updated` — 多客户端设备保持一致
 - 会话内当前 cwd 的展示：会话头部元信息行（低优先级折叠态），点开会话设置 sheet 查看/切换——数据即 `session.status.cwd`，无需独立事件
 

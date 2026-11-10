@@ -581,6 +581,11 @@ export const MachineInfoSchema = z.object({
   files: MachineFilesInfoSchema.optional(),
   /** 机器上的引擎（multi-engine 新增，可选；agent ≥ 0.21.0）。缺失 = 旧 agent，只有 Claude Code */
   engines: z.array(EngineSummarySchema).max(16).optional(),
+  /**
+   * 工作目录能力（pin-order 新增，可选）。`pinOrder: true` = 认识 `cwd.pin.move`、cwd 快照带
+   * `pinOrder`；缺失 = 旧 agent，client 只按置顶时间排、不显示重排入口
+   */
+  cwd: z.object({ pinOrder: z.boolean().optional() }).optional(),
 });
 export type MachineInfo = z.infer<typeof MachineInfoSchema>;
 

@@ -1676,6 +1676,13 @@ export const CwdListRequestSchema = z.object({
  */
 export const PinnedCwdsSchema = z.record(z.string(), TimestampSchema);
 
+/**
+ * 置顶工作区的手动顺序（pin-order，`machine.info.cwd.pinOrder` 为真的 agent 才带）：pinned 的键，
+ * 越前越靠上。agent 保证它与 pinned 的键一一对应（去重、只含置顶的、缺的按置顶时间倒序补齐）；
+ * 缺省 = 旧 agent，client 按置顶时间倒序排。
+ */
+export const PinOrderSchema = z.array(z.string());
+
 export const CwdListResponseSchema = z.object({
   type: z.literal('cwd.list.response'),
   ...a2cBase,
@@ -1683,6 +1690,7 @@ export const CwdListResponseSchema = z.object({
   favorites: z.array(z.string()),
   defaultCwd: z.string(),
   pinned: PinnedCwdsSchema.optional(),
+  pinOrder: PinOrderSchema.optional(),
 });
 
 export const CwdAddSchema = z.object({
@@ -1714,6 +1722,38 @@ export const CwdPinSchema = z.object({
   pinned: z.boolean(),
 });
 
+/**
+ * client → agent：调整置顶工作区的顺序（pin-order，只发给 `machine.info.cwd.pinOrder` 为真的 agent；
+ * 旧 agent 会判 schema_invalid）。把 `path` 移到 `before` 之前；`before = null` = 移到末尾。
+ * 两者都必须已置顶且不相同，否则应答错误——不隐式置顶。重复请求幂等。
+ * 应答 `cwd.pin.move.response`，成功另广播 `cwd.updated`（带新的 pinOrder）。
+ */
+export const CwdPinMoveSchema = z.object({
+  type: z.literal('cwd.pin.move'),
+  ...c2aBase,
+  reqId: ReqIdSchema,
+  path: z.string().min(1),
+  before: z.string().min(1).nullable(),
+});
+
+/**
+ * 失败原因：
+ * - `not_pinned`        path 没有置顶
+ * - `before_not_pinned` before 没有置顶
+ * - `invalid`           path 与 before 相同
+ * - `failed`            其他错误（写文件失败）
+ */
+export const CwdPinMoveErrorCodeSchema = z.enum(['not_pinned', 'before_not_pinned', 'invalid', 'failed']);
+export type CwdPinMoveErrorCode = z.infer<typeof CwdPinMoveErrorCodeSchema>;
+
+export const CwdPinMoveResponseSchema = z.object({
+  type: z.literal('cwd.pin.move.response'),
+  ...a2cBase,
+  reqId: ReqIdSchema,
+  ok: z.boolean(),
+  error: z.object({ code: CwdPinMoveErrorCodeSchema, message: z.string().max(500) }).optional(),
+});
+
 /** agent → client：目录变更广播，多客户端设备保持一致 */
 export const CwdUpdatedSchema = z.object({
   type: z.literal('cwd.updated'),
@@ -1721,6 +1761,7 @@ export const CwdUpdatedSchema = z.object({
   favorites: z.array(z.string()),
   defaultCwd: z.string(),
   pinned: PinnedCwdsSchema.optional(),
+  pinOrder: PinOrderSchema.optional(),
 });
 
 // ---------------------------------------------------------------------------
@@ -1804,6 +1845,7 @@ export const AgentToClientEventSchema = z.discriminatedUnion('type', [
   ExtRecordsResponseSchema,
   CwdListResponseSchema,
   CwdUpdatedSchema,
+  CwdPinMoveResponseSchema,
   ErrorTransientSchema,
   ErrorFatalSchema,
 ]);
@@ -1863,6 +1905,7 @@ export const ClientToAgentEventSchema = z.discriminatedUnion('type', [
   CwdRemoveSchema,
   CwdSetDefaultSchema,
   CwdPinSchema,
+  CwdPinMoveSchema,
 ]);
 export type ClientToAgentEvent = z.infer<typeof ClientToAgentEventSchema>;
 

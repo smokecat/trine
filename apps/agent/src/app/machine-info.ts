@@ -98,5 +98,7 @@ export function buildMachineInfo(input: {
     ...(input.claudeLatest === undefined ? {} : { claudeLatest: input.claudeLatest }),
     ...(input.files === undefined ? {} : { files: input.files }),
     ...(input.engines === undefined ? {} : { engines: input.engines }),
+    // 置顶工作区的手动顺序（cwd.pin.move、cwd 快照带 pinOrder）；web 按这一位判断，不按版本号
+    cwd: { pinOrder: true },
   };
 }

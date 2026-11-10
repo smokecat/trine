@@ -945,6 +945,7 @@ describe('Router · 路由表（机器级）', () => {
       favorites: ['/repo/b'],
       defaultCwd: '/repo/b',
       pinned: {},
+      pinOrder: [],
     });
   });
 
@@ -958,6 +959,38 @@ describe('Router · 路由表（机器级）', () => {
     await h.router.handle({ type: 'cwd.pin', ...c2a(), path: '/repo/a', pinned: false }, phone);
     expect(h.byType('cwd.updated').at(-1)).toMatchObject({ pinned: {} });
     expect((await CwdStore.load(join(dir, 'cwd.json'))).snapshot().pinned).toEqual({});
+  });
+
+  test('cwd.pin.move：应答只回请求方，成功（含幂等重复）广播带 pinOrder 的 cwd.updated，失败不广播', async () => {
+    const h = await makeHarness();
+    for (const p of ['/repo/a', '/repo/b', '/repo/c']) {
+      await h.router.handle({ type: 'cwd.pin', ...c2a(), path: p, pinned: true }, phone);
+    }
+    // 新置顶插最前
+    expect(h.byType('cwd.updated').at(-1)).toMatchObject({ pinOrder: ['/repo/c', '/repo/b', '/repo/a'] });
+    await h.router.handle({ type: 'cwd.list.request', ...c2a(), reqId: 'q0' }, phone);
+    expect(h.byType('cwd.list.response')[0]).toMatchObject({ pinOrder: ['/repo/c', '/repo/b', '/repo/a'] });
+
+    const before = h.byType('cwd.updated').length;
+    const move = (reqId: string, path: string, to: string | null) =>
+      h.router.handle({ type: 'cwd.pin.move', ...c2a(), reqId, path, before: to }, phone);
+    await move('m1', '/repo/a', '/repo/c');
+    await move('m2', '/repo/a', '/repo/c');
+    await move('m3', '/repo/zzz', null);
+    await move('m4', '/repo/a', '/repo/zzz');
+    await move('m5', '/repo/a', '/repo/a');
+    await h.router.idle();
+    const resp = (reqId: string) => h.events.find((e) => e.event.type === 'cwd.pin.move.response' && 'reqId' in e.event && e.event.reqId === reqId)!;
+    expect(resp('m1').to).toBe('phone');
+    expect(resp('m1').event).toMatchObject({ ok: true });
+    expect(resp('m2').event).toMatchObject({ ok: true });
+    expect(resp('m3').event).toMatchObject({ ok: false, error: { code: 'not_pinned' } });
+    expect(resp('m4').event).toMatchObject({ ok: false, error: { code: 'before_not_pinned' } });
+    expect(resp('m5').event).toMatchObject({ ok: false, error: { code: 'invalid' } });
+    const updates = h.byType('cwd.updated');
+    expect(updates).toHaveLength(before + 2);
+    expect(updates.at(-1)).toMatchObject({ pinOrder: ['/repo/a', '/repo/c', '/repo/b'] });
+    expect((await CwdStore.load(join(dir, 'cwd.json'))).snapshot().pinOrder).toEqual(['/repo/a', '/repo/c', '/repo/b']);
   });
 
   test('machine.rename → 落盘回调 + 广播 machine.info；machine.unpair 忽略', async () => {
