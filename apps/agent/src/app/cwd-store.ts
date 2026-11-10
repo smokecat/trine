@@ -12,6 +12,9 @@
  * 收藏 / 默认目录。新置顶插最前，取消置顶移除，超过上限从 pinOrder 末尾淘汰。旧 agent 重写文件会丢掉
  * pinOrder（退化为时间序），可以接受。
  *
+ * 置顶的目录身份是去尾 `/` 的路径（core normalizeCwdPath）：读入时把同一目录的多种拼写合并成一条
+ * （保留较早的置顶时间），置顶 / 取消 / 移动都先规范化——与 client 的分组和乐观更新同一套规则。
+ *
  * 每次改动先在候选快照上算好、写盘成功后才替换内存：写盘失败时内存与文件保持一致。
  *
  * 文件坏了 → warn + 回到默认值，**不阻止启动**：这是个便利列表，丢了重加即可，
@@ -22,7 +25,7 @@ import { chmod, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname } from 'node:path';
 import { z } from 'zod';
-import { movePinOrder, normalizePinOrder, type CwdPinMoveErrorCode } from '@trine/core';
+import { mergePinnedCwds, movePinOrder, normalizeCwdPath, normalizePinOrder, type CwdPinMoveErrorCode } from '@trine/core';
 
 export const CwdFileSchema = z.object({
   v: z.literal(1),
@@ -68,12 +71,6 @@ const MOVE_REJECTION_TEXT = {
   invalid: '不能移到自己前面',
 } as const;
 
-/** 去尾 `/`（根目录保持 `/`）；与 client 分组的规范化一致 */
-function normalizeCwd(cwd: string): string {
-  const trimmed = cwd.replace(/\/+$/, '');
-  return trimmed === '' && cwd !== '' ? '/' : trimmed;
-}
-
 export class CwdStore {
   #data: CwdData;
 
@@ -110,12 +107,14 @@ export class CwdStore {
       if (file.pinOrder !== undefined && !Array.isArray(file.pinOrder)) {
         log('[cwd] pinOrder 格式不对，置顶顺序退回按置顶时间');
       }
+      // 置顶按目录身份合并（`/a/` 与 `/a` 是同一个工作区，保留较早的置顶时间），之后内存里只有规范化路径
+      const pinned = mergePinnedCwds(file.pinned);
       return new CwdStore(path, {
         v: 1,
         favorites: file.favorites,
         defaultCwd: file.defaultCwd,
-        pinned: file.pinned,
-        pinOrder: normalizePinOrder(file.pinOrder, file.pinned),
+        pinned,
+        pinOrder: normalizePinOrder(file.pinOrder, pinned),
       });
     } catch (err) {
       log(`[cwd] 文件损坏，用默认值：${(err as Error).message}`);
@@ -134,10 +133,12 @@ export class CwdStore {
 
   /**
    * 置顶 / 取消置顶。已置顶的再置顶保留原时间与位置（幂等，免得重复请求把它挪到最上）。
-   * 新置顶插到 pinOrder 最前；超过上限从 pinOrder 末尾淘汰。
+   * 新置顶插到 pinOrder 最前；超过上限从 pinOrder 末尾淘汰。path 按目录身份（normalizeCwdPath）认。
    * @returns 是否有改动
    */
-  async setPinned(path: string, pinned: boolean, at: number): Promise<boolean> {
+  async setPinned(rawPath: string, pinned: boolean, at: number): Promise<boolean> {
+    const path = normalizeCwdPath(rawPath);
+    if (path === '') return false;
     const has = Object.hasOwn(this.#data.pinned, path);
     if (has === pinned) return false;
     // fromEntries 建的是自有属性：path 来自远端，`__proto__` 也不会改到原型
@@ -159,16 +160,13 @@ export class CwdStore {
 
   /**
    * 把置顶的 `path` 移到 `before` 之前（`before = null` = 末尾）。两者都要已置顶且不相同，
-   * 否则抛 CwdPinMoveError——不隐式置顶。路径先按字面找，找不到再按去尾 `/` 匹配（旧数据可能带尾 `/`）。
+   * 否则抛 CwdPinMoveError——不隐式置顶。两者都按目录身份（normalizeCwdPath）认，与 client 乐观更新
+   * 同一个函数（core movePinOrder）：同一目录的不同拼写也算「移到自己前面」。
    * @returns 顺序是否真的变了（重复请求返回 false，不写盘）
    */
   async movePin(path: string, before: string | null): Promise<boolean> {
-    const key = this.#pinnedKey(path);
-    if (key === undefined) throw new CwdPinMoveError('not_pinned', `${path} 没有置顶`);
-    const beforeKey = before === null ? null : this.#pinnedKey(before);
-    if (beforeKey === undefined) throw new CwdPinMoveError('before_not_pinned', `${before} 没有置顶`);
     const current = this.#data.pinOrder;
-    const order = movePinOrder(current, key, beforeKey);
+    const order = movePinOrder(current, path, before);
     if (typeof order === 'string') throw new CwdPinMoveError(order, MOVE_REJECTION_TEXT[order]);
     if (order.every((p, i) => p === current[i])) return false;
     await this.#commit({ ...this.#data, pinOrder: order });
@@ -192,12 +190,6 @@ export class CwdStore {
   async setDefault(path: string): Promise<void> {
     if (this.#data.defaultCwd === path) return;
     await this.#commit({ ...this.#data, defaultCwd: path });
-  }
-
-  #pinnedKey(path: string): string | undefined {
-    if (Object.hasOwn(this.#data.pinned, path)) return path;
-    const want = normalizeCwd(path);
-    return this.#data.pinOrder.find((p) => normalizeCwd(p) === want);
   }
 
   /** 候选快照写盘成功后才替换内存 */

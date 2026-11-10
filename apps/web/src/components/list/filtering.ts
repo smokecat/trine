@@ -8,7 +8,7 @@
  * 列表页、PC 侧栏、归档视图、机器详情四个调用点共用这一个函数；零 React、
  * 零浏览器全局，全部单测覆盖（filtering.test.ts）。
  */
-import { CLAUDE_ENGINE_ID, type SessionMeta, type SessionState } from '@trine/core';
+import { CLAUDE_ENGINE_ID, mergePinnedCwds, normalizeCwdPath, type SessionMeta, type SessionState } from '@trine/core';
 import { comparePinned, compareSessions, STATE_RANK, type SessionRowData } from './sorting.ts';
 
 /**
@@ -121,10 +121,9 @@ export interface FilterResult {
   empty: EmptyReason | null;
 }
 
-/** cwd 规范化：去尾 `/`，但根目录 `/` 保持为 `/` */
+/** cwd 规范化：去尾 `/`，但根目录 `/` 保持为 `/`（与 agent 置顶的目录身份同一个函数） */
 export function normalizeCwd(cwd: string): string {
-  const trimmed = cwd.replace(/\/+$/, '');
-  return trimmed === '' && cwd !== '' ? '/' : trimmed;
+  return normalizeCwdPath(cwd);
 }
 
 export function groupKey(machineId: string, cwd: string): string {
@@ -183,9 +182,8 @@ export function workspaceCreatedAt(sessions: Record<string, Record<string, Sessi
 
 /** 某机器的置顶工作区按规范化 cwd 查（agent 按字面存，旧数据可能带尾 `/`） */
 function pinnedLookup(pinned: PinnedCwds, machineId: string): Map<string, number> {
-  const out = new Map<string, number>();
-  for (const [cwd, at] of Object.entries(pinned[machineId] ?? {})) out.set(normalizeCwd(cwd), at);
-  return out;
+  // 同一目录的多种拼写合并成一条（保留较早置顶时间），与 agent 读入时同一规则
+  return new Map(Object.entries(mergePinnedCwds(pinned[machineId] ?? {})));
 }
 
 /** 机器 → 置顶工作区的有效顺序（规范化 cwd，见 pin-order.ts effectivePinOrder） */

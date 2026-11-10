@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { movePinOrder } from '@trine/core';
 import { CwdStore, MAX_PINNED_CWDS } from './cwd-store.ts';
 
 let dir: string;
@@ -145,11 +146,22 @@ describe('CwdStore · pinOrder', () => {
     expect(store.snapshot().pinned).toEqual({ '/a': 1 });
   });
 
-  test('movePin 按去尾 / 匹配旧数据的键', async () => {
-    await file({ pinned: { '/a/': 1, '/b': 2 } });
+  test('同一目录的多种拼写按目录身份合并（保留较早置顶时间）；移动与 client 乐观更新同一结果', async () => {
+    await file({ pinned: { '/a/': 1, '/b': 2, '/a': 3 }, pinOrder: ['/a/', '/b', '/a'] });
     const store = await CwdStore.load(path);
-    expect(await store.movePin('/a', '/b')).toBe(true);
-    expect(store.snapshot().pinOrder).toEqual(['/a/', '/b']);
+    expect(store.snapshot().pinned).toEqual({ '/a': 1, '/b': 2 });
+    expect(store.snapshot().pinOrder).toEqual(['/a', '/b']);
+    // 「把 /a 移到末尾」：真的变成 [b, a]（以前精确匹配 /a 会判成无需移动）
+    expect(await store.movePin('/a', null)).toBe(true);
+    expect(store.snapshot().pinOrder).toEqual(['/b', '/a']);
+    expect(movePinOrder(['/a', '/b'], '/a', null)).toEqual(store.snapshot().pinOrder);
+    // 不同拼写也算「移到自己前面」
+    const code = await store.movePin('/a/', '/a').then(() => 'ok', (e: { code?: string }) => e.code);
+    expect(code).toBe('invalid');
+    // 置顶 / 取消也按目录身份
+    expect(await store.setPinned('/b/', true, 9)).toBe(false);
+    expect(await store.setPinned('/b/', false, 9)).toBe(true);
+    expect(store.snapshot()).toMatchObject({ pinned: { '/a': 1 }, pinOrder: ['/a'] });
   });
 
   test('写盘失败：内存不变（候选快照写成功才替换）', async () => {

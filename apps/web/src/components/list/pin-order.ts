@@ -5,20 +5,11 @@
  * 有效顺序用**规范化 cwd**（去尾 `/`）表示，与分组 key 一致；agent 按字面或去尾 `/` 都能匹配。
  */
 import { normalizePinOrder, type MachineInfo } from '@trine/core';
-import { normalizeCwd } from './filtering.ts';
 
 /** cwd 快照 → 规范化 cwd 的置顶顺序（没有 pinOrder = 置顶时间倒序；去重） */
 export function effectivePinOrder(cwd: { pinned?: Record<string, number>; pinOrder?: string[] } | null | undefined): string[] {
-  if (cwd?.pinned === undefined) return [];
-  const out: string[] = [];
-  const seen = new Set<string>();
-  for (const raw of normalizePinOrder(cwd.pinOrder, cwd.pinned)) {
-    const p = normalizeCwd(raw);
-    if (seen.has(p)) continue;
-    seen.add(p);
-    out.push(p);
-  }
-  return out;
+  // 与 agent、client 乐观更新同一个函数：按目录身份合并、去重
+  return cwd?.pinned === undefined ? [] : normalizePinOrder(cwd.pinOrder, cwd.pinned);
 }
 
 export type PinMoveAction = 'up' | 'down' | 'top';

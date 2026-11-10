@@ -1,5 +1,12 @@
 import { describe, expect, test } from 'bun:test';
-import { AgentToClientEventSchema, ClientToAgentEventSchema, movePinOrder, normalizePinOrder } from './index.ts';
+import {
+  AgentToClientEventSchema,
+  ClientToAgentEventSchema,
+  mergePinnedCwds,
+  movePinOrder,
+  normalizeCwdPath,
+  normalizePinOrder,
+} from './index.ts';
 import { MachineInfoSchema } from '../types/index.ts';
 
 const ts = 1;
@@ -42,6 +49,15 @@ describe('normalizePinOrder / movePinOrder', () => {
     expect(normalizePinOrder(['/a', '/a', 5, '/x'], pinned)).toEqual(['/a', '/c', '/b']);
     expect(normalizePinOrder('bad', pinned)).toEqual(['/c', '/b', '/a']);
     expect(normalizePinOrder(undefined, {})).toEqual([]);
+  });
+
+  test('目录身份：/a/ 与 /a 合并（保留较早置顶时间），顺序与移动都按规范化路径', () => {
+    expect(mergePinnedCwds({ '/a/': 1, '/b': 2, '/a': 3, '': 4, '/': 5 })).toEqual({ '/a': 1, '/b': 2, '/': 5 });
+    const pinned = { '/a/': 1, '/b': 2, '/a': 3 };
+    expect(normalizePinOrder(['/a/', '/b', '/a'], pinned)).toEqual(['/a', '/b']);
+    expect(movePinOrder(['/a', '/b'], '/a/', null)).toEqual(['/b', '/a']);
+    expect(movePinOrder(['/a', '/b'], '/a/', '/a')).toBe('invalid');
+    expect(normalizeCwdPath('/x//')).toBe('/x');
   });
 
   test('移动：之前 / 末尾 / 错误', () => {
