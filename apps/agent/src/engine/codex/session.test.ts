@@ -1326,4 +1326,63 @@ describe('CodexSession · 子 agent thread（spike S2）', () => {
     expect((await h.engine.history(THREAD))[0]).toMatchObject({ subagent: { state: 'completed' } });
     h.engine.dispose();
   });
+
+  // ---- Codex 复审回归 ----
+
+  test('复审 部分2：子轮 completed 先于父 thread 的派生 item 到达：派生卡注册后是 completed，不停在 running', async () => {
+    const h = await spawned();
+    h.notify('turn/completed', { threadId: 'thread-early', turn: { id: 'et', status: 'completed' } });
+    const item = { type: 'subAgentActivity', id: 'call_early', kind: 'started', agentThreadId: 'thread-early', agentPath: '/root/early' };
+    h.notify('item/started', { item });
+    h.notify('item/completed', { item });
+    await h.flush();
+    const card = h.of('tool.start').filter((e) => e.toolUseId === 'call_early').at(-1)!;
+    expect(card.subagent?.state).toBe('completed');
+    expect(h.of('tool.end').find((e) => e.toolUseId === 'call_early')?.subagent?.state).toBe('completed');
+    h.engine.dispose();
+  });
+
+  test('复审 部分4：只收到子审批（没有 turn/started）时停止也中断那个子轮；归属查询中的请求按停止拒绝', async () => {
+    const h = await spawned({ 'thread-q': { parentThreadId: THREAD } });
+    h.childRequest(201, 'item/commandExecution/requestApproval', { turnId: 'ct-a', command: 'a' });
+    await h.flush();
+    // 归属未知、正在 thread/read 时用户点停止
+    h.request(202, 'item/commandExecution/requestApproval', { threadId: 'thread-q', turnId: 'q-turn', command: 'b' });
+    const stopping = h.session.stop();
+    await stopping;
+    await h.flush();
+    await h.flush();
+    expect(h.callsOf('turn/interrupt').map((c) => c.params)).toContainEqual({ threadId: CHILD, turnId: 'ct-a' });
+    expect(h.of('permission.request')).toHaveLength(1);
+    expect(h.replyTo(202)).toEqual({ id: 202, result: { decision: 'decline' } });
+    expect(h.session.permissions.snapshot()).toHaveLength(0);
+    // 停止之后新到的请求照常出卡
+    h.childRequest(203, 'item/commandExecution/requestApproval', { turnId: 'ct-b', command: 'c' });
+    await h.flush();
+    expect(h.of('permission.request')).toHaveLength(2);
+    h.engine.dispose();
+  });
+
+  test('复审 新中1：补读 diff 期间停止 → 不发布卡、回拒绝；本会话轮结束后补读回来 → 丢弃', async () => {
+    const h = await spawned();
+    h.childRequest(211, 'item/fileChange/requestApproval', { turnId: 'ct', itemId: 'fc-x' });
+    await h.session.stop();
+    await h.flush();
+    await h.flush();
+    expect(h.of('permission.request')).toHaveLength(0);
+    expect(h.replyTo(211)).toEqual({ id: 211, result: { decision: 'decline' } });
+    await h.finish('turn-1', 'interrupted');
+    expect(h.session.state).toBe('stopped');
+    expect(h.callsOf('turn/interrupt').map((c) => c.params)).toContainEqual({ threadId: CHILD, turnId: 'ct' });
+
+    const h2 = await spawned();
+    h2.request(212, 'item/fileChange/requestApproval', { turnId: 'turn-1', itemId: 'fc-y' });
+    h2.notify('turn/completed', { turn: { id: 'turn-1', status: 'completed', error: null } });
+    await h2.flush();
+    await h2.flush();
+    expect(h2.of('permission.request')).toHaveLength(0);
+    expect(h2.session.state).toBe('idle');
+    h.engine.dispose();
+    h2.engine.dispose();
+  });
 });

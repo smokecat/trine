@@ -63,6 +63,8 @@ export interface CodexSessionClient {
   skills(cwd: string): Promise<CodexSkill[]>;
   /** 模型支持的推理强度；模型目录还没拿到或没有这个模型时为 undefined */
   effortsOf(model: string): { efforts: readonly string[]; defaultEffort?: string | undefined } | undefined;
+  /** 至今收到的服务端请求个数（停止时记下，用来认出停止前就到了的请求） */
+  requestSeq?(): number;
   /** 子 agent thread 的昵称 / 角色 / 模型（thread/read）；不支持或读不到 undefined */
   describeThread?(threadId: string): Promise<{ nickname?: string; role?: string; model?: string } | undefined>;
 }
@@ -80,7 +82,15 @@ export interface CodexSessionEvents {
    * 返回 false 表示不处理，由调用方回错误。`childThreadId`：请求来自这个会话的子 agent thread
    * （引擎按归属表转来），卡片挂在本会话，回复与撤销仍按子 thread 的请求处理
    */
-  onServerRequest(id: unknown, method: string, params: Rec, reply: (result: unknown) => void, childThreadId?: string): boolean;
+  onServerRequest(
+    id: unknown,
+    method: string,
+    params: Rec,
+    reply: (result: unknown) => void,
+    childThreadId?: string,
+    /** 引擎给的到达序号（见 CodexSessionClient.requestSeq） */
+    seq?: number,
+  ): boolean;
   /** 子 agent thread 的通知（引擎按归属表转来）：只更新卡片与审批，不动本会话的轮 */
   onChildNotification?(childThreadId: string, method: string, params: Rec): void;
   /** turnId 是不是本会话当前的轮（子 turn 的 rootTurnId 认亲用） */
@@ -146,6 +156,8 @@ interface RequestOrigin {
   parentToolUseId: string | undefined;
   subagentId: string | undefined;
   key: string;
+  /** 已被停止取消：不发布卡片，直接回拒绝 */
+  cancelled: boolean;
 }
 
 /** 已了结请求 / 已结束轮记录的上限 */
@@ -236,6 +248,14 @@ export class CodexSession implements EngineSession, CodexSessionEvents {
    * 所以已处理记录、已结束的轮都按代际隔离（评审 高1 / 中3）
    */
   #procGen = 0;
+  /** 派生卡注册前就到了的子 thread 状态（见 #noteChildState） */
+  readonly #earlyStates = new Map<string, SubagentState>();
+  /** 停止代际：每次停止加一。停止之前到达、停止之后才查完的请求按停止处理（评审复审 部分4 / 新中1） */
+  #stopGen = 0;
+  /** 停止时引擎已收到的服务端请求序号：序号不大于它的请求是停止前到的（归属查询中的那种） */
+  #stopBarrier = 0;
+  /** 补读 diff 中的请求（键见 #handled）→ 所属 thread / turn */
+  readonly #lookups = new Map<string, { threadId: string; turnId: string | undefined }>();
   /**
    * 已了结的请求（代际 + thread + 请求 id）→ 当时的回复（被撤销 / 作废的为 null）。同一请求
    * 再到达（重放）不再进 pending：答过的照原样再回一次，撤销过的不理（评审 中3）
@@ -587,7 +607,7 @@ export class CodexSession implements EngineSession, CodexSessionEvents {
         const turn = params['turn'];
         const turnId = isRecord(turn) ? str(turn['id']) : undefined;
         if (turnId !== undefined) this.#childTurns.set(childThreadId, turnId);
-        if (direct === childThreadId) this.#setChildState(childThreadId, 'running');
+        this.#noteChildState(childThreadId, direct, 'running');
         return;
       }
       case 'turn/completed': {
@@ -610,18 +630,15 @@ export class CodexSession implements EngineSession, CodexSessionEvents {
           }
         }
         for (const [id, item] of this.#childFileChanges) if (item['__thread'] === childThreadId) this.#childFileChanges.delete(id);
-        if (direct === childThreadId) {
-          const state: SubagentState = status === 'failed' ? 'failed' : status === 'interrupted' ? 'interrupted' : 'completed';
-          this.#setChildState(childThreadId, state);
-        }
+        const state: SubagentState = status === 'failed' ? 'failed' : status === 'interrupted' ? 'interrupted' : 'completed';
+        this.#noteChildState(childThreadId, direct, state);
         return;
       }
       case 'thread/status/changed': {
         const status = params['status'];
         const type = isRecord(status) ? status['type'] : undefined;
-        if (direct !== childThreadId) return;
-        if (type === 'active') this.#setChildState(childThreadId, 'running');
-        else if (type === 'systemError') this.#setChildState(childThreadId, 'failed');
+        if (type === 'active') this.#noteChildState(childThreadId, direct, 'running');
+        else if (type === 'systemError') this.#noteChildState(childThreadId, direct, 'failed');
         return;
       }
       case 'item/started':
@@ -699,7 +716,10 @@ export class CodexSession implements EngineSession, CodexSessionEvents {
         if (spawns.length === 1) current = known.info;
         continue;
       }
-      const merged: SubagentInfo = { agentId: childThreadId.slice(-64), ...info };
+      // 派生卡注册前就到了的子 thread 状态（如子轮已 completed）以它为准
+      const early = this.#earlyStates.get(childThreadId);
+      this.#earlyStates.delete(childThreadId);
+      const merged: SubagentInfo = { agentId: childThreadId.slice(-64), ...info, ...(early === undefined ? {} : { state: early }) };
       const agent: ChildAgent = { cardId, argSummary, info: merged, described: false };
       this.#childAgents.delete(childThreadId);
       this.#childAgents.set(childThreadId, agent);
@@ -735,6 +755,25 @@ export class CodexSession implements EngineSession, CodexSessionEvents {
   /** 重发派生卡的 tool.start，只为更新子 agent 信息（client 原地合并，调用结果不动） */
   #emitChildCard(agent: ChildAgent): void {
     this.#emit({ type: 'tool.start', toolUseId: agent.cardId, toolName: 'SubAgent', argSummary: agent.argSummary, subagent: agent.info });
+  }
+
+  /**
+   * 子 thread 的状态变化：派生卡已在就更新它；派生卡还没注册（暂存通知先于父 thread 的派生
+   * item 回放，评审复审 部分2）就先记下，注册时再用；孙辈的不动直接子 agent 的卡
+   */
+  #noteChildState(childThreadId: string, direct: string | undefined, state: SubagentState): void {
+    if (direct === childThreadId) {
+      this.#setChildState(childThreadId, state);
+      return;
+    }
+    if (direct !== undefined) return;
+    this.#earlyStates.delete(childThreadId);
+    this.#earlyStates.set(childThreadId, state);
+    while (this.#earlyStates.size > MAX_CHILD_AGENTS) {
+      const oldest = this.#earlyStates.keys().next();
+      if (oldest.done === true) break;
+      this.#earlyStates.delete(oldest.value);
+    }
   }
 
   #setChildState(childThreadId: string, state: SubagentState): void {
@@ -880,7 +919,14 @@ export class CodexSession implements EngineSession, CodexSessionEvents {
     else this.#onIdle?.();
   }
 
-  onServerRequest(id: unknown, method: string, params: Rec, reply: (result: unknown) => void, childThreadId?: string): boolean {
+  onServerRequest(
+    id: unknown,
+    method: string,
+    params: Rec,
+    reply: (result: unknown) => void,
+    childThreadId?: string,
+    seq?: number,
+  ): boolean {
     if (this.#closed) return false;
     const threadId = childThreadId ?? this.sessionId;
     const key = this.#requestKey(threadId, id);
@@ -905,6 +951,8 @@ export class CodexSession implements EngineSession, CodexSessionEvents {
       // 对不上派生卡（rootTurnId / thread/read 认的亲）：仍要标明来自子 agent（评审 中8）
       subagentId: childThreadId !== undefined && card === undefined ? childThreadId.slice(-128) : undefined,
       key,
+      // 停止之前就到了、归属查询完才转来的请求：按停止处理，直接拒绝（评审复审 部分4）
+      cancelled: seq !== undefined && seq <= this.#stopBarrier,
     };
     switch (method) {
       case 'item/commandExecution/requestApproval': {
@@ -928,12 +976,23 @@ export class CodexSession implements EngineSession, CodexSessionEvents {
         }
         // 没收到 item/started（归属确定前的通知丢了 / 乱序）：补读一次，补不到也不给可批准的空白卡（评审 高2）
         const gen = this.#procGen;
+        const stopGen = this.#stopGen;
+        const turnGen = this.#generation;
+        // 补读中的请求纳入取消管理：停止时按它的 thread / turn 一并中断
+        this.#lookups.set(key, { threadId, turnId });
         void this.#lookupFileChange(threadId, itemId).then((found) => {
+          this.#lookups.delete(key);
           if (gen !== this.#procGen || this.#closed) return;
           // 补读期间 Codex 可能已撤销、轮已结束或已有卡片：发布前再查一遍
           if (this.#handled.has(key) || [...this.#pending.values()].some((p) => p.key === key)) return;
           if (turnId !== undefined && this.#endedTurns.has(this.#turnKey(threadId, turnId))) return;
-          this.#fileChangeRequest(origin, id, params, found, reply);
+          // 本会话自己的请求：所属的轮已经结束，Codex 不再等它（评审复审 新中1）
+          if (childThreadId === undefined && turnGen !== this.#generation) {
+            this.#remember(key, null);
+            return;
+          }
+          // 补读期间用户点了停止：不发布可批准的卡，直接拒绝
+          this.#fileChangeRequest({ ...origin, cancelled: origin.cancelled || stopGen !== this.#stopGen }, id, params, found, reply);
         });
         return true;
       }
@@ -1014,10 +1073,18 @@ export class CodexSession implements EngineSession, CodexSessionEvents {
     reply: (result: unknown) => void,
     decide: PendingApproval['decide'],
   ): void {
+    if (origin.cancelled) {
+      // 停止前就到了的请求：用户已经停止，不再问，按拒绝回（Codex 那边还在等）
+      const result = decide('deny', undefined);
+      this.#remember(origin.key, result);
+      reply(result);
+      return;
+    }
     // 不用计数器：会话重建后会重复，迟到的旧应答可能批准到新请求上
     const requestId = `codex-${randomUUID()}`;
     const requestedAt = this.#now();
-    this.#pending.set(requestId, { requestId, rpcId, ...origin, toolName, input, requestedAt, options, decide, reply });
+    const { cancelled: _cancelled, ...stored } = origin;
+    this.#pending.set(requestId, { requestId, rpcId, ...stored, toolName, input, requestedAt, options, decide, reply });
     this.#permissionCount += 1;
     if (this.#running) this.#heartbeat.setPhase('wait');
     this.#emit({
@@ -1088,6 +1155,16 @@ export class CodexSession implements EngineSession, CodexSessionEvents {
     for (const dropped of this.#queue.clear()) {
       this.#attachments.delete(dropped.clientMsgId);
       this.#emit({ type: 'input.cancelled', clientMsgId: dropped.clientMsgId, reason: 'stopped' });
+    }
+    // 停止之前已到、还在归属查询 / 补读 diff 的请求：之后转来时按停止处理（评审复审 部分4 / 新中1）
+    this.#stopGen += 1;
+    this.#stopBarrier = this.#client.requestSeq?.() ?? this.#stopBarrier;
+    // 中断目标：子 thread 正在进行的轮，加上挂着的审批 / 补读中的请求所属的子 thread 轮
+    //（没收到 turn/started 也要能停）
+    for (const target of [...this.#pending.values(), ...this.#lookups.values()]) {
+      if (target.threadId !== this.sessionId && target.turnId !== undefined && !this.#childTurns.has(target.threadId)) {
+        this.#childTurns.set(target.threadId, target.turnId);
+      }
     }
     // 先了结全部审批（含子 agent 的）：父轮已结束时子审批可能还挂着（评审 中4）
     for (const pending of [...this.#pending.values()]) {
@@ -1236,6 +1313,7 @@ export class CodexSession implements EngineSession, CodexSessionEvents {
     this.#childTurns.clear();
     this.#childFileChanges.clear();
     this.#descendants.clear();
+    this.#earlyStates.clear();
     for (const [child, agent] of this.#childAgents) {
       const state = agent.info.state;
       if (state === undefined || state === 'running' || state === 'pending') this.#setChildState(child, 'unknown');

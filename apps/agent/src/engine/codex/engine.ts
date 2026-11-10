@@ -199,6 +199,12 @@ export class CodexEngine implements CodexSessionClient {
   readonly #orphans = new Map<string, { at: number; notes: [string, Rec][] }>();
   /** app-server 进程代际：退出加一，旧进程的异步结果不再生效 */
   #procGen = 0;
+  /** 收到的服务端请求个数（到达序号） */
+  #requestSeq = 0;
+
+  requestSeq(): number {
+    return this.#requestSeq;
+  }
   #models: EngineModel[] = [];
   readonly #now: () => number;
   readonly #log: (line: string) => void;
@@ -366,12 +372,13 @@ export class CodexEngine implements CodexSessionClient {
     reply: (result: unknown) => void,
     fail: (code: number, message: string) => void,
   ): boolean {
+    const seq = ++this.#requestSeq;
     const threadId = str(params['threadId']);
     if (threadId === undefined) return false;
     const own = this.#sessions.get(threadId);
-    if (own !== undefined) return own.onServerRequest(id, method, params, reply);
+    if (own !== undefined) return own.onServerRequest(id, method, params, reply, undefined, seq);
     const root = this.#childRoot.get(threadId);
-    if (root !== undefined) return this.#sessions.get(root)?.onServerRequest(id, method, params, reply, threadId) ?? false;
+    if (root !== undefined) return this.#sessions.get(root)?.onServerRequest(id, method, params, reply, threadId, seq) ?? false;
     if (this.#sessions.size === 0) return false;
     // 归属未知：查过再决定，期间请求挂着（Codex 那边本来就在等用户）。查询期间到的撤销 / 轮结束
     // 暂存在 #orphans，认亲时先回放，会话发布卡片前会看到
@@ -380,7 +387,8 @@ export class CodexEngine implements CodexSessionClient {
       // 进程已换：这个请求属于旧连接，回复也送不到了
       if (gen !== this.#procGen) return;
       const session = found === undefined ? undefined : this.#sessions.get(found);
-      const handled = session?.onServerRequest(id, method, params, reply, threadId) ?? false;
+      // 带上到达序号：查询期间会话被停止的，会话按停止处理
+      const handled = session?.onServerRequest(id, method, params, reply, threadId, seq) ?? false;
       if (!handled) fail(METHOD_NOT_FOUND, 'not supported by this client');
     });
     return true;
