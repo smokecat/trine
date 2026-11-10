@@ -266,6 +266,24 @@ describe('ToolCard · 前台 / 后台与子任务状态（plan §7）', () => {
     expect($(mount(<ToolCard entry={history} runningElapsedMs={null} />), 'tool-subagent-status')?.textContent).toBe('? 状态未知');
   });
 
+  test('Codex 子 agent 卡：右侧是调用状态，另起一行是子 agent 的昵称 / 状态 / 模型', () => {
+    const entry: ToolEntry = {
+      kind: 'tool',
+      id: 'call_1',
+      toolName: 'SubAgent',
+      argSummary: '派生子 agent · probe',
+      status: 'ok',
+      resultSummary: '已派生',
+      subagent: { agentId: 'thread-1', nickname: 'Meitner', state: 'running', model: 'm-1' },
+      seq: 1,
+      ts: 1,
+    };
+    const el = mount(<ToolCard entry={entry} runningElapsedMs={null} />);
+    expect($(el, 'tool-result')?.textContent).toBe('已派生');
+    expect($(el, 'tool-subagent-line')?.textContent).toBe('子 agent：Meitner · 运行中 · m-1');
+    expect($(el, 'tool-subagent-status')).toBeNull();
+  });
+
   test('前台：标「前台」，结束照常显示结果摘要', () => {
     const el = mount(<ToolCard entry={agent({ status: 'ok', resultSummary: '✓ 2 次工具调用', subagent: { agentType: 'Plan' } })} runningElapsedMs={null} />);
     expect($(el, 'tool-name')?.textContent).toBe('Agent · Plan · 前台');

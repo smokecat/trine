@@ -35,11 +35,17 @@
     client 据此打开文件预览（§1.10）。history 的 tool 条目同样带。旧 client 忽略
   - argDetail（agent ≥ 0.25.0）：完整参数原文（Bash / Codex Shell 的命令，WebFetch 的 URL、WebSearch 的查询、
     Grep / Glob 的模式），保留换行，上限 16000 字符（超出截断并在尾部写明原长）。只在 argSummary 看不全原文
-    （被压成单行或截断）时带；Codex 被识别成 Read 的命令也带原命令。client 展开工具卡时显示、可复制。
-    history 的 tool 条目同样带。旧 client 忽略
-- `tool.end` — `{ toolUseId, status: ok|warn|error, durationMs, resultSummary, outputPreview }`
+    （被压成单行或截断）时带；Codex 被识别成 Read 的命令也带原命令。Agent / Task 的 argDetail 是写给子 agent 的 prompt。
+    client 展开工具卡时显示、可复制。history 的 tool 条目同样带。旧 client 忽略
+  - subagent（可选，旧 client 忽略）：子 agent 卡的附加信息 `{ agentType?, background?, state?, nickname?, model?, agentId? }`。
+    同一 toolUseId 可以重发 tool.start 只为更新它，client 按字段合并、结果与子树保留。state 取值
+    pending / running / completed / failed / stopped / interrupted / shutdown / not_found / unknown（Codex 的 CollabAgentStatus 一一对应）
+- `tool.end` — `{ toolUseId, status: ok|warn|error, durationMs, resultSummary, outputPreview, subagent? }`
   - resultSummary：单行（`✓ +9 −2` / `⚠ 1 failed · 3.5s` 的数据源：exit code、diff stat、耗时）
   - outputPreview：尾部截断的输出文本（阈值待定，~2KB），展开查看用
+  - 子 agent：tool.end 表示「启动它的工具调用返回了」，不表示子 agent 结束。后台启动时带 `subagent.background: true`，
+    后台子 agent 结束时 agent 再发一帧同 id 的 tool.end 收尾并带 `subagent.state`；运行中的状态由 client 从 `bgtask.snapshot` 派生。
+    history 的 tool 条目回填最终状态，没有结束证据时 `state: unknown`
 
 ### 1.3 心跳 footer
 
