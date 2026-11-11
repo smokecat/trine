@@ -40,16 +40,26 @@ function fakeClient(): { retained: Map<string, number> } {
   const client = {
     on: () => () => {},
     openFile: async (_m: string, _s: string, path: string) => opened(path),
+    // 租约：拿到即计数，release 幂等
+    openFileLease: async (_m: string, _s: string, path: string) => {
+      const value = opened(path);
+      retained.set(value.url, (retained.get(value.url) ?? 0) + 1);
+      let done = false;
+      return {
+        value,
+        release: () => {
+          if (done) return;
+          done = true;
+          retained.set(value.url, (retained.get(value.url) ?? 1) - 1);
+        },
+      };
+    },
     listFiles: async (_m: string, _s: string, path?: string) => ({
       path: path ?? '/w',
       root: '/w',
       truncated: false,
       entries: [{ name: 'child.md', type: 'file', size: 1, mtime: 1 }],
     }),
-    retainFileUrl: (url: string) => {
-      retained.set(url, (retained.get(url) ?? 0) + 1);
-      return () => retained.set(url, (retained.get(url) ?? 1) - 1);
-    },
   };
   act(() => runtimeState.setState({ client: client as never }));
   return { retained };
@@ -287,6 +297,125 @@ describe('渲染与资源', () => {
     await settle();
     expect(m.readyCalls).toBe(1);
     expect(retained.get('blob:test//w/a.md')).toBe(1);
+  });
+});
+
+describe('评审修复', () => {
+  test('收起（Activity 隐藏 + 工作区不可见）：正文 DOM 真正卸载，而不只是引用计数归零；展开后重挂', async () => {
+    const { retained } = fakeClient();
+    hostEl = document.createElement('div');
+    document.body.appendChild(hostEl);
+    root = createRoot(hostEl);
+    const view = new WorkspaceViewStore();
+    let handle: DockHandle | null = null;
+    const render = (shown: boolean): void =>
+      act(() =>
+        root!.render(
+          <StrictMode>
+            <MemoryRouter>
+              <Activity mode={shown ? 'visible' : 'hidden'}>
+                <div style={{ width: 1000, height: 600 }}>
+                  <WorkspaceDock
+                    machineId="m"
+                    sessionId="s1"
+                    initial={null}
+                    view={view}
+                    visible={shown}
+                    onReady={(h) => {
+                      handle = h;
+                      h.api.layout(1000, 600);
+                    }}
+                    onLayoutChange={() => {}}
+                    onLimit={() => {}}
+                  />
+                </div>
+              </Activity>
+            </MemoryRouter>
+          </StrictMode>,
+        ),
+      );
+    render(true);
+    act(() => void handle!.open(file('/w/a.md')));
+    await settle();
+    expect(hostEl.querySelector('[data-testid="file-scroll"]')).not.toBeNull();
+    render(false);
+    await settle();
+    // Activity 只清 effect、保留 DOM；正文必须按「工作区可见」显式卸载
+    expect(hostEl.querySelector('[data-testid="file-scroll"]')).toBeNull();
+    expect(retained.get('blob:test//w/a.md')).toBe(0);
+    expect(handle!.api.totalPanels).toBe(1);
+    render(true);
+    await settle();
+    expect(hostEl.querySelector('[data-testid="file-scroll"]')).not.toBeNull();
+    expect(retained.get('blob:test//w/a.md')).toBe(1);
+  });
+
+  test('tab 上真正发送 Delete：关闭；Backspace 不关闭', () => {
+    fakeClient();
+    const m = mount();
+    act(() => void m.h.open(file('/w/a.md', 'auto', { keep: true })));
+    act(() => void m.h.open(file('/w/b.md', 'auto', { keep: true })));
+    const tabOf = (id: string): HTMLElement => document.querySelector<HTMLElement>(`[data-tab="${id}"]`)!.closest<HTMLElement>('.dv-tab')!;
+    act(() => {
+      tabOf('file:/w/b.md').dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Backspace', bubbles: true }));
+    });
+    expect(m.h.api.totalPanels).toBe(2);
+    act(() => {
+      tabOf('file:/w/b.md').dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Delete', bubbles: true }));
+    });
+    expect(ids(m)).toEqual(['file:/w/a.md']);
+  });
+
+  test('目录组里混进文件后，目录 tab 里点文件仍去右侧组（不替换本组）', async () => {
+    fakeClient();
+    const m = mount();
+    act(() => void m.h.open({ kind: 'dir', path: '', placement: 'auto' }));
+    const dirGroup = m.h.api.groups[0]!;
+    // 用户把一个预览文件放进了目录组
+    act(() => void m.h.api.addPanel({ id: 'file:/w/x.md', component: 'file', params: { kind: 'file', path: '/w/x.md', preview: true }, position: { referenceGroup: dirGroup } }));
+    act(() => m.h.api.getPanel('dir:1')!.api.setActive());
+    await settle();
+    const entry = [...document.querySelectorAll<HTMLButtonElement>('[data-panel="dir:1"] button')].find((b) => b.textContent?.includes('child.md'))!;
+    act(() => entry.click());
+    expect(m.h.api.getPanel('file:/w/child.md')!.group.id).not.toBe(dirGroup.id);
+    expect(m.h.api.getPanel('file:/w/x.md')).toBeDefined();
+  });
+
+  test('重置布局合并多组：预览位归一（只留一个预览 tab）', async () => {
+    fakeClient();
+    const m = mount();
+    act(() => void m.h.open(file('/w/a.md')));
+    const g1 = m.h.api.groups[0]!;
+    act(() => void m.h.api.addPanel({ id: 'file:/w/b.md', component: 'file', params: { kind: 'file', path: '/w/b.md', preview: true }, position: { referenceGroup: g1, direction: 'right' } }));
+    expect(m.h.api.panels.filter((p) => model.paramsOf(p).preview).length).toBe(2);
+    act(() => m.h.resetLayout());
+    await settle();
+    expect(m.h.api.groups.length).toBe(1);
+    expect(m.h.api.panels.filter((p) => model.paramsOf(p).preview).length).toBe(1);
+  });
+
+  test('关闭 tab 后，正文卸载时迟到的滚动上报不把状态写回来', async () => {
+    fakeClient();
+    const m = mount();
+    act(() => void m.h.open(file('/w/a.md', 'auto', { keep: true })));
+    await settle();
+    act(() => m.view.patch('file:/w/a.md', { scrollTop: 10 }));
+    act(() => m.h.api.getPanel('file:/w/a.md')!.api.close());
+    act(() => m.view.patch('file:/w/a.md', { scrollTop: 99 }));
+    expect(m.view.get('file:/w/a.md')).toBeUndefined();
+    // 同一路径重新打开：照常记录
+    act(() => void m.h.open(file('/w/a.md', 'auto', { keep: true })));
+    act(() => m.view.patch('file:/w/a.md', { scrollTop: 5 }));
+    expect(m.view.get('file:/w/a.md')).toEqual({ scrollTop: 5 });
+  });
+
+  test('组设了最小宽度约束；聚合最小宽度随分栏变化', () => {
+    fakeClient();
+    const m = mount();
+    act(() => void m.h.open(file('/w/a.md')));
+    act(() => void m.h.open(file('/w/b.md', 'side')));
+    for (const g of m.h.api.groups) expect(g.minimumWidth).toBe(220);
+    expect(model.gridMinWidth(m.h.snapshot(false).layout, 220)).toBe(440);
   });
 });
 

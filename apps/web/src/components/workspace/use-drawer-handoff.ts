@@ -25,6 +25,19 @@ export interface HandoffIntent {
   state: TabViewState;
 }
 
+/**
+ * 工作区**确实显示着**时的 `?file=` / `?dir=` 深链（不是本页从关着打开的抽屉）：转成 tab，参数就地 replace 掉。
+ * `shown` 必须在主区宽度测量之后才为 true（见 use-workspace 的 measured）：窄窗口首次进入时，
+ * 未测量的 0 宽不能当成「够宽」，否则深链会交给一个随即自动收起的工作区，目标文件看不到。
+ */
+export function useWorkspaceDeepLink(shown: boolean, view: FileView | null, fromClosed: boolean, handoff: (h: HandoffIntent) => void): void {
+  const deepLink = view !== null && !fromClosed ? view : null;
+  useEffect(() => {
+    if (!shown || deepLink === null) return;
+    handoff({ intent: intentForView(deepLink), state: {} });
+  }, [shown, deepLink, handoff]);
+}
+
 export function useDrawerHandoff(createTab: (h: HandoffIntent) => void): (h: HandoffIntent) => void {
   const location = useLocation();
   const navigate = useNavigate();

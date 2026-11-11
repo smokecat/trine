@@ -2,7 +2,7 @@
  * 目录视图（与容器无关）：头部（面包屑、位置菜单、点文件开关）+ 列表 + 范围外信任流程。
  * 抽屉与工作区 tab 共用；去别的目录 / 打开文件交给外壳（`onBrowse` / `onOpenFile`）。
  */
-import { useRef, useState } from 'react';
+import { useLayoutEffect, useRef, useState } from 'react';
 import { EyeIcon, EyeOffIcon, FolderOpenIcon, RefreshCwIcon } from 'lucide-react';
 import { useClient } from '@/app/runtime.ts';
 import type { FsListing } from '@/lib/client.ts';
@@ -47,6 +47,7 @@ export function FileDirView({
   onBrowse,
   onOpenFile,
   chrome,
+  captureRef,
 }: {
   machineId: string;
   sessionId: string;
@@ -59,6 +60,8 @@ export function FileDirView({
   onBrowse: (dir?: string, target?: FileOpenTarget) => void;
   onOpenFile: (path: string, target: FileOpenTarget) => void;
   chrome?: FileViewChrome;
+  /** 同 FileDocView：外壳要此刻的滚动位置时同步读 */
+  captureRef?: React.RefObject<(() => FileDirModel) | null> | undefined;
 }): React.JSX.Element {
   const client = useClient();
   const roots = useFilesInfo(machineId)?.roots;
@@ -76,6 +79,13 @@ export function FileDirView({
   const listing = load.state === 'ok' ? load.value : undefined;
   const scrollRef = useRef<HTMLDivElement>(null);
   const onScroll = useScrollMemory(scrollRef, model?.scrollTop ?? 0, listing !== undefined, (top) => onModelChange?.({ scrollTop: top }));
+  useLayoutEffect(() => {
+    if (captureRef === undefined) return;
+    captureRef.current = () => ({ scrollTop: scrollRef.current?.scrollTop ?? model?.scrollTop ?? 0 });
+    return () => {
+      captureRef.current = null;
+    };
+  });
   // 范围外：只认绝对路径（相对路径是相对会话 cwd 的，展示和信任都说不清）
   const outOfScope = load.state === 'error' && isOutOfScope(load.error) && path?.startsWith('/') === true ? path : undefined;
   // 当前所在的目录：加载成功取 agent 解析后的路径，范围外取请求路径

@@ -100,7 +100,7 @@ import { ExtHeadEntry, ExtPanelSheet } from '@/components/ext/ExtPanel.tsx';
 import { FilePanel, type DrawerHandoff } from '@/components/files/FilePanel.tsx';
 import { prefetchWorkspace } from '@/components/workspace/LazyWorkspace.tsx';
 import { useWorkspace } from '@/components/workspace/use-workspace.ts';
-import { intentForView, useDrawerHandoff, type HandoffIntent } from '@/components/workspace/use-drawer-handoff.ts';
+import { intentForView, useDrawerHandoff, useWorkspaceDeepLink, type HandoffIntent } from '@/components/workspace/use-drawer-handoff.ts';
 import { WorkspacePane } from '@/components/workspace/WorkspacePane.tsx';
 import { useWorkspacePeekRoute, WorkspacePeek } from '@/components/workspace/WorkspacePeek.tsx';
 import { createFileLinks, FileLinksContext, type FileLinks } from '@/components/files/file-links.ts';
@@ -180,12 +180,7 @@ export function ChatView(): React.JSX.Element {
   );
   // 工作区展开时的 `?file=` / `?dir=` 深链（不是本页从关着打开的抽屉）：转成 tab，参数就地 replace 掉
   const fileState = useLocation().state as { fileFromClosed?: unknown } | null;
-  const deepLinkView = filePanel.view !== null && fileState?.fileFromClosed !== true ? filePanel.view : null;
-  const wsShown = ws.shown;
-  useEffect(() => {
-    if (!wsShown || deepLinkView === null) return;
-    handoff({ intent: intentForView(deepLinkView), state: {} });
-  }, [wsShown, deepLinkView, handoff]);
+  useWorkspaceDeepLink(ws.shown, filePanel.view, fileState?.fileFromClosed === true, handoff);
   // 桌面窄窗口：「文件（N）」以抽屉形式看当前活动 tab（一条可退回的历史）
   const peek = useWorkspacePeekRoute();
   const closePeek = peek.close;

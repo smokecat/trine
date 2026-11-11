@@ -70,6 +70,7 @@ export const CHAT_MIN_WIDTH = 480;
  */
 export const WORKSPACE_MIN_WIDTH = 360;
 export const WORKSPACE_GROUP_MIN_WIDTH = 220;
+export const WORKSPACE_GROUP_MIN_HEIGHT = 120;
 export const WORKSPACE_SPLITTER_WIDTH = 8;
 /** 工作区宽度的存储上限（防坏数据；实际以主区宽度夹住） */
 export const WORKSPACE_MAX_STORED_WIDTH = 8000;
@@ -79,20 +80,28 @@ export function clampSidebarWidth(width: number, viewport: number): number {
   return Math.round(Math.min(max, Math.max(SIDEBAR_MIN_WIDTH, width)));
 }
 
+/**
+ * 工作区的最小宽度：WORKSPACE_MIN_WIDTH 与当前分栏布局的聚合最小宽度（左右并排的组相加）取大者。
+ * `layoutMin` 由工作区按组布局算出（见 workspace-model 的 gridMinWidth）。
+ */
+export function workspaceMinWidth(layoutMin = 0): number {
+  return Math.max(WORKSPACE_MIN_WIDTH, Math.ceil(layoutMin));
+}
+
 /** 主区（聊天 + 工作区）够不够同时放下两栏 */
-export function workspaceFits(mainWidth: number): boolean {
-  return mainWidth >= CHAT_MIN_WIDTH + WORKSPACE_SPLITTER_WIDTH + WORKSPACE_MIN_WIDTH;
+export function workspaceFits(mainWidth: number, minWidth = WORKSPACE_MIN_WIDTH): boolean {
+  return mainWidth >= CHAT_MIN_WIDTH + WORKSPACE_SPLITTER_WIDTH + minWidth;
 }
 
 /**
  * 工作区的实际宽度：`stored` 为 null 时取主区一半；再夹到 [最小宽, 主区 − 聊天最小宽 − 分隔条]。
  * 主区放不下两栏时（应已自动收起）返回最小宽。
  */
-export function clampWorkspaceWidth(stored: number | null, mainWidth: number): number {
+export function clampWorkspaceWidth(stored: number | null, mainWidth: number, minWidth = WORKSPACE_MIN_WIDTH): number {
   const max = mainWidth - CHAT_MIN_WIDTH - WORKSPACE_SPLITTER_WIDTH;
   const want = stored ?? Math.round((mainWidth - WORKSPACE_SPLITTER_WIDTH) / 2);
-  if (max < WORKSPACE_MIN_WIDTH) return WORKSPACE_MIN_WIDTH;
-  return Math.round(Math.min(max, Math.max(WORKSPACE_MIN_WIDTH, want)));
+  if (max < minWidth) return minWidth;
+  return Math.round(Math.min(max, Math.max(minWidth, want)));
 }
 
 /** 拖动结果：宽度（已夹住）与松手时是否应折叠 */

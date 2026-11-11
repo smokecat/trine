@@ -10,7 +10,7 @@ import { Activity, useEffect, useRef, useState } from 'react';
 import { EllipsisIcon, FilesIcon, Maximize2Icon, Minimize2Icon, PanelRightCloseIcon } from 'lucide-react';
 import { Button } from '@/components/ui/button.tsx';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu.tsx';
-import { clampWorkspaceWidth, CHAT_MIN_WIDTH, WORKSPACE_MIN_WIDTH, WORKSPACE_SPLITTER_WIDTH } from '@/lib/layout-prefs.ts';
+import { clampWorkspaceWidth, CHAT_MIN_WIDTH, WORKSPACE_SPLITTER_WIDTH } from '@/lib/layout-prefs.ts';
 import { cn } from '@/lib/utils.ts';
 import { LazyWorkspace } from './LazyWorkspace.tsx';
 import type { WorkspaceController } from './use-workspace.ts';
@@ -22,18 +22,21 @@ const KEY_STEP_LARGE = 96;
 function useSplitter({
   width,
   mainWidth,
+  minWidth,
   onCommit,
   onReset,
 }: {
   width: number;
   mainWidth: number;
+  /** 工作区最小宽度（含分栏布局的聚合最小宽度） */
+  minWidth: number;
   onCommit: (width: number) => void;
   onReset: () => void;
 }): { dragWidth: number | null; props: React.HTMLAttributes<HTMLDivElement> & { 'aria-valuenow': number; 'aria-valuemin': number; 'aria-valuemax': number } } {
   const [dragWidth, setDragWidth] = useState<number | null>(null);
   const drag = useRef<{ startX: number; startWidth: number; width: number } | null>(null);
   const dragging = dragWidth !== null;
-  const max = Math.max(WORKSPACE_MIN_WIDTH, mainWidth - CHAT_MIN_WIDTH - WORKSPACE_SPLITTER_WIDTH);
+  const max = Math.max(minWidth, mainWidth - CHAT_MIN_WIDTH - WORKSPACE_SPLITTER_WIDTH);
 
   useEffect(() => {
     if (!dragging) return;
@@ -47,7 +50,7 @@ function useSplitter({
     };
   }, [dragging]);
 
-  const clamp = (w: number): number => clampWorkspaceWidth(w, mainWidth);
+  const clamp = (w: number): number => clampWorkspaceWidth(w, mainWidth, minWidth);
   return {
     dragWidth,
     props: {
@@ -55,7 +58,7 @@ function useSplitter({
       'aria-orientation': 'vertical',
       'aria-label': '调整文件工作区宽度',
       'aria-valuenow': width,
-      'aria-valuemin': WORKSPACE_MIN_WIDTH,
+      'aria-valuemin': minWidth,
       'aria-valuemax': max,
       tabIndex: 0,
       title: '拖动调整宽度，双击恢复默认（键盘：←/→）',
@@ -92,7 +95,7 @@ function useSplitter({
         if (e.key === 'ArrowLeft') next = width + step;
         else if (e.key === 'ArrowRight') next = width - step;
         else if (e.key === 'Home') next = max;
-        else if (e.key === 'End') next = WORKSPACE_MIN_WIDTH;
+        else if (e.key === 'End') next = minWidth;
         else if (e.key === 'Enter') {
           e.preventDefault();
           onReset();
@@ -122,8 +125,8 @@ export function WorkspacePane({
   /** 窄屏时点「文件（N）」：以抽屉形式看当前活动 tab */
   onPeek: () => void;
 }): React.JSX.Element | null {
-  const width = clampWorkspaceWidth(storedWidth, mainWidth);
-  const splitter = useSplitter({ width, mainWidth, onCommit: onWidthCommit, onReset: onWidthReset });
+  const width = clampWorkspaceWidth(storedWidth, mainWidth, ws.minWidth);
+  const splitter = useSplitter({ width, mainWidth, minWidth: ws.minWidth, onCommit: onWidthCommit, onReset: onWidthReset });
   if (!ws.enabled || ws.status === 'absent') return null;
   const hidden = ws.status === 'collapsed' || ws.narrow;
   const effective = splitter.dragWidth ?? width;
@@ -198,7 +201,7 @@ export function WorkspacePane({
             </DropdownMenu>
           </div>
           <div className="min-h-0 flex-1">
-            {ws.mounted && ws.dock !== null && <LazyWorkspace key={`${ws.key ?? ''}#${ws.generation}`} {...ws.dock} />}
+            {ws.mounted && ws.dock !== null && <LazyWorkspace key={`${ws.key ?? ''}#${ws.generation}`} {...ws.dock} visible={!hidden} />}
           </div>
         </section>
       </Activity>

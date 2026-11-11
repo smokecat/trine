@@ -2,7 +2,8 @@
  * 工作区快照的读取 / 校验（纯函数，不起 dockview）与持久化存储（schema 版本、隔离、上限、内存回退）。
  */
 import { describe, expect, test } from 'bun:test';
-import { readSnapshot, salvageTabs, validateLayout, type WorkspaceSnapshot } from './workspace-model.ts';
+import { gridMinWidth, normalizePreview, readSnapshot, salvageTabs, validateLayout, type WorkspaceSnapshot } from './workspace-model.ts';
+import { isInDirection } from './dock-geometry.ts';
 import { workspaceKey, WorkspaceStore, WorkspaceViewStore, type KvLike } from './workspace-store.ts';
 
 function layout(): Record<string, unknown> {
@@ -194,6 +195,59 @@ describe('WorkspaceStore', () => {
     const kv = memoryKv();
     kv.setItem('trine.workspace.v1:k', '{oops');
     expect(new WorkspaceStore(kv).load('k')).toBeNull();
+  });
+});
+
+describe('评审修复（纯逻辑）', () => {
+  test('锚点消费记录不跨工作区：A 消费了某路径的第一次定位，B 同路径的第一次定位照常生效', () => {
+    const a = new WorkspaceViewStore();
+    const b = new WorkspaceViewStore();
+    a.requestMount('file:/w/a.md', '安装');
+    expect(a.consumeFragment('file:/w/a.md', a.mount('file:/w/a.md'))).toBe('安装');
+    expect(a.consumeFragment('file:/w/a.md', a.mount('file:/w/a.md'))).toBeUndefined();
+    b.requestMount('file:/w/a.md', '用法');
+    expect(b.consumeFragment('file:/w/a.md', b.mount('file:/w/a.md'))).toBe('用法');
+  });
+
+  test('localStorage 不可用时内存回退同样按条数上限淘汰', () => {
+    const none = new WorkspaceStore(null, 2);
+    const s = readSnapshot(snapshot())!;
+    none.save('k1', s);
+    none.save('k2', s);
+    none.save('k3', s);
+    expect(none.load('k1')).toBeNull();
+    expect(none.load('k2')).not.toBeNull();
+    expect(none.load('k3')).not.toBeNull();
+  });
+
+  test('一组里两个预览位：布局校验拒绝（走重建），重建时归一', () => {
+    const l = layout() as Record<string, any>;
+    l.panels['file:/w/a.md'].params.preview = true;
+    expect(validateLayout(l)).toBeNull();
+    expect(normalizePreview([{ id: 'a', preview: true }, { id: 'b', preview: true }, { id: 'c', preview: false }], 'a')).toEqual([
+      { id: 'a', preview: true },
+      { id: 'b', preview: false },
+      { id: 'c', preview: false },
+    ]);
+  });
+
+  test('聚合最小宽度：左右相加、上下取大', () => {
+    expect(gridMinWidth(layout() as never, 220)).toBe(440);
+    const l = layout() as Record<string, any>;
+    l.grid.orientation = 'VERTICAL';
+    expect(gridMinWidth(l as never, 220)).toBe(220);
+    expect(gridMinWidth(null, 220)).toBe(220);
+  });
+
+  test('邻组的几何核对：只有左右两组时，「上方」不算邻组', () => {
+    const left = { left: 0, right: 300, top: 0, bottom: 600 };
+    const right = { left: 300, right: 600, top: 0, bottom: 600 };
+    expect(isInDirection(right, left, 'left')).toBe(true);
+    expect(isInDirection(right, left, 'up')).toBe(false);
+    expect(isInDirection(right, left, 'down')).toBe(false);
+    const below = { left: 300, right: 600, top: 300, bottom: 600 };
+    const above = { left: 300, right: 600, top: 0, bottom: 300 };
+    expect(isInDirection(below, above, 'up')).toBe(true);
   });
 });
 

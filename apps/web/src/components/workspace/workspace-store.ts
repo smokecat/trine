@@ -69,8 +69,10 @@ export class WorkspaceStore {
       this.#memory.delete(key);
       this.#touch(key);
     } catch {
-      // 满额 / 隐私模式：本页内存里留一份
+      // 满额 / 隐私模式：本页内存里留一份，同样按条数上限淘汰最久没写的
+      this.#memory.delete(key);
       this.#memory.set(key, text);
+      while (this.#memory.size > this.#max) this.#memory.delete(this.#memory.keys().next().value!);
     }
   }
 
@@ -107,15 +109,26 @@ export class WorkspaceStore {
   }
 }
 
-/** 一次性定位请求：nonce 每次递增，tab 据此重挂文件视图并跳到锚点 */
-export interface FragmentRequest {
-  fragment: string;
+/**
+ * 一次性重挂请求：nonce 每次递增，tab 据此重挂视图（按 store 里的内容状态重新定位）；
+ * 带 fragment 时加载后跳到锚点。每个 nonce 只被消费一次（tab 隐藏再显示不重复跳）。
+ */
+export interface MountRequest {
+  fragment?: string | undefined;
   nonce: number;
 }
 
+/**
+ * tab 的内容状态（模式、换行、滚动）：工作区 tab 与窄屏抽屉**订阅同一份**，任何一处改了另一处跟着变。
+ * 一份工作区（机器 + cwd）一个实例：锚点消费记录也在这里，不跨工作区串扰。
+ */
 export class WorkspaceViewStore {
   readonly #view = new Map<string, TabViewState>();
-  readonly #fragments = new Map<string, FragmentRequest>();
+  readonly #mounts = new Map<string, MountRequest>();
+  /** id → 已消费到的 nonce */
+  readonly #consumed = new Map<string, number>();
+  /** 已关闭的 tab：卸载时迟到的滚动上报不能把状态写回来 */
+  readonly #closed = new Set<string>();
   readonly #listeners = new Set<() => void>();
   #nonce = 0;
   /** 内容状态变了（滚动停下、切模式）：控制器据此安排保存 */
@@ -126,18 +139,31 @@ export class WorkspaceViewStore {
   }
 
   patch(id: string, patch: TabViewState): void {
+    if (this.#closed.has(id)) return;
     this.#view.set(id, { ...this.#view.get(id), ...patch });
+    this.#emit();
     this.onChange?.();
   }
 
-  /** 新 tab 带着抽屉交接来的状态 */
+  /** 整体替换某个 tab 的状态（抽屉交接带来的） */
   set(id: string, state: TabViewState): void {
+    this.#closed.delete(id);
     this.#view.set(id, { ...state });
+    this.#emit();
+    this.onChange?.();
   }
 
+  /** tab 关闭：丢掉状态与请求，并拒绝之后的迟到上报 */
   delete(id: string): void {
     this.#view.delete(id);
-    this.#fragments.delete(id);
+    this.#mounts.delete(id);
+    this.#consumed.delete(id);
+    this.#closed.add(id);
+  }
+
+  /** 同一 id 的 tab 重新打开 */
+  revive(id: string): void {
+    this.#closed.delete(id);
   }
 
   entries(): ReadonlyMap<string, TabViewState> {
@@ -147,20 +173,43 @@ export class WorkspaceViewStore {
   replaceAll(view: Record<string, TabViewState>): void {
     this.#view.clear();
     for (const [id, s] of Object.entries(view)) this.#view.set(id, s);
+    this.#emit();
   }
 
-  requestFragment(id: string, fragment: string): void {
+  /** 让 tab 重挂视图（可带锚点） */
+  requestMount(id: string, fragment?: string): void {
     this.#nonce += 1;
-    this.#fragments.set(id, { fragment, nonce: this.#nonce });
-    for (const l of this.#listeners) l();
+    this.#mounts.set(id, { fragment, nonce: this.#nonce });
+    this.#emit();
   }
 
-  fragment(id: string): FragmentRequest | undefined {
-    return this.#fragments.get(id);
+  /** 兼容旧名：带锚点的重挂 */
+  requestFragment(id: string, fragment: string): void {
+    this.requestMount(id, fragment);
+  }
+
+  mount(id: string): MountRequest | undefined {
+    return this.#mounts.get(id);
+  }
+
+  /** 兼容旧名 */
+  fragment(id: string): MountRequest | undefined {
+    return this.#mounts.get(id);
+  }
+
+  /** 视图挂载时调用：这次请求还没消费过就返回它的锚点（并记为已消费），否则 undefined */
+  consumeFragment(id: string, request: MountRequest | undefined): string | undefined {
+    if (request === undefined || (this.#consumed.get(id) ?? 0) >= request.nonce) return undefined;
+    this.#consumed.set(id, request.nonce);
+    return request.fragment;
   }
 
   subscribe = (listener: () => void): (() => void) => {
     this.#listeners.add(listener);
     return () => this.#listeners.delete(listener);
   };
+
+  #emit(): void {
+    for (const l of this.#listeners) l();
+  }
 }

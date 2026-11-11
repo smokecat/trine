@@ -15,6 +15,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import {
   DockviewReact,
   type DockviewApi,
+  type DockviewGroupPanel,
   type DockviewPanelApi,
   type DockviewReadyEvent,
   type DockviewTheme,
@@ -34,7 +35,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu.tsx';
-import { WORKSPACE_GROUP_MIN_WIDTH } from '@/lib/layout-prefs.ts';
+import { WORKSPACE_GROUP_MIN_HEIGHT, WORKSPACE_GROUP_MIN_WIDTH } from '@/lib/layout-prefs.ts';
 import { cn } from '@/lib/utils.ts';
 import {
   createCtx,
@@ -50,7 +51,8 @@ import {
   type TabParams,
   type WorkspaceSnapshot,
 } from './workspace-model.ts';
-import type { WorkspaceViewStore } from './workspace-store.ts';
+import type { MountRequest, WorkspaceViewStore } from './workspace-store.ts';
+import { isInDirection, type Direction } from './dock-geometry.ts';
 
 export const trineTheme: DockviewTheme = {
   name: 'trine',
@@ -66,6 +68,8 @@ interface Shared {
   sessionId: string;
   view: WorkspaceViewStore;
   open: (req: OpenRequest) => void;
+  /** 工作区本身在显示（未收起、非窄屏）；收起时 dockview 仍认为 panel 可见，要另外判断 */
+  visible: boolean;
 }
 const SharedContext = createContext<Shared | null>(null);
 function useShared(): Shared {
@@ -86,12 +90,23 @@ export function usePanelVisible(api: DockviewPanelApi): boolean {
   return useSyncExternalStore(subscribe, () => api.isVisible);
 }
 
-/** 已经消费过的定位请求（id → nonce）：tab 隐藏再显示时不重复跳 */
-const consumedFragments = new Map<string, number>();
+/** 订阅 tab 的内容状态（与窄屏抽屉共用同一份 view store） */
+function useTabModel<T extends FileDocModel | FileDirModel>(view: WorkspaceViewStore, id: string, defaults: T): [T, (patch: Partial<T>) => void] {
+  const stored = useSyncExternalStore(view.subscribe, () => view.get(id));
+  const model = useMemo(() => ({ ...defaults, ...stored }) as T, [defaults, stored]);
+  const onChange = useCallback((patch: Partial<T>) => view.patch(id, patch), [view, id]);
+  return [model, onChange];
+}
+
+/** 正文是否该挂着：工作区在显示，且 dockview 认为 panel 可见 */
+function useBodyVisible(api: DockviewPanelApi): boolean {
+  const panelVisible = usePanelVisible(api);
+  return useShared().visible && panelVisible;
+}
 
 function FileTabContent({ id, path, groupId }: { id: string; path: string; groupId: () => string }): React.JSX.Element {
   const { machineId, sessionId, view, open } = useShared();
-  const request = useSyncExternalStore(view.subscribe, () => view.fragment(id));
+  const request = useSyncExternalStore(view.subscribe, () => view.mount(id));
   return <FileTabDoc key={request?.nonce ?? 0} id={id} path={path} groupId={groupId} machineId={machineId} sessionId={sessionId} view={view} open={open} request={request} />;
 }
 
@@ -112,22 +127,11 @@ function FileTabDoc({
   sessionId: string;
   view: WorkspaceViewStore;
   open: (req: OpenRequest) => void;
-  request: { fragment: string; nonce: number } | undefined;
+  request: MountRequest | undefined;
 }): React.JSX.Element {
   // 挂载时决定一次：没消费过的定位请求才带上（之后隐藏再显示按记下的滚动位置回来）
-  const [fragment] = useState(() => {
-    if (request === undefined || (consumedFragments.get(id) ?? 0) >= request.nonce) return undefined;
-    consumedFragments.set(id, request.nonce);
-    return request.fragment;
-  });
-  const [model, setModel] = useState<FileDocModel>(() => ({ ...DEFAULT_DOC_MODEL, ...view.get(id) }));
-  const onModelChange = useCallback(
-    (patch: Partial<FileDocModel>) => {
-      view.patch(id, patch);
-      setModel((m) => ({ ...m, ...patch }));
-    },
-    [view, id],
-  );
+  const [fragment] = useState(() => view.consumeFragment(id, request));
+  const [model, onModelChange] = useTabModel<FileDocModel>(view, id, DEFAULT_DOC_MODEL);
   return (
     <FileDocView
       machineId={machineId}
@@ -136,23 +140,16 @@ function FileTabDoc({
       {...(fragment === undefined ? {} : { fragment })}
       model={model}
       onModelChange={onModelChange}
-      onBrowse={(dir) => open({ kind: 'dir', path: dir ?? '', placement: 'auto', fromGroupId: groupId() })}
+      onBrowse={(dir) => open({ kind: 'dir', path: dir ?? '', placement: 'auto', fromGroupId: groupId(), fromKind: 'file' })}
     />
   );
 }
 
 function DirTabContent({ id, path, groupId, navigate }: { id: string; path: string; groupId: () => string; navigate: (dir: string) => void }): React.JSX.Element {
   const { machineId, sessionId, view, open } = useShared();
-  const [model, setModel] = useState<FileDirModel>(() => ({ ...DEFAULT_DIR_MODEL, ...view.get(id) }));
-  const onModelChange = useCallback(
-    (patch: Partial<FileDirModel>) => {
-      view.patch(id, patch);
-      setModel((m) => ({ ...m, ...patch }));
-    },
-    [view, id],
-  );
+  const [model, onModelChange] = useTabModel<FileDirModel>(view, id, DEFAULT_DIR_MODEL);
   const browse = (dir: string | undefined, target?: FileOpenTarget): void => {
-    if (target === 'side') open({ kind: 'dir', path: dir ?? '', placement: 'side', fromGroupId: groupId() });
+    if (target === 'side') open({ kind: 'dir', path: dir ?? '', placement: 'side', fromGroupId: groupId(), fromKind: 'dir' });
     else navigate(dir ?? '');
   };
   return (
@@ -163,13 +160,13 @@ function DirTabContent({ id, path, groupId, navigate }: { id: string; path: stri
       model={model}
       onModelChange={onModelChange}
       onBrowse={browse}
-      onOpenFile={(file, target) => open({ kind: 'file', path: file, placement: target === 'side' ? 'side' : 'auto', fromGroupId: groupId() })}
+      onOpenFile={(file, target) => open({ kind: 'file', path: file, placement: target === 'side' ? 'side' : 'auto', fromGroupId: groupId(), fromKind: 'dir' })}
     />
   );
 }
 
 function FilePanelBody(props: IDockviewPanelProps<TabParams>): React.JSX.Element {
-  const visible = usePanelVisible(props.api);
+  const visible = useBodyVisible(props.api);
   const api = props.api;
   const groupId = useCallback(() => api.group.id, [api]);
   return (
@@ -180,7 +177,7 @@ function FilePanelBody(props: IDockviewPanelProps<TabParams>): React.JSX.Element
 }
 
 function DirPanelBody(props: IDockviewPanelProps<TabParams>): React.JSX.Element {
-  const visible = usePanelVisible(props.api);
+  const visible = useBodyVisible(props.api);
   const { view } = useShared();
   const api = props.api;
   const containerApi = props.containerApi;
@@ -266,16 +263,29 @@ function TrineTab(props: IDockviewPanelHeaderProps<TabParams>): React.JSX.Elemen
 
 const RESIZE_STEP = 80;
 
+/**
+ * 某方向上真正相邻的组。dockview 的 adjacentGroupInDirection 在该方向没有组时也可能返回别的组
+ * （实测只有左右两组时，「上方」返回左边那组），所以再按几何关系核对：目标必须整体落在该方向一侧，
+ * 且在另一条轴上与本组有重叠。拿不到尺寸（测试环境）时信任 dockview 的结果。
+ */
+export function adjacentGroup(api: DockviewApi, group: DockviewGroupPanel, d: Direction): ReturnType<DockviewApi['adjacentGroupInDirection']> {
+  let target: ReturnType<DockviewApi['adjacentGroupInDirection']>;
+  try {
+    target = api.adjacentGroupInDirection(group, d);
+  } catch {
+    return undefined;
+  }
+  if (target === undefined || target.id === group.id) return undefined;
+  const a = group.element.getBoundingClientRect();
+  const b = (target as DockviewGroupPanel).element.getBoundingClientRect();
+  if (a.width === 0 || b.width === 0) return target;
+  return isInDirection(a, b, d) ? target : undefined;
+}
+
 /** 每组 tab 条右侧的组菜单：分栏 / 移动 / 调整尺寸 / 关闭（拖拽之外的键盘可达入口） */
 function GroupMenu(props: IDockviewHeaderActionsProps): React.JSX.Element {
   const { containerApi: api, group, activePanel } = props;
-  const neighbor = (d: 'left' | 'right' | 'up' | 'down'): ReturnType<DockviewApi['adjacentGroupInDirection']> => {
-    try {
-      return api.adjacentGroupInDirection(group, d);
-    } catch {
-      return undefined;
-    }
-  };
+  const neighbor = (d: 'left' | 'right' | 'up' | 'down'): ReturnType<DockviewApi['adjacentGroupInDirection']> => adjacentGroup(api, group, d);
   const many = group.panels.length > 1;
   const split = (direction: 'right' | 'below'): void => {
     if (activePanel === undefined) return;
@@ -368,9 +378,14 @@ export interface WorkspaceDockProps {
   onLayoutChange: () => void;
   /** 达到上限且没有可淘汰的 tab */
   onLimit: () => void;
+  /**
+   * 工作区在显示（未收起、非窄屏）。收起时 dockview 实例留在 <Activity> 里，但 Activity 只清 effect、
+   * 保留 DOM 与组件状态，dockview 也仍认为 panel 可见——所以正文按「工作区显示 且 panel 可见」显式卸载
+   */
+  visible?: boolean;
 }
 
-export default function WorkspaceDock({ machineId, sessionId, initial, view, onReady, onLayoutChange, onLimit }: WorkspaceDockProps): React.JSX.Element {
+export default function WorkspaceDock({ machineId, sessionId, initial, view, onReady, onLayoutChange, onLimit, visible = true }: WorkspaceDockProps): React.JSX.Element {
   const apiRef = useRef<DockviewApi | null>(null);
   const ctxRef = useRef(createCtx());
   const hostRef = useRef<HTMLDivElement | null>(null);
@@ -385,7 +400,7 @@ export default function WorkspaceDock({ machineId, sessionId, initial, view, onR
     return result;
   }, []);
 
-  const shared = useMemo<Shared>(() => ({ machineId, sessionId, view, open: (r) => void open(r) }), [machineId, sessionId, view, open]);
+  const shared = useMemo<Shared>(() => ({ machineId, sessionId, view, visible, open: (r) => void open(r) }), [machineId, sessionId, view, visible, open]);
 
   // Backspace 在 tab 上会被 dockview 当成关闭：拦掉（Delete 仍可关闭）。捕获阶段在 tab 元素之前处理
   useEffect(() => {
@@ -421,13 +436,17 @@ export default function WorkspaceDock({ machineId, sessionId, initial, view, onR
       api.onDidRemovePanel((panel) => {
         if (restorer.restoring || api.getPanel(panel.id) !== undefined) return;
         view.delete(panel.id);
-        consumedFragments.delete(panel.id);
       });
+      api.onDidAddPanel((panel) => view.revive(panel.id));
+      // 组的最小宽度：新建的组、恢复出来的组都设上（外层 clamp / 自动收起用聚合后的最小宽度）
+      const constrain = (g: DockviewGroupPanel): void => g.api.setConstraints({ minimumWidth: WORKSPACE_GROUP_MIN_WIDTH, minimumHeight: WORKSPACE_GROUP_MIN_HEIGHT });
+      api.onDidAddGroup(constrain);
       api.onDidLayoutChange(() => {
         if (restorer.restoring) return;
         propsRef.current.onLayoutChange();
       });
       const result = restorer.restore(propsRef.current.initial);
+      for (const g of api.groups) constrain(g);
       const handle: DockHandle = {
         api,
         ctx,

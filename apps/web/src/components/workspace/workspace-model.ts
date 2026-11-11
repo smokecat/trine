@@ -72,6 +72,11 @@ export interface OpenRequest {
   keep?: boolean;
   /** 发起者所在组（tab 里点的），目录 tab 里点文件时据此找「右侧的文件组」 */
   fromGroupId?: string | undefined;
+  /**
+   * 发起者是哪种 tab。目录 tab 里点文件 → 在其右侧的文件组打开；按发起 tab 判断，
+   * 不看整组（用户把文件拖进目录组后，组就不再「全是目录」）
+   */
+  fromKind?: TabKind | undefined;
 }
 
 /** 工作区运行时上下文：React 外维护的少量状态 */
@@ -190,9 +195,12 @@ export function openInWorkspace(api: DockviewApi, ctx: WorkspaceCtx, req: OpenRe
   } else if (kind === 'dir') {
     const ref = from ?? active ?? api.groups[0];
     if (ref !== undefined) newBeside = { ref, direction: req.placement === 'side' ? 'right' : 'left' };
-  } else if (from !== undefined && isDirGroup(from)) {
+  } else if (from !== undefined && (req.fromKind === 'dir' || (req.fromKind === undefined && isDirGroup(from)))) {
     group = rightGroup(api, ctx, from, true);
-    if (group === undefined) newBeside = { ref: from, direction: 'right' };
+    if (group === undefined || group.id === from.id) {
+      group = undefined;
+      newBeside = { ref: from, direction: 'right' };
+    }
   } else if (req.placement === 'side') {
     const ref = from ?? active ?? api.groups[0];
     if (ref !== undefined) {
@@ -341,10 +349,15 @@ export function validateLayout(layout: unknown): SerializedDockview | null {
     const gid = node.data.id;
     if (typeof gid !== 'string' || groupIds.has(gid) || !Array.isArray(views)) return false;
     groupIds.add(gid);
+    let previews = 0;
     for (const v of views) {
       if (typeof v !== 'string' || !(v in panels) || seen.has(v)) return false;
       seen.add(v);
+      const params = (panels[v] as { params: { preview: boolean } }).params;
+      if (params.preview) previews += 1;
     }
+    // 每组至多一个预览位
+    if (previews > 1) return false;
     const activeView = node.data.activeView;
     return activeView === undefined || (typeof activeView === 'string' && views.includes(activeView));
   };
@@ -412,14 +425,41 @@ export function readSnapshot(raw: unknown): WorkspaceSnapshot | null {
   return { v: SNAPSHOT_VERSION, layout: layoutOk ? layout : null, tabs, view, active, collapsed: raw.collapsed === true };
 }
 
+/**
+ * 合并成一组后预览位要归一：至多留一个预览 tab（优先活动的那个，否则最后一个），其余转为保留——
+ * 原来各组各有一个预览位，合并后若都留着，下一次 auto 只会替换其中一个。
+ */
+export function normalizePreview<T extends Pick<TabMeta, 'id' | 'preview'>>(tabs: readonly T[], active?: string): T[] {
+  const previews = tabs.filter((t) => t.preview);
+  if (previews.length <= 1) return [...tabs];
+  const keepId = previews.find((t) => t.id === active)?.id ?? previews.at(-1)!.id;
+  return tabs.map((t) => (t.preview && t.id !== keepId ? { ...t, preview: false } : t));
+}
+
 /** 用 tab 元数据重建单组布局（校验失败 / fromJSON 抛错 / 「重置布局」） */
 export function rebuildSingleGroup(api: DockviewApi, tabs: readonly TabMeta[], active?: string): void {
   api.clear();
-  for (const t of tabs.slice(0, TAB_LIMIT)) {
+  for (const t of normalizePreview(tabs.slice(0, TAB_LIMIT), active)) {
     api.addPanel({ id: t.id, component: t.kind, params: { kind: t.kind, path: t.path, preview: t.preview }, title: tabTitle(t) });
   }
   const a = active === undefined ? undefined : api.getPanel(active);
   a?.api.setActive();
+}
+
+/**
+ * 分栏布局的聚合最小宽度：左右并排的组相加，上下叠放的取最大（每组至少 `groupMin`）。
+ * 布局缺失 / 不可识别时按单组算。外层用它夹工作区宽度、判断窄屏自动收起、给分隔条 aria 范围。
+ */
+export function gridMinWidth(layout: SerializedDockview | null | undefined, groupMin: number): number {
+  const grid = (layout as { grid?: { root?: unknown; orientation?: unknown } } | null | undefined)?.grid;
+  if (grid === undefined || !isObj(grid.root)) return groupMin;
+  const walk = (node: unknown, horizontal: boolean, depth: number): number => {
+    if (!isObj(node) || depth > GRID_DEPTH_MAX) return groupMin;
+    if (node.type !== 'branch' || !Array.isArray(node.data) || node.data.length === 0) return groupMin;
+    const children = node.data.map((c) => walk(c, !horizontal, depth + 1));
+    return horizontal ? children.reduce((a, b) => a + b, 0) : Math.max(...children);
+  };
+  return walk(grid.root, grid.orientation !== 'VERTICAL', 0);
 }
 
 export type RestoreResult = 'restored' | 'rebuilt' | 'empty';

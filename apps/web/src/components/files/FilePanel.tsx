@@ -6,7 +6,7 @@
  * 加载经 client.listFiles / client.openFile（agent 读、加密上传 blob、这里解密）。
  * 同一文件第二次打开用缓存，「刷新」重新向 agent 要。
  */
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useLocation } from 'react-router';
 import { PanelRightOpenIcon } from 'lucide-react';
 import { Button } from '@/components/ui/button.tsx';
@@ -64,6 +64,8 @@ export function FilePanel({
   const desktop = useIsDesktop();
   const location = useLocation();
   const stateKey = view === null ? '' : `${machineId}|${sessionId}|${location.key}|${view.kind}|${view.path ?? ''}`;
+  // 视图此刻的内容状态（交接时同步读：滚动上报有防抖，记忆里的可能是旧的）
+  const captureRef = useRef<(() => FileDocModel | FileDirModel) | null>(null);
   const chrome: FileViewChrome = {
     Title: DrawerTitle,
     Description: DrawerDescription,
@@ -78,8 +80,14 @@ export function FilePanel({
               data-testid="file-to-workspace"
               aria-label="在工作区打开"
               title="在工作区打开（保留为 tab，可与聊天并排）"
-              // 点的这一刻抓内容状态：滚动停下才上报，这里直接读抽屉的记忆
-              onClick={() => onHandoff({ view, state: { ...(drawerState.get(stateKey) ?? {}) } })}
+              // 点的这一刻抓内容状态（同步读滚动容器，读不到才用记忆）；滚动位置已包含锚点跳转的结果，
+              // 不再带 fragment，免得到了工作区又跳回锚点
+              onClick={() =>
+                onHandoff({
+                  view: view.kind === 'file' ? { kind: 'file', path: view.path } : view,
+                  state: { ...(captureRef.current?.() ?? drawerState.get(stateKey) ?? {}) },
+                })
+              }
             >
               <PanelRightOpenIcon />
             </Button>
@@ -127,6 +135,7 @@ export function FilePanel({
             fragment={view.fragment}
             onBrowse={browse}
             chrome={chrome}
+            captureRef={captureRef as React.RefObject<(() => FileDocModel) | null>}
           />
         )}
         {view?.kind === 'dir' && (
@@ -139,6 +148,7 @@ export function FilePanel({
             onBrowse={browse}
             onOpenFile={openFile}
             chrome={chrome}
+            captureRef={captureRef as React.RefObject<(() => FileDirModel) | null>}
           />
         )}
       </SheetContent>

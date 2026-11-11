@@ -118,6 +118,9 @@ describe('useWorkspace', () => {
     act(() => h.ws.dock!.onReady(handle, 'empty'));
     expect(handle.opened).toEqual([{ kind: 'file', path: 'docs/a.md', placement: 'side' }]);
     expect(h.ws.count).toBe(1);
+    // 主区还没测量：不算显示（不做深链交接）
+    expect(h.ws.shown).toBe(false);
+    act(() => h.ws.setMainWidth(1400));
     expect(h.ws.shown).toBe(true);
     // 已展开：auto 也进工作区
     expect(h.ws.route!.expanded()).toBe(true);

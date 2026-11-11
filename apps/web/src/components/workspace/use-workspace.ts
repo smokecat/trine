@@ -16,8 +16,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import type { FileOpenIntent, FileWorkspaceRoute } from '@/components/files/file-links.ts';
-import { workspaceFits } from '@/lib/layout-prefs.ts';
-import { fileTabId, TAB_LIMIT, type DockHandle, type OpenRequest, type RestoreResult, type TabMeta, type TabViewState, type WorkspaceSnapshot } from './workspace-model.ts';
+import { WORKSPACE_GROUP_MIN_WIDTH, workspaceFits, workspaceMinWidth } from '@/lib/layout-prefs.ts';
+import { gridMinWidth, TAB_LIMIT, type DockHandle, type OpenRequest, type RestoreResult, type TabMeta, type TabViewState, type WorkspaceSnapshot } from './workspace-model.ts';
 import { workspaceKey, WorkspaceStore, WorkspaceViewStore } from './workspace-store.ts';
 
 export type WorkspaceStatus = 'absent' | 'expanded' | 'collapsed';
@@ -57,12 +57,23 @@ interface UiState {
   maximized: boolean;
   /** 「重置布局」/ 出错后重挂 dockview 的计数 */
   generation: number;
+  /** 当前分栏布局的聚合最小宽度 */
+  layoutMin: number;
 }
 
 function uiFor(rec: KeyRecord | null): UiState {
   const tabs = rec?.snap?.tabs ?? [];
   const collapsed = rec?.collapsed === true;
-  return { rec, collapsed, tabs, active: rec?.snap?.active, mounted: tabs.length > 0 && !collapsed, maximized: false, generation: 0 };
+  return {
+    rec,
+    collapsed,
+    tabs,
+    active: rec?.snap?.active,
+    mounted: tabs.length > 0 && !collapsed,
+    maximized: false,
+    generation: 0,
+    layoutMin: gridMinWidth(rec?.snap?.layout, WORKSPACE_GROUP_MIN_WIDTH),
+  };
 }
 
 function sameTabs(a: readonly TabMeta[], b: readonly TabMeta[]): boolean {
@@ -104,6 +115,10 @@ export interface WorkspaceController {
   status: WorkspaceStatus;
   /** 主区太窄，自动收起中 */
   narrow: boolean;
+  /** 主区宽度已经测量过（之前不判断窄屏、也不做深链交接） */
+  measured: boolean;
+  /** 工作区最小宽度（含分栏布局的聚合最小宽度） */
+  minWidth: number;
   /** 两栏实际显示着工作区 */
   shown: boolean;
   maximized: boolean;
@@ -165,8 +180,11 @@ export function useWorkspace({
     [rec],
   );
 
+  // 0 = 还没测量：此时不能当成「够宽」（否则窄窗口首次进入会把深链交接给一个随即自动收起的工作区）
   const [mainWidth, setMainWidth] = useState(0);
-  const narrow = mainWidth > 0 && !workspaceFits(mainWidth);
+  const measured = mainWidth > 0;
+  const minWidth = workspaceMinWidth(ui.layoutMin);
+  const narrow = measured && !workspaceFits(mainWidth, minWidth);
   const restoreFocusRef = useRef<HTMLElement | null>(null);
 
   const scheduleSave = useCallback(() => {
@@ -220,7 +238,10 @@ export function useWorkspace({
     }
     rec.snap = snap;
     scheduleSave();
-    update((s) => (sameTabs(s.tabs, snap.tabs) && s.active === snap.active ? s : { ...s, tabs: snap.tabs, active: snap.active }));
+    const layoutMin = gridMinWidth(snap.layout, WORKSPACE_GROUP_MIN_WIDTH);
+    update((s) =>
+      sameTabs(s.tabs, snap.tabs) && s.active === snap.active && s.layoutMin === layoutMin ? s : { ...s, tabs: snap.tabs, active: snap.active, layoutMin },
+    );
   }, [rec, store, scheduleSave, update]);
 
   const onReady = useCallback(
@@ -278,8 +299,10 @@ export function useWorkspace({
       const run = (h: DockHandle): void => {
         const result = h.open(req);
         if (result.kind === 'limit') return;
-        if (extra.state !== undefined && result.kind === 'opened') rec.view.set(result.id, extra.state);
-        if (extra.fragment !== undefined && extra.fragment !== '' && req.kind === 'file') rec.view.requestFragment(fileTabId(req.path), extra.fragment);
+        const fragment = extra.fragment !== undefined && extra.fragment !== '' && req.kind === 'file' ? extra.fragment : undefined;
+        // 交接来的状态：新 tab 直接用；已有 tab 也要应用，并让正文按新状态重挂（滚动只在挂载时恢复）
+        if (extra.state !== undefined) rec.view.set(result.id, extra.state);
+        if (fragment !== undefined || (extra.state !== undefined && result.kind === 'activated')) rec.view.requestMount(result.id, fragment);
       };
       // dockview 未就绪（首次展开、懒加载中）：排队，就绪后按序执行
       if (rec.handle !== null) run(rec.handle);
@@ -289,7 +312,7 @@ export function useWorkspace({
   );
 
   const present = ui.tabs.length > 0 || ui.mounted;
-  const shown = rec !== null && present && !ui.collapsed && !narrow;
+  const shown = rec !== null && measured && present && !ui.collapsed && !narrow;
   const shownRef = useRef(shown);
   shownRef.current = shown;
 
@@ -370,6 +393,8 @@ export function useWorkspace({
     key,
     status,
     narrow,
+    measured,
+    minWidth,
     shown,
     maximized: shown && ui.maximized,
     count,
