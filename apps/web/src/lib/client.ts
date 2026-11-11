@@ -29,6 +29,8 @@ import type {
   AgentToClientEvent,
   AttachmentRef,
   CwdPinMoveErrorCode,
+  CwdPrepareErrorCode,
+  CwdPrepareStatus,
   FsEntry,
   FilesTrustErrorCode,
   FsDeniedReason,
@@ -1916,6 +1918,32 @@ export class TrineClient {
   }
 
   /**
+   * 检查（`create: false`）或创建（`create: true`）新会话的工作目录（cwd-create，只对
+   * `machine.info.cwd.create` 为真的 agent 调）。返回解析后的路径与状态；被拒抛 `CwdPrepareError`。
+   * 创建失败（超时、断线）时撤掉仍在待发队列里的帧：用户已经看到失败，重连后不该再悄悄建目录。
+   */
+  async prepareCwd(machineId: string, path: string, create: boolean): Promise<CwdPrepareResult> {
+    const reqId = this.#uuid();
+    let res: AgentToClientEvent;
+    try {
+      res = await this.request<Extract<OutboundBody, { type: 'cwd.prepare.request' }>>(machineId, {
+        type: 'cwd.prepare.request',
+        reqId,
+        path,
+        create,
+      });
+    } catch (err) {
+      if (this.#outbox.cancelQueued(machineId, (e) => e.type === 'cwd.prepare.request' && e.reqId === reqId)) this.#emitQueue();
+      throw err;
+    }
+    if (res.type !== 'cwd.prepare.response') throw new Error(`意外的应答 ${res.type}`);
+    if (!res.ok || res.path === undefined || res.status === undefined) {
+      throw new CwdPrepareError(res.error?.code ?? 'failed', res.error?.message ?? '检查工作目录失败');
+    }
+    return { path: res.path, status: res.status, missing: res.missing ?? [] };
+  }
+
+  /**
    * 增删信任目录（agent ≥ 0.24.0，machine.info.files.roots 存在才支持）。成功后 agent 重发
    * machine.info（列表以那里为准）；add 返回 agent 实际存下的路径。被拒抛 `FilesTrustError`。
    */
@@ -2358,6 +2386,24 @@ export class CwdPinMoveError extends Error {
   constructor(code: CwdPinMoveErrorCode, message: string) {
     super(message);
     this.name = 'CwdPinMoveError';
+    this.code = code;
+  }
+}
+
+/** cwd.prepare 的结果（见 CwdPrepareResponseSchema） */
+export interface CwdPrepareResult {
+  path: string;
+  status: CwdPrepareStatus;
+  /** missing / created：要新建（已新建）的各级目录，从浅到深 */
+  missing: string[];
+}
+
+/** agent 拒绝了工作目录的检查 / 创建（code 见协议 CwdPrepareErrorCode） */
+export class CwdPrepareError extends Error {
+  readonly code: CwdPrepareErrorCode;
+  constructor(code: CwdPrepareErrorCode, message: string) {
+    super(message);
+    this.name = 'CwdPrepareError';
     this.code = code;
   }
 }

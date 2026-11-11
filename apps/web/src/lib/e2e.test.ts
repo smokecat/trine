@@ -16,7 +16,7 @@ import { createInvitation } from '../../../server/src/auth/invitations.ts';
  * @trine/agent / @trine/server 以 devDependency 引入（无 exports 字段，直接引源文件路径）。
  */
 import { afterEach, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -39,7 +39,7 @@ import { DEFAULT_LIST_QUERY, filterSessions } from '../components/list/filtering
 // 会话 cwd 在系统临时目录下（测试约定），默认会被当成临时会话隐藏
 const LIST_QUERY = { ...DEFAULT_LIST_QUERY, showTemp: true };
 import { supportsSessionMutations } from '../components/list/session-actions.ts';
-import { CwdPinMoveError, FilesTrustError, FsRequestError, RequestTimeoutError, SessionMutateError, TrineClient } from './client.ts';
+import { CwdPinMoveError, CwdPrepareError, FilesTrustError, FsRequestError, RequestTimeoutError, SessionMutateError, TrineClient } from './client.ts';
 import { LeaderElector } from './leader.ts';
 import { shouldAutoLoadHistory, type PermissionEntry, type TimelineEntry, type UserEntry } from './reducer.ts';
 import { KV_PEER, loadMachineDoc, type PeerState } from './storage.ts';
@@ -1080,6 +1080,30 @@ describe('web lib · 信任目录 e2e', () => {
       await client.setDirTrusted('mbp', parent, false);
       await waitFor(() => client.machine('mbp')?.info?.files?.roots?.length === 0, 'roots 清空');
       expect(await reasonOf(client.listFiles('mbp', sid, parent))).toBe('denied:out_of_scope');
+    } finally {
+      await rm(parent, { recursive: true, force: true });
+    }
+  }, 20_000);
+});
+
+describe('web lib · 新建工作目录 e2e（cwd-create）', () => {
+  test('能力位 → 检查报 missing、不建 → 创建 → 再查 exists → 在新目录里建会话；文件路径被拒', async () => {
+    await pair();
+    await waitFor(() => client.machine('mbp')?.info?.cwd?.create === true, 'machine.info.cwd.create');
+    const parent = await mkdtemp(join(tmpdir(), 'trine-web-e2e-cwd-'));
+    try {
+      const target = join(parent, 'a', 'b');
+      expect(await client.prepareCwd('mbp', target, false)).toEqual({ path: target, status: 'missing', missing: [join(parent, 'a'), target] });
+      expect(existsSync(join(parent, 'a'))).toBe(false);
+      expect((await client.prepareCwd('mbp', target, true)).status).toBe('created');
+      expect(existsSync(target)).toBe(true);
+      expect((await client.prepareCwd('mbp', target, false)).status).toBe('exists');
+      const meta = await client.createSession('mbp', { cwd: target, model: 'test-model', permissionMode: 'default' });
+      expect(meta.cwd).toBe(target);
+
+      writeFileSync(join(parent, 'f'), 'x');
+      const err = await client.prepareCwd('mbp', join(parent, 'f', 'sub'), true).then(() => undefined, (e: unknown) => e);
+      expect(err instanceof CwdPrepareError ? err.code : String(err)).toBe('not_dir');
     } finally {
       await rm(parent, { recursive: true, force: true });
     }

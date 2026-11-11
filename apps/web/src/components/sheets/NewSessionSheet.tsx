@@ -32,6 +32,8 @@ import { useClient, useTrine } from '@/app/runtime.ts';
 import { cn } from '@/lib/utils.ts';
 import { ExtNewSessionPicker, useNewSessionExtensions, type NewSessionStart } from '@/components/ext/ExtNewSessionPicker.tsx';
 import { CwdPicker } from './CwdPicker.tsx';
+import { ConfirmDialog } from '@/components/machines/ConfirmDialog.tsx';
+import { CwdPrepareError, type CwdPrepareResult } from '@/lib/client.ts';
 import { copyText } from '@/lib/clipboard.ts';
 import { buildCopyCwd } from '@/components/list/session-actions.ts';
 import {
@@ -111,6 +113,10 @@ export function NewSessionSheet({
   const [cwdRequested, setCwdRequested] = useState<string | null>(null);
   const [start, setStart] = useState<NewSessionStart | null>(null);
   const [prompt, setPrompt] = useState('');
+  /** 当前目录的预检结果（cwd-create）；key 对不上当前机器 + 目录 = 过期 */
+  const [cwdCheck, setCwdCheck] = useState<{ key: string; result?: CwdPrepareResult; error?: string } | null>(null);
+  /** 待确认新建的目录；非 null 时显示确认框 */
+  const [confirmCwd, setConfirmCwd] = useState<CwdPrepareResult | null>(null);
   const [engineId, setEngineId] = useState<string | null>(null);
   const [engineMode, setEngineMode] = useState<EngineModePickerState>({ value: undefined, pending: null });
   const defaultEngine = useTrine((s) => s.prefs.defaultEngine);
@@ -127,6 +133,10 @@ export function NewSessionSheet({
   const engineModes = engine?.modes;
   const engineDefault = engine === undefined ? undefined : engineDefaults[engine.id];
   const offline = machine !== undefined && machine.online !== true;
+  // agent 认识 cwd.prepare.request（能力位，不看版本号）；旧 agent 不预检，新建会话照旧
+  const canPrepareCwd = machine?.info?.cwd?.create === true && !offline;
+  const cwdKey = `${machineId}\0${cwd.trim()}`;
+  const check = cwdCheck?.key === cwdKey ? cwdCheck : null;
   const startExts = useNewSessionExtensions(machineId);
   // 选中后扩展被停用 / 移除（别的设备改了设置）：这一节会消失，选择与预填的文字一并作废，
   // 不能把用户已经看不到的内容发出去
@@ -169,6 +179,26 @@ export function NewSessionSheet({
       .request(machineId, { type: 'cwd.list.request' })
       .catch((err: unknown) => console.info(`[cwd] ${err instanceof Error ? err.message : String(err)}`));
   }, [open, client, machineId, machines, cwdRequested]);
+
+  // 目录一变就预检一次（只读，不新建）：不存在的提前标出来，开始会话时再确认新建
+  useEffect(() => {
+    const path = cwd.trim();
+    if (!open || !client || !canPrepareCwd || path === '') return;
+    const key = `${machineId}\0${path}`;
+    let cancelled = false;
+    client.prepareCwd(machineId, path, false).then(
+      (result) => {
+        if (!cancelled) setCwdCheck({ key, result });
+      },
+      (err: unknown) => {
+        // 超时、断线不算目录的问题：不标，开始会话时会再查一次
+        if (!cancelled && err instanceof CwdPrepareError) setCwdCheck({ key, error: err.message });
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [open, client, canPrepareCwd, machineId, cwd]);
 
   // 默认目录：机器的 defaultCwd，其次该机器最近一个会话的 cwd
   useEffect(() => {
@@ -256,26 +286,62 @@ export function NewSessionSheet({
     if (!client || offline || creating || machineId === '' || cwd.trim() === '') return;
     setCreating(true);
     try {
-      const meta = await client.createSession(machineId, {
-        cwd: cwd.trim(),
-        model: model.trim(),
-        permissionMode: modeState.value,
-        ...(engine === undefined || engine.id === CLAUDE_ENGINE_ID ? {} : { engine: engine.id }),
-        ...(engineMode.value === undefined || !usesCatalog ? {} : { engineMode: engineMode.value }),
-        ...(effort === undefined || efforts?.efforts.includes(effort) !== true ? {} : { effort }),
-      });
-      const from = startAvailable ? start : null;
-      if (from?.link !== undefined) await linkNewSession(meta.sessionId, from);
-      if (from !== null && prompt.trim() !== '') client.sendInput(machineId, meta.sessionId, prompt.trim());
-      onOpenChange(false);
-      navigate(`/s/${machineId}/${meta.sessionId}`);
+      let target = cwd.trim();
+      if (canPrepareCwd) {
+        // 以开始时这一次为准（预检结果可能已过期：别的设备刚建了 / 删了这个目录）
+        const result = await client.prepareCwd(machineId, target, false);
+        if (result.status === 'missing') {
+          setConfirmCwd(result);
+          return;
+        }
+        target = result.path;
+      }
+      await startSession(target);
     } catch (err) {
-      toast.error('新建会话失败', {
-        description: err instanceof Error ? err.message : String(err),
-      });
+      reportCreateError(err);
     } finally {
       setCreating(false);
     }
+  };
+
+  /** 确认框里点了「新建并开始」：先建目录，再建会话 */
+  const createCwdAndStart = async (): Promise<void> => {
+    if (!client || confirmCwd === null || creating) return;
+    setCreating(true);
+    try {
+      const result = await client.prepareCwd(machineId, confirmCwd.path, true);
+      setConfirmCwd(null);
+      await startSession(result.path);
+    } catch (err) {
+      setConfirmCwd(null);
+      reportCreateError(err);
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const reportCreateError = (err: unknown): void => {
+    toast.error(err instanceof CwdPrepareError ? '工作目录不可用' : '新建会话失败', {
+      description: err instanceof Error ? err.message : String(err),
+    });
+  };
+
+  /** 目录已就绪后建会话；失败抛给调用方 */
+  const startSession = async (target: string): Promise<void> => {
+    if (!client) return;
+    const meta = await client.createSession(machineId, {
+      cwd: target,
+      model: model.trim(),
+      permissionMode: modeState.value,
+      ...(engine === undefined || engine.id === CLAUDE_ENGINE_ID ? {} : { engine: engine.id }),
+      ...(engineMode.value === undefined || !usesCatalog ? {} : { engineMode: engineMode.value }),
+      ...(effort === undefined || efforts?.efforts.includes(effort) !== true ? {} : { effort }),
+    });
+    const from = startAvailable ? start : null;
+    if (from?.link !== undefined) await linkNewSession(meta.sessionId, from);
+    if (from !== null && prompt.trim() !== '') client.sendInput(machineId, meta.sessionId, prompt.trim());
+    onOpenChange(false);
+    navigate(`/s/${machineId}/${meta.sessionId}`);
   };
 
   /** 关联失败不挡建会话：会话已经建好，提示用户手动关联 */
@@ -359,7 +425,18 @@ export function NewSessionSheet({
                   onCopy={(p) => {
                     copyCwd(p).catch(() => {});
                   }}
+                  {...(check?.result?.status === 'missing' ? { customNote: '将新建' } : {})}
                 />
+                {check?.result?.status === 'missing' && (
+                  <p data-testid="ns-cwd-missing" className="text-amber mt-1.5 text-[11.5px]">
+                    这个目录还不存在，开始会话时会先确认新建。
+                  </p>
+                )}
+                {check?.error !== undefined && (
+                  <p data-testid="ns-cwd-error" className="text-red mt-1.5 text-[11.5px]">
+                    {check.error}
+                  </p>
+                )}
               </section>
 
               {!offline && startExts.length > 0 && (
@@ -524,6 +601,30 @@ export function NewSessionSheet({
             </>
           )}
         </div>
+        <ConfirmDialog
+          open={confirmCwd !== null}
+          onOpenChange={(next) => {
+            if (!next && !creating) setConfirmCwd(null);
+          }}
+          title="新建工作目录？"
+          description={
+            <>
+              <p>
+                这个目录在 {machine?.name ?? '这台机器'} 上还不存在。将新建以下目录，然后在里面开始会话：
+              </p>
+              <ul data-testid="ns-cwd-confirm-list" className="bg-surface-2 rounded-[10px] px-2.5 py-1.5 font-mono text-xs break-all">
+                {(confirmCwd?.missing ?? []).map((p) => (
+                  <li key={p}>{p}</li>
+                ))}
+              </ul>
+            </>
+          }
+          confirmLabel="新建并开始"
+          destructive={false}
+          busy={creating}
+          onConfirm={() => void createCwdAndStart()}
+          testId="ns-cwd-confirm"
+        />
       </SheetContent>
     </Sheet>
   );

@@ -29,6 +29,8 @@ export interface CwdPickerProps {
   loading?: boolean;
   /** 复制目录到剪贴板（不经 agent，离线也能用）；不给 = 没有复制按钮 */
   onCopy?: (path: string) => void;
+  /** 自定义目录那一行的标注，缺省「自定义」（目录不存在时传「将新建」） */
+  customNote?: string;
 }
 
 function CopyButton({ path, onCopy }: { path: string; onCopy: (path: string) => void }): React.JSX.Element {
@@ -58,6 +60,7 @@ export function CwdPicker({
   onSetDefault,
   loading = false,
   onCopy,
+  customNote = '自定义',
 }: CwdPickerProps): React.JSX.Element {
   const [draft, setDraft] = useState('');
   const trimmed = draft.trim();
@@ -128,7 +131,7 @@ export function CwdPicker({
             className="border-brand-border bg-brand-soft text-brand-ink min-w-0 flex-1 truncate rounded-[10px] border px-2.5 py-1.5 font-mono text-xs"
           >
             {value}
-            <span className="text-text-3 ml-1.5 font-sans text-[11px]">（自定义）</span>
+            <span data-testid="cwd-custom-note" className="text-text-3 ml-1.5 font-sans text-[11px]">（{customNote}）</span>
           </div>
           {onCopy !== undefined && <CopyButton path={value} onCopy={onCopy} />}
         </div>

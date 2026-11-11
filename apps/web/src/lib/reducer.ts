@@ -860,6 +860,7 @@ export function applyEvent(tl: Timeline, event: AgentToClientEvent): Timeline {
     case 'cwd.list.response':
     case 'cwd.updated':
     case 'cwd.pin.move.response':
+    case 'cwd.prepare.response':
     case 'ext.catalog.response':
     case 'ext.read.response':
     case 'ext.action.plan':
