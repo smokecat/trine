@@ -12,7 +12,11 @@ the agent runs on your own computer.
 
 ## What it does
 
-- Streams assistant messages, tool activity and subagent history.
+- Streams assistant messages, tool activity and subagent history. Subagent cards name the agent
+  type and say whether it runs in the foreground or background ("Agent · Explore · 后台"); a
+  background subagent shows "后台运行中" with its own timer until it finishes, and after a reload the
+  card shows the final result, or "状态未知" / "已结束 · 结果未知" when the history can't tell.
+  Expanding a card shows the prompt. Requires agent 0.26.0 or later.
 - Shows message times like a chat app: day separators, a time marker after gaps of 10+ minutes,
   the time under each of your messages, and start times for replies and tools on hover or expand.
 - Rewinds a session to before one of your messages, restoring code, the conversation or both.
@@ -32,6 +36,16 @@ the agent runs on your own computer.
   can go up past the session directory: a directory outside the scope shows what trusting it
   means and offers to trust it, and a "位置" menu jumps to the session directory or any trusted
   directory. Requires agent 0.20.0 or later (trusted directories: 0.24.0).
+  Markdown previews get a table of contents (a side rail when there is room, a floating button
+  otherwise) that follows your reading position, `#heading` links jump within the document or to
+  another file, and front matter shows as a small metadata block. The reading position is kept
+  when switching between source and rendered view or resizing the window. On desktop, files can
+  also open in a workspace next to the chat: "在工作区打开" in the file drawer, "在侧边打开" on tool
+  cards, or Alt-click a path. The workspace works like an editor area — tabs in groups, drag a tab
+  to an edge to split, drag the dividers to resize; a single click opens a preview tab that the next
+  file replaces until you keep it. It can be collapsed (tabs are kept behind "文件（N）") or
+  maximized, and its layout is remembered per machine and working directory. Narrow windows fold it
+  away automatically; phones keep the drawer.
 - Keeps reusable prompt snippets on the device: edit and copy them in Settings, and insert one at
   the cursor (or copy it) from the prompt button next to the paperclip. On phones, attachments and
   snippets live behind a `+` button so the input keeps its width.
@@ -42,6 +56,11 @@ the agent runs on your own computer.
   in Settings (1 minute by default, 5 seconds on the machine page), and can be refreshed by hand.
 - Pins sessions and workspaces (most recently pinned first). When grouped by workspace, groups
   keep a fixed order (newest workspace first) instead of jumping around as sessions change state.
+  A pinned workspace stays in the list even when it has no sessions, and every workspace header
+  has a `+` that opens the new-session dialog with that machine and directory selected. Pinned
+  workspaces can be reordered from the group menu (上移 / 下移 / 移到本机最前) or, on desktop, by
+  dragging; the order is kept by the agent, so all devices paired with that machine see the same
+  order (requires agent 0.26.0 or later).
 - Extensions: programs on the agent machine can add a panel, a badge and action buttons to the
   session page and the composer (for example a project's task list, with "resume this task in a new
   session"), and sessions can be linked to their items; list rows show the links, and a workspace
@@ -50,7 +69,10 @@ the agent runs on your own computer.
   actions leave a note in the session timeline. The browser never runs extension code; it only renders the
   data the agent returns, and actions run on the agent after a click. Install with
   `trine-agent ext add <dir>`; see [extensions](docs/EXTENSIONS.md). Requires agent 0.16.0 or later
-  (0.17.0 for starting from an item and timeline notes).
+  (0.17.0 for starting from an item and timeline notes). From agent 0.26.0 an extension's buttons
+  in the session panel can open a file or directory in the file viewer (for example a task's
+  folder); the usual file scope and trust rules apply, and an extension can never trust a
+  directory for you.
 - Shows the Claude Code version each machine's sessions use and updates it remotely (`claude update`).
   The agent checks the release channel Claude Code updates from (`autoUpdatesChannel`, `latest` by
   default) shortly after start and every 6 hours, and machine cards flag a newer version; "检查更新"
@@ -74,7 +96,9 @@ the agent runs on your own computer.
   user; otherwise the error tells you the command to run on the machine.
 - With agent 0.22.0 or later, Codex sessions can also rewind the conversation (files are not
   restored, and the dialog says so), compact with `/compact`, run skills from the `/` menu and choose a
-  reasoning effort. Sub-agent activity shows as tool cards. The machine page has a card per engine, with
+  reasoning effort. Sub-agent activity shows as tool cards (from agent 0.26.0 with the sub-agent's
+  nickname, role and status, and approvals a sub-agent asks for appear in the parent session marked
+  "来自子 agent"). The machine page has a card per engine, with
   Codex's version and an update button (`codex update`). The agent checks GitHub for the latest Codex
   release shortly after start and every 6 hours.
 - Hides temporary sessions by default (working directory under a system temp directory, or

@@ -70,7 +70,11 @@ import type {
 //   roots / home（web 按 roots 有无判断）；fs.* 的 denied 带 reason；/proc /sys /dev 一律拒绝
 // - 0.25.0 起 tool.start / history tool 条目带 argDetail（长命令原文）；MachineInfo.rateLimits 带
 //   models（按模型计的周限额，如 Fable）。都是可选字段，web 按有无判断
-export const AGENT_VERSION = '0.25.0';
+// - 0.26.0 起置顶工作区可调顺序（cwd.json pinOrder、cwd.pin.move，MachineInfo.cwd.pinOrder 能力位）；
+//   tool.start / tool.end / history tool 条目带 subagent（子 agent 类型、前后台、状态），permission.request
+//   可带 subagentId，Codex 子 agent 的审批路由到父会话；扩展特性协商（ext.read / ext.action.prepare 的
+//   features、client，MachineInfo.extensions.features）与本地效果 files.open。web 都按字段 / 能力位判断
+export const AGENT_VERSION = '0.26.0';
 
 export function buildMachineInfo(input: {
   name: string;
