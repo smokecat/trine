@@ -53,6 +53,7 @@ import {
 } from './workspace-model.ts';
 import type { MountRequest, WorkspaceViewStore } from './workspace-store.ts';
 import { isInDirection, type Direction } from './dock-geometry.ts';
+import { useViewGeneration } from './use-view-generation.ts';
 
 export const trineTheme: DockviewTheme = {
   name: 'trine',
@@ -94,7 +95,8 @@ export function usePanelVisible(api: DockviewPanelApi): boolean {
 function useTabModel<T extends FileDocModel | FileDirModel>(view: WorkspaceViewStore, id: string, defaults: T): [T, (patch: Partial<T>) => void] {
   const stored = useSyncExternalStore(view.subscribe, () => view.get(id));
   const model = useMemo(() => ({ ...defaults, ...stored }) as T, [defaults, stored]);
-  const onChange = useCallback((patch: Partial<T>) => view.patch(id, patch), [view, id]);
+  const gen = useViewGeneration(view, id);
+  const onChange = useCallback((patch: Partial<T>) => void view.patch(id, patch, gen.current), [view, id, gen]);
   return [model, onChange];
 }
 
@@ -180,6 +182,7 @@ function DirPanelBody(props: IDockviewPanelProps<TabParams>): React.JSX.Element 
   const visible = useBodyVisible(props.api);
   const { view } = useShared();
   const api = props.api;
+  const mountNonce = useSyncExternalStore(view.subscribe, () => view.mount(api.id)?.nonce);
   const containerApi = props.containerApi;
   const groupId = useCallback(() => api.group.id, [api]);
   const navigate = useCallback(
@@ -194,7 +197,8 @@ function DirPanelBody(props: IDockviewPanelProps<TabParams>): React.JSX.Element 
   );
   return (
     <div data-testid="ws-panel" data-panel={api.id} className="bg-surface flex h-full min-h-0 flex-col">
-      {visible ? <DirTabContent key={props.params.path} id={api.id} path={props.params.path} groupId={groupId} navigate={navigate} /> : null}
+      {/* 换目录或收到重挂请求（如抽屉交接）都重挂：按 store 里的状态重新定位 */}
+      {visible ? <DirTabContent key={`${props.params.path}#${mountNonce ?? 0}`} id={api.id} path={props.params.path} groupId={groupId} navigate={navigate} /> : null}
     </div>
   );
 }
@@ -437,7 +441,6 @@ export default function WorkspaceDock({ machineId, sessionId, initial, view, onR
         if (restorer.restoring || api.getPanel(panel.id) !== undefined) return;
         view.delete(panel.id);
       });
-      api.onDidAddPanel((panel) => view.revive(panel.id));
       // 组的最小宽度：新建的组、恢复出来的组都设上（外层 clamp / 自动收起用聚合后的最小宽度）
       const constrain = (g: DockviewGroupPanel): void => g.api.setConstraints({ minimumWidth: WORKSPACE_GROUP_MIN_WIDTH, minimumHeight: WORKSPACE_GROUP_MIN_HEIGHT });
       api.onDidAddGroup(constrain);

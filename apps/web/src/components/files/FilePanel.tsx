@@ -15,7 +15,7 @@ import { cn } from '@/lib/utils.ts';
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from '@/components/ui/sheet.tsx';
 import { useIsDesktop } from '@/components/shell/use-media-query.ts';
 import { FileDirView } from './FileDirView.tsx';
-import { FileDocView } from './FileDocView.tsx';
+import { FileDocView, type FileDocCapture } from './FileDocView.tsx';
 import { useFileLinks, type FileOpenTarget } from './file-links.ts';
 import type { FileViewChrome } from './ViewHeader.tsx';
 import { DEFAULT_DIR_MODEL, DEFAULT_DOC_MODEL, type FileDirModel, type FileDocModel } from './view-model.ts';
@@ -65,7 +65,17 @@ export function FilePanel({
   const location = useLocation();
   const stateKey = view === null ? '' : `${machineId}|${sessionId}|${location.key}|${view.kind}|${view.path ?? ''}`;
   // 视图此刻的内容状态（交接时同步读：滚动上报有防抖，记忆里的可能是旧的）
-  const captureRef = useRef<(() => FileDocModel | FileDirModel) | null>(null);
+  const captureRef = useRef<(() => FileDocCapture | FileDirModel) | null>(null);
+  const handoff = (target: FileView): DrawerHandoff => {
+    const captured = captureRef.current?.() ?? drawerState.get(stateKey) ?? {};
+    const { fragmentPending, ...state } = captured as Partial<FileDocCapture>;
+    // 锚点还没定位完：保留 fragment（交给工作区去定位），只带模式 / 换行；
+    // 定位完了：当前滚动位置已包含定位结果，用它代替 fragment
+    if (target.kind === 'file' && target.fragment !== undefined && fragmentPending === true) {
+      return { view: target, state: { ...(state.mode === undefined ? {} : { mode: state.mode }), ...(state.wrap === undefined ? {} : { wrap: state.wrap }) } };
+    }
+    return { view: target.kind === 'file' ? { kind: 'file', path: target.path } : target, state };
+  };
   const chrome: FileViewChrome = {
     Title: DrawerTitle,
     Description: DrawerDescription,
@@ -80,14 +90,8 @@ export function FilePanel({
               data-testid="file-to-workspace"
               aria-label="在工作区打开"
               title="在工作区打开（保留为 tab，可与聊天并排）"
-              // 点的这一刻抓内容状态（同步读滚动容器，读不到才用记忆）；滚动位置已包含锚点跳转的结果，
-              // 不再带 fragment，免得到了工作区又跳回锚点
-              onClick={() =>
-                onHandoff({
-                  view: view.kind === 'file' ? { kind: 'file', path: view.path } : view,
-                  state: { ...(captureRef.current?.() ?? drawerState.get(stateKey) ?? {}) },
-                })
-              }
+              // 点的这一刻抓内容状态（同步读滚动容器，读不到才用记忆）
+              onClick={() => onHandoff(handoff(view))}
             >
               <PanelRightOpenIcon />
             </Button>
@@ -135,7 +139,7 @@ export function FilePanel({
             fragment={view.fragment}
             onBrowse={browse}
             chrome={chrome}
-            captureRef={captureRef as React.RefObject<(() => FileDocModel) | null>}
+            captureRef={captureRef as React.RefObject<(() => FileDocCapture) | null>}
           />
         )}
         {view?.kind === 'dir' && (

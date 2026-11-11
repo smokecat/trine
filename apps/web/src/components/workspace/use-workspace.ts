@@ -76,6 +76,12 @@ function uiFor(rec: KeyRecord | null): UiState {
   };
 }
 
+/** 单组的最小宽度（没有布局 / 布局被丢弃时） */
+const SINGLE_GROUP_MIN = gridMinWidth(null, WORKSPACE_GROUP_MIN_WIDTH);
+
+/** 工作区清空（关掉最后一个 tab）：连同分栏布局的最小宽度一起复位，否则旧的多组约束会让窄屏判断出错 */
+const EMPTY_UI = { tabs: [] as TabMeta[], active: undefined, mounted: false, maximized: false, collapsed: false, layoutMin: SINGLE_GROUP_MIN };
+
 function sameTabs(a: readonly TabMeta[], b: readonly TabMeta[]): boolean {
   if (a.length !== b.length) return false;
   return a.every((t, i) => {
@@ -233,7 +239,7 @@ export function useWorkspace({
       rec.handle = null;
       rec.collapsed = false;
       flushRecord(store, rec);
-      update((s) => ({ ...s, tabs: [], active: undefined, mounted: false, maximized: false, collapsed: false }));
+      update((s) => ({ ...s, ...EMPTY_UI }));
       return;
     }
     rec.snap = snap;
@@ -269,7 +275,8 @@ export function useWorkspace({
       flushRecord(store, rec);
     }
     rec.handle = null;
-    update((s) => ({ ...s, generation: s.generation + 1 }));
+    // 布局丢弃后按单组重建：最小宽度回到单组
+    update((s) => ({ ...s, generation: s.generation + 1, layoutMin: SINGLE_GROUP_MIN }));
   }, [rec, store, update]);
 
   const expand = useCallback(() => {
@@ -301,8 +308,9 @@ export function useWorkspace({
         if (result.kind === 'limit') return;
         const fragment = extra.fragment !== undefined && extra.fragment !== '' && req.kind === 'file' ? extra.fragment : undefined;
         // 交接来的状态：新 tab 直接用；已有 tab 也要应用，并让正文按新状态重挂（滚动只在挂载时恢复）
+        // set 会作废现有正文实例的代次，所以带状态时总是请求重挂（新实例按新状态定位、取得新代次）
         if (extra.state !== undefined) rec.view.set(result.id, extra.state);
-        if (fragment !== undefined || (extra.state !== undefined && result.kind === 'activated')) rec.view.requestMount(result.id, fragment);
+        if (fragment !== undefined || extra.state !== undefined) rec.view.requestMount(result.id, fragment);
       };
       // dockview 未就绪（首次展开、懒加载中）：排队，就绪后按序执行
       if (rec.handle !== null) run(rec.handle);
@@ -361,7 +369,7 @@ export function useWorkspace({
     rec.snap = null;
     rec.collapsed = false;
     flushRecord(store, rec);
-    update((s) => ({ ...s, tabs: [], active: undefined, mounted: false, maximized: false, collapsed: false }));
+    update((s) => ({ ...s, ...EMPTY_UI }));
   }, [rec, store, update]);
 
   const resetLayout = useCallback(() => {

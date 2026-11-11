@@ -127,10 +127,46 @@ describe('控制器', () => {
     store.save(workspaceKey('m', '/w'), snap([tab]));
     const h = harness(store);
     act(() => h.ws.dock!.onReady(fakeHandle([tab]), 'restored'));
-    act(() => h.ws.view.patch(tab.id, { scrollTop: 10 }));
+    act(() => h.ws.view.set(tab.id, { scrollTop: 10 }));
     act(() => h.ws.openWithState({ path: '/w/a.md', target: 'side' }, { scrollTop: 380, mode: 'source' }));
     expect(h.ws.view.get(tab.id)).toEqual({ scrollTop: 380, mode: 'source' });
     expect(h.ws.view.mount(tab.id)).toBeDefined();
+  });
+
+  test('关掉全部 tab 后：多组布局的最小宽度复位为单组，窄一些的主区也能再开工作区', () => {
+    const store = new WorkspaceStore(memoryKv());
+    const leaf = (id: string, v: string) => ({ type: 'leaf', data: { id, views: [v], activeView: v } });
+    const tabs: TabMeta[] = ['a', 'b', 'c', 'd'].map((n) => ({ id: `file:/w/${n}.md`, kind: 'file', path: `/w/${n}.md`, preview: false }));
+    const layout = {
+      grid: { root: { type: 'branch', data: tabs.map((t, i) => leaf(String(i + 1), t.id)) }, width: 900, height: 600, orientation: 'HORIZONTAL' },
+      panels: Object.fromEntries(tabs.map((t) => [t.id, { id: t.id, contentComponent: 'file', params: { kind: 'file', path: t.path, preview: false } }])),
+    };
+    store.save(workspaceKey('m', '/w'), snap(tabs, layout));
+    const h = harness(store);
+    expect(h.ws.minWidth).toBe(880);
+    // dockview 就绪后用户关掉了所有 tab
+    const empty: DockHandle = { ...fakeHandle(), snapshot: (collapsed) => ({ v: 1, layout: null, tabs: [], view: {}, collapsed }) };
+    act(() => h.ws.dock!.onReady(empty, 'restored'));
+    expect(h.ws.status).toBe('absent');
+    expect(h.ws.minWidth).toBe(360);
+    act(() => h.ws.setMainWidth(1100));
+    expect(h.ws.narrow).toBe(false);
+    expect(h.ws.route).not.toBeNull();
+  });
+
+  test('重置布局（丢弃布局）后最小宽度同样回到单组', () => {
+    const store = new WorkspaceStore(memoryKv());
+    const leaf = (id: string, v: string) => ({ type: 'leaf', data: { id, views: [v], activeView: v } });
+    const tabs: TabMeta[] = ['a', 'b', 'c'].map((n) => ({ id: `file:/w/${n}.md`, kind: 'file', path: `/w/${n}.md`, preview: false }));
+    const layout = {
+      grid: { root: { type: 'branch', data: tabs.map((t, i) => leaf(String(i + 1), t.id)) }, width: 900, height: 600, orientation: 'HORIZONTAL' },
+      panels: Object.fromEntries(tabs.map((t) => [t.id, { id: t.id, contentComponent: 'file', params: { kind: 'file', path: t.path, preview: false } }])),
+    };
+    store.save(workspaceKey('m', '/w'), snap(tabs, layout));
+    const h = harness(store);
+    expect(h.ws.minWidth).toBe(660);
+    act(() => h.ws.resetLayout());
+    expect(h.ws.minWidth).toBe(360);
   });
 
   test('分栏布局的聚合最小宽度参与窄屏判断与最小宽度', () => {
@@ -206,6 +242,44 @@ describe('抽屉交接抓取此刻的滚动', () => {
   });
 });
 
+describe('抽屉交接与锚点', () => {
+  async function mountDrawer(openFile: () => Promise<OpenedFile>, fragment: string): Promise<unknown[]> {
+    const { FilePanel } = await import('@/components/files/FilePanel.tsx');
+    act(() => runtimeState.setState({ client: { on: () => () => {}, openFile } as never }));
+    const handoffs: unknown[] = [];
+    host = document.createElement('div');
+    document.body.appendChild(host);
+    root = createRoot(host);
+    act(() =>
+      root!.render(
+        <MemoryRouter initialEntries={['/s/m/s1']}>
+          <FilePanel machineId="m" sessionId="s1" view={{ kind: 'file', path: '/w/a.md', fragment }} onNavigate={() => {}} onClose={() => {}} onHandoff={(h) => handoffs.push(h)} />
+        </MemoryRouter>,
+      ),
+    );
+    await settle();
+    return handoffs;
+  }
+
+  test('锚点还没定位（文件还在读取）：保留 fragment 交给工作区，不带滚动位置', async () => {
+    const handoffs = await mountDrawer(() => new Promise(() => {}), '架构');
+    expect(document.querySelector('[data-testid="file-panel"]')?.textContent).toContain('正在读取');
+    act(() => document.querySelector<HTMLElement>('[data-testid="file-to-workspace"]')!.click());
+    expect(handoffs[0]).toMatchObject({ view: { kind: 'file', path: '/w/a.md', fragment: '架构' } });
+    expect((handoffs[0] as { state: { scrollTop?: number } }).state.scrollTop).toBeUndefined();
+  });
+
+  test('锚点已定位：用当前滚动位置代替 fragment', async () => {
+    const doc = fsFile('/w/a.md', 'markdown', ['# 总览', '', '正文', '', '## 架构', '', '内容', ''].join('\n'));
+    const handoffs = await mountDrawer(async () => doc, '架构');
+    await settle();
+    act(() => document.querySelector<HTMLElement>('[data-testid="file-to-workspace"]')!.click());
+    expect(handoffs[0]).toMatchObject({ view: { kind: 'file', path: '/w/a.md' } });
+    expect((handoffs[0] as { view: { fragment?: string } }).view.fragment).toBeUndefined();
+    expect(typeof (handoffs[0] as { state: { scrollTop?: number } }).state.scrollTop).toBe('number');
+  });
+});
+
 describe('窄屏抽屉（Peek）', () => {
   const files: Record<string, OpenedFile> = {
     '/w/notes.txt': fsFile('/w/notes.txt', 'text', '第一行\n第二行'),
@@ -257,8 +331,8 @@ describe('窄屏抽屉（Peek）', () => {
     act(() => wrapBtn().click());
     expect(view.get(tab.id)?.wrap).toBe(true);
     expect(wrapBtn().getAttribute('aria-pressed')).toBe('true');
-    // 工作区那边改回来：抽屉跟着变
-    act(() => view.patch(tab.id, { wrap: false }));
+    // 工作区那边改回来（整体替换）：抽屉跟着变
+    act(() => view.set(tab.id, { wrap: false }));
     expect(wrapBtn().getAttribute('aria-pressed')).toBe('false');
   });
 

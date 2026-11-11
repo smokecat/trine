@@ -234,7 +234,7 @@ describe('渲染与资源', () => {
     act(() => void m.h.open(file('/w/a.md', 'auto', { keep: true })));
     await settle();
     expect(retained.get('blob:test//w/a.md')).toBe(1);
-    act(() => m.view.patch('file:/w/a.md', { scrollTop: 0, wrap: true }));
+    act(() => m.view.set('file:/w/a.md', { scrollTop: 0, wrap: true }));
     act(() => void m.h.open(file('/w/b.md', 'auto', { keep: true })));
     await settle();
     // a 被同组的 b 盖住：panel DOM 摘下、重内容卸载
@@ -394,19 +394,77 @@ describe('评审修复', () => {
     expect(m.h.api.panels.filter((p) => model.paramsOf(p).preview).length).toBe(1);
   });
 
-  test('关闭 tab 后，正文卸载时迟到的滚动上报不把状态写回来', async () => {
+  /** 真实正文上「滚一下」：改 scrollTop 并发 scroll 事件（上报有 150ms 防抖，卸载时才补报） */
+  function userScroll(panelId: string, top: number): void {
+    const el = document.querySelector<HTMLElement>(`[data-panel="${panelId}"] [data-testid="file-scroll"], [data-panel="${panelId}"] .overflow-auto`)!;
+    act(() => {
+      el.scrollTop = top;
+      el.dispatchEvent(new window.Event('scroll'));
+    });
+  }
+
+  test('关闭 tab：正文卸载时补报的滚动不把状态写回来（代次已删除）', async () => {
     fakeClient();
     const m = mount();
     act(() => void m.h.open(file('/w/a.md', 'auto', { keep: true })));
     await settle();
-    act(() => m.view.patch('file:/w/a.md', { scrollTop: 10 }));
+    userScroll('file:/w/a.md', 111);
     act(() => m.h.api.getPanel('file:/w/a.md')!.api.close());
-    act(() => m.view.patch('file:/w/a.md', { scrollTop: 99 }));
+    await settle();
     expect(m.view.get('file:/w/a.md')).toBeUndefined();
-    // 同一路径重新打开：照常记录
+  });
+
+  test('关掉马上重开：旧正文的卸载补报不覆盖新实例的状态', async () => {
+    fakeClient();
+    const m = mount();
     act(() => void m.h.open(file('/w/a.md', 'auto', { keep: true })));
-    act(() => m.view.patch('file:/w/a.md', { scrollTop: 5 }));
-    expect(m.view.get('file:/w/a.md')).toEqual({ scrollTop: 5 });
+    await settle();
+    userScroll('file:/w/a.md', 111);
+    // 同一批里关掉、重开、并带进新状态（如交接）
+    act(() => {
+      m.h.api.getPanel('file:/w/a.md')!.api.close();
+      m.h.open(file('/w/a.md', 'auto', { keep: true }));
+      m.view.set('file:/w/a.md', { scrollTop: 999 });
+      m.view.requestMount('file:/w/a.md');
+    });
+    await settle();
+    expect(m.view.get('file:/w/a.md')).toEqual({ scrollTop: 999 });
+    // 新实例自己的上报照常生效
+    userScroll('file:/w/a.md', 7);
+    await act(() => new Promise<void>((r) => setTimeout(r, 200)));
+    expect(m.view.get('file:/w/a.md')?.scrollTop).toBe(7);
+  });
+
+  test('交接到已打开的文件 tab：旧正文卸载时补报的旧位置不覆盖交接来的位置', async () => {
+    fakeClient();
+    const m = mount();
+    act(() => void m.h.open(file('/w/a.md', 'auto', { keep: true })));
+    await settle();
+    userScroll('file:/w/a.md', 95);
+    // 控制器 openWithState 对已有 tab 的做法：set 交接状态 + 请求重挂
+    act(() => {
+      m.view.set('file:/w/a.md', { scrollTop: 380, mode: 'rendered', wrap: false });
+      m.view.requestMount('file:/w/a.md');
+    });
+    await settle();
+    expect(m.view.get('file:/w/a.md')?.scrollTop).toBe(380);
+  });
+
+  test('交接到已打开的目录 tab：目录正文也消费重挂请求，旧补报不覆盖', async () => {
+    fakeClient();
+    const m = mount();
+    act(() => void m.h.open({ kind: 'dir', path: '', placement: 'auto' }));
+    await settle();
+    const before = document.querySelector('[data-panel="dir:1"] .overflow-auto');
+    userScroll('dir:1', 95);
+    act(() => {
+      m.view.set('dir:1', { scrollTop: 380 });
+      m.view.requestMount('dir:1');
+    });
+    await settle();
+    // 目录正文重挂了（新的滚动容器），store 保持交接来的位置
+    expect(document.querySelector('[data-panel="dir:1"] .overflow-auto')).not.toBe(before);
+    expect(m.view.get('dir:1')).toEqual({ scrollTop: 380 });
   });
 
   test('组设了最小宽度约束；聚合最小宽度随分栏变化', () => {
@@ -426,7 +484,7 @@ describe('持久化', () => {
     act(() => void m.h.open({ kind: 'dir', path: '', placement: 'auto' }));
     act(() => void m.h.open(file('/w/a.md', 'side')));
     act(() => void m.h.open(file('/w/b.md')));
-    act(() => m.view.patch('file:/w/a.md', { mode: 'source', scrollTop: 40 }));
+    act(() => m.view.set('file:/w/a.md', { mode: 'source', scrollTop: 40 }));
     const snap = model.readSnapshot(JSON.parse(JSON.stringify(m.h.snapshot(false))))!;
     expect(snap.layout).not.toBeNull();
     expect(snap.view['file:/w/a.md']).toEqual({ mode: 'source', scrollTop: 40 });

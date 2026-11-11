@@ -251,13 +251,44 @@ describe('评审修复（纯逻辑）', () => {
   });
 });
 
+describe('WorkspaceViewStore 实例代次', () => {
+  test('只有当前代次能写：新实例挂载、set、关闭都会让旧实例的写入失效', () => {
+    const v = new WorkspaceViewStore();
+    const g1 = v.attach('file:/a');
+    expect(v.patch('file:/a', { scrollTop: 1 }, g1)).toBe(true);
+    const g2 = v.attach('file:/a');
+    expect(v.patch('file:/a', { scrollTop: 2 }, g1)).toBe(false);
+    expect(v.patch('file:/a', { scrollTop: 3 }, g2)).toBe(true);
+    v.set('file:/a', { scrollTop: 380 });
+    expect(v.patch('file:/a', { scrollTop: 95 }, g2)).toBe(false);
+    expect(v.get('file:/a')).toEqual({ scrollTop: 380 });
+    v.delete('file:/a');
+    expect(v.patch('file:/a', { scrollTop: 4 }, g2)).toBe(false);
+    expect(v.get('file:/a')).toBeUndefined();
+  });
+
+  test('关闭过的 tab 不留记录（不会无界增长）', () => {
+    const v = new WorkspaceViewStore();
+    for (let i = 0; i < 500; i += 1) {
+      const id = `file:/w/${i}.md`;
+      const g = v.attach(id);
+      v.patch(id, { scrollTop: i }, g);
+      v.requestMount(id, 'x');
+      v.consumeFragment(id, v.mount(id));
+      v.delete(id);
+    }
+    expect(v.trackedCount).toBe(0);
+  });
+});
+
 describe('WorkspaceViewStore', () => {
   test('patch 合并并通知保存；定位请求每次换 nonce', () => {
     const v = new WorkspaceViewStore();
     let changes = 0;
     v.onChange = () => (changes += 1);
-    v.patch('file:/a', { scrollTop: 10 });
-    v.patch('file:/a', { mode: 'source' });
+    const gen = v.attach('file:/a');
+    v.patch('file:/a', { scrollTop: 10 }, gen);
+    v.patch('file:/a', { mode: 'source' }, gen);
     expect(v.get('file:/a')).toEqual({ scrollTop: 10, mode: 'source' });
     expect(changes).toBe(2);
     let notified = 0;

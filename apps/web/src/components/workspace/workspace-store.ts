@@ -121,16 +121,22 @@ export interface MountRequest {
 /**
  * tab 的内容状态（模式、换行、滚动）：工作区 tab 与窄屏抽屉**订阅同一份**，任何一处改了另一处跟着变。
  * 一份工作区（机器 + cwd）一个实例：锚点消费记录也在这里，不跨工作区串扰。
+ *
+ * 实例代次：每个显示 tab 的视图实例挂载时 `attach` 拿到一个新代次，`patch` 必须带代次，
+ * 不是该 tab 当前代次的一律拒绝。这样旧实例卸载时迟到的滚动补报（防抖后的最后一次上报）
+ * 不会覆盖：交接 / 导航 `set` 进来的新状态、关掉又马上重开的新实例、已关闭的 tab。
+ * 关闭只删掉该 id 的代次，不额外记录关闭过的路径（不会无界增长）。
  */
 export class WorkspaceViewStore {
   readonly #view = new Map<string, TabViewState>();
   readonly #mounts = new Map<string, MountRequest>();
   /** id → 已消费到的 nonce */
   readonly #consumed = new Map<string, number>();
-  /** 已关闭的 tab：卸载时迟到的滚动上报不能把状态写回来 */
-  readonly #closed = new Set<string>();
+  /** id → 当前代次（只有当前代次的实例能写） */
+  readonly #gens = new Map<string, number>();
   readonly #listeners = new Set<() => void>();
   #nonce = 0;
+  #gen = 0;
   /** 内容状态变了（滚动停下、切模式）：控制器据此安排保存 */
   onChange: (() => void) | null = null;
 
@@ -138,32 +144,45 @@ export class WorkspaceViewStore {
     return this.#view.get(id);
   }
 
-  patch(id: string, patch: TabViewState): void {
-    if (this.#closed.has(id)) return;
+  /** 视图实例挂载：分配新代次（之前的实例从此写不进来） */
+  attach(id: string): number {
+    this.#gen += 1;
+    this.#gens.set(id, this.#gen);
+    return this.#gen;
+  }
+
+  /** 当前代次的实例改内容状态；旧实例（已卸载 / 被替换 / tab 已关闭）的写入被拒绝，返回 false */
+  patch(id: string, patch: TabViewState, gen: number): boolean {
+    if (this.#gens.get(id) !== gen) return false;
     this.#view.set(id, { ...this.#view.get(id), ...patch });
     this.#emit();
     this.onChange?.();
+    return true;
   }
 
-  /** 整体替换某个 tab 的状态（抽屉交接带来的） */
+  /**
+   * 整体替换某个 tab 的状态（抽屉交接、目录导航）：同时作废现有实例的代次——
+   * 正显示着的旧正文随后卸载时的补报不能把它冲掉；新正文挂载时再 attach
+   */
   set(id: string, state: TabViewState): void {
-    this.#closed.delete(id);
+    this.#gen += 1;
+    this.#gens.set(id, this.#gen);
     this.#view.set(id, { ...state });
     this.#emit();
     this.onChange?.();
   }
 
-  /** tab 关闭：丢掉状态与请求，并拒绝之后的迟到上报 */
+  /** 记着状态 / 代次的 tab 数（测试用：关闭的 tab 不留任何记录） */
+  get trackedCount(): number {
+    return new Set([...this.#view.keys(), ...this.#gens.keys(), ...this.#mounts.keys(), ...this.#consumed.keys()]).size;
+  }
+
+  /** tab 关闭：丢掉状态、请求与代次（之后的迟到上报因代次不符被拒绝） */
   delete(id: string): void {
     this.#view.delete(id);
     this.#mounts.delete(id);
     this.#consumed.delete(id);
-    this.#closed.add(id);
-  }
-
-  /** 同一 id 的 tab 重新打开 */
-  revive(id: string): void {
-    this.#closed.delete(id);
+    this.#gens.delete(id);
   }
 
   entries(): ReadonlyMap<string, TabViewState> {

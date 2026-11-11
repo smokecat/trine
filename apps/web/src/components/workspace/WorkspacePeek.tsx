@@ -18,6 +18,7 @@ import { FileLinksContext, type FileLinks } from '@/components/files/file-links.
 import { DEFAULT_DIR_MODEL, DEFAULT_DOC_MODEL, type FileDirModel, type FileDocModel } from '@/components/files/view-model.ts';
 import { tabTitle, type TabMeta } from './workspace-model.ts';
 import type { WorkspaceViewStore } from './workspace-store.ts';
+import { useViewGeneration } from './use-view-generation.ts';
 
 /** 窄屏抽屉的开关在 location.state 里：push 一条，返回即关 */
 export function useWorkspacePeekRoute(): { open: boolean; show: () => void; close: () => void } {
@@ -59,6 +60,66 @@ function DrawerDescription({ className, children }: { className?: string; childr
   );
 }
 
+/**
+ * 抽屉里的一个视图实例（换 tab / 就地导航即重挂）：显示 tab 时订阅与工作区共用的 view store，
+ * 并以自己的实例代次写入（旧实例卸载时的补报写不进来）
+ */
+function PeekBody({
+  shown,
+  tabId,
+  view,
+  localModel,
+  setLocalModel,
+  goLocal,
+  machineId,
+  sessionId,
+  chrome,
+}: {
+  shown: LocalView;
+  tabId: string | undefined;
+  view: WorkspaceViewStore;
+  localModel: FileDocModel | FileDirModel;
+  setLocalModel: React.Dispatch<React.SetStateAction<FileDocModel | FileDirModel>>;
+  goLocal: (v: LocalView) => void;
+  machineId: string;
+  sessionId: string;
+  chrome: FileViewChrome;
+}): React.JSX.Element {
+  const gen = useViewGeneration(view, tabId);
+  const stored = useSyncExternalStore(view.subscribe, () => (tabId === undefined ? undefined : view.get(tabId)));
+  const modelOf = <T extends FileDocModel | FileDirModel>(base: T): T => (tabId === undefined ? (localModel as T) : ({ ...base, ...stored } as T));
+  const onModelChange = (patch: Partial<FileDocModel & FileDirModel>): void => {
+    if (tabId !== undefined) view.patch(tabId, patch, gen.current);
+    else setLocalModel((m) => ({ ...m, ...patch }));
+  };
+  if (shown.kind === 'file') {
+    return (
+      <FileDocView
+        machineId={machineId}
+        sessionId={sessionId}
+        path={shown.path}
+        {...(shown.fragment === undefined ? {} : { fragment: shown.fragment })}
+        model={modelOf(DEFAULT_DOC_MODEL)}
+        onModelChange={onModelChange}
+        onBrowse={(dir) => goLocal({ kind: 'dir', path: dir ?? '' })}
+        chrome={chrome}
+      />
+    );
+  }
+  return (
+    <FileDirView
+      machineId={machineId}
+      sessionId={sessionId}
+      path={shown.path === '' ? undefined : shown.path}
+      model={modelOf(DEFAULT_DIR_MODEL)}
+      onModelChange={onModelChange}
+      onBrowse={(dir) => goLocal({ kind: 'dir', path: dir ?? '' })}
+      onOpenFile={(path) => goLocal({ kind: 'file', path })}
+      chrome={chrome}
+    />
+  );
+}
+
 export function WorkspacePeek({
   open,
   onClose,
@@ -88,13 +149,6 @@ export function WorkspacePeek({
   }, []);
   const shown: LocalView | undefined = local ?? (tab === undefined ? undefined : { kind: tab.kind, path: tab.path });
   const tabId = local === null ? tab?.id : undefined;
-  // 显示的是 tab：订阅与工作区共用的 view store（这里改了源码 / 换行，工作区那边也跟着变，反之亦然）
-  const stored = useSyncExternalStore(view.subscribe, () => (tabId === undefined ? undefined : view.get(tabId)));
-  const modelOf = <T extends FileDocModel | FileDirModel>(base: T): T => (tabId === undefined ? (localModel as T) : ({ ...base, ...stored } as T));
-  const onModelChange = (patch: Partial<FileDocModel & FileDirModel>): void => {
-    if (tabId !== undefined) view.patch(tabId, patch);
-    else setLocalModel((m) => ({ ...m, ...patch }));
-  };
   // 正文里的文件链接 / 图片：在抽屉里就地切换（带锚点），不再叠一层文件抽屉、不写历史
   const links = useMemo<FileLinks>(
     () => ({
@@ -149,32 +203,20 @@ export function WorkspacePeek({
           })}
         </div>
         <FileLinksContext.Provider value={links}>
-        {shown?.kind === 'file' && (
-          <FileDocView
-            key={`${tabId ?? 'local'}|${shown.path}|${shown.nonce ?? 0}`}
-            machineId={machineId}
-            sessionId={sessionId}
-            path={shown.path}
-            {...(shown.fragment === undefined ? {} : { fragment: shown.fragment })}
-            model={modelOf(DEFAULT_DOC_MODEL)}
-            onModelChange={onModelChange}
-            onBrowse={(dir) => goLocal({ kind: 'dir', path: dir ?? '' })}
-            chrome={chrome}
-          />
-        )}
-        {shown?.kind === 'dir' && (
-          <FileDirView
-            key={`${tabId ?? 'local'}|${shown.path}`}
-            machineId={machineId}
-            sessionId={sessionId}
-            path={shown.path === '' ? undefined : shown.path}
-            model={modelOf(DEFAULT_DIR_MODEL)}
-            onModelChange={onModelChange}
-            onBrowse={(dir) => goLocal({ kind: 'dir', path: dir ?? '' })}
-            onOpenFile={(path) => goLocal({ kind: 'file', path })}
-            chrome={chrome}
-          />
-        )}
+          {shown !== undefined && (
+            <PeekBody
+              key={`${tabId ?? 'local'}|${shown.kind}|${shown.path}|${shown.kind === 'file' ? (shown.nonce ?? 0) : 0}`}
+              shown={shown}
+              tabId={tabId}
+              view={view}
+              localModel={localModel}
+              setLocalModel={setLocalModel}
+              goLocal={goLocal}
+              machineId={machineId}
+              sessionId={sessionId}
+              chrome={chrome}
+            />
+          )}
         </FileLinksContext.Provider>
       </SheetContent>
     </Sheet>

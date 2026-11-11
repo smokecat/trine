@@ -40,6 +40,9 @@ const MISSING_TEXT: Record<MissingReason, (f: string) => string> = {
   jump: (f) => `文档里没有找到「${f}」这一节（可能已改名或删除）`,
 };
 
+/** 外壳同步读取的「此刻」内容状态；`fragmentPending` = 打开时带的锚点还没定位完 */
+export type FileDocCapture = FileDocModel & { fragmentPending: boolean };
+
 export function FileDocView({
   machineId,
   sessionId,
@@ -65,7 +68,7 @@ export function FileDocView({
    * 外壳要「此刻」的内容状态时用（抽屉交接到工作区）：滚动上报有防抖，model 里的可能是旧的，
    * 这里同步读滚动容器与锚点
    */
-  captureRef?: React.RefObject<(() => FileDocModel) | null> | undefined;
+  captureRef?: React.RefObject<(() => FileDocCapture) | null> | undefined;
 }): React.JSX.Element {
   const client = useClient();
   const [refresh, setRefresh] = useState(false);
@@ -128,10 +131,13 @@ export function FileDocView({
   useLayoutEffect(() => {
     if (captureRef === undefined) return;
     captureRef.current = () => {
+      // 打开时带的锚点还没定位完（还在读取、或预览还没渲染出来）：此刻的滚动位置不代表目标，
+      // 由调用方保留锚点交给下一个容器去定位
+      const fragmentPending = pending?.reason === 'open';
       const el = scrollRef.current;
-      if (el === null) return model;
+      if (el === null || fragmentPending) return { ...model, fragmentPending };
       captureAnchorNow();
-      return { ...model, scrollTop: el.scrollTop, anchor: scrollAnchor.anchor.current ?? undefined };
+      return { ...model, scrollTop: el.scrollTop, anchor: scrollAnchor.anchor.current ?? undefined, fragmentPending: false };
     };
     return () => {
       captureRef.current = null;
