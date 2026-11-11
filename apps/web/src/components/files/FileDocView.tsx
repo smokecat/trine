@@ -70,6 +70,10 @@ export function FileDocView({
   );
   const opened = load.state === 'ok' ? load.value : undefined;
   const file = opened?.file;
+  // 显示期间占住对象 URL（图片 / PDF / 下载链接都用它）：别处打开新文件触发 LRU、或别处刷新同一文件，
+  // 都不会把这里正在用的 URL revoke 掉；卸载（含工作区隐藏 tab）即释放
+  const openedUrl = opened?.url;
+  useEffect(() => (client === null || openedUrl === undefined ? undefined : client.retainFileUrl?.(openedUrl)), [client, openedUrl]);
   const sessionCwd = useTrine((s) => s.sessions[machineId]?.[sessionId]?.cwd);
   const home = useFilesInfo(machineId)?.home;
   const absPath = absoluteFilePath(path, sessionCwd, home);

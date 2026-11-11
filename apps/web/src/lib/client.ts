@@ -43,6 +43,7 @@ import type {
 } from '@trine/core';
 import type { Clock, DocStore, KvAdapter, SocketFactory } from './adapters.ts';
 import { Connection, type ConnectionSnapshot } from './connection.ts';
+import { FileCache } from './file-cache.ts';
 import { Inbound, type DroppedInfo } from './envelope.ts';
 import { ensureIdentity } from './identity.ts';
 import { Outbox, OutboxScopeFatalError, type OutboundBody } from './outbox.ts';
@@ -297,8 +298,16 @@ export class TrineClient {
   readonly #attachmentUrls = new Map<string, string>();
   /** 附件加载的在途请求：key = timelineKey + 条目 id + 下标 */
   readonly #attachmentInflight = new Map<string, Promise<string>>();
-  /** 文件预览缓存：`machine#session#请求路径` → 已下载的文件（刷新时替换并释放旧 URL） */
-  readonly #files = new Map<string, OpenedFile>();
+  /**
+   * 文件预览缓存：`machine#session#请求路径` → 已下载的文件。LRU + 引用计数（见 file-cache.ts）：
+   * 可见的视图占着的 URL 不会被淘汰 / 刷新释放掉
+   */
+  readonly #files = new FileCache<OpenedFile>({
+    maxEntries: FILE_CACHE_MAX_ENTRIES,
+    maxBytes: FILE_CACHE_MAX_BYTES,
+    sizeOf: (f) => f.file.size,
+    revoke: (url) => URL.revokeObjectURL(url),
+  });
   readonly #fileInflight = new Map<string, Promise<OpenedFile>>();
   #blobClient: BlobClient | null = null;
   #blobConfig: Promise<BlobConfig> | null = null;
@@ -1160,13 +1169,8 @@ export class TrineClient {
    */
   openFile(machineId: string, sessionId: string, path: string, options: { refresh?: boolean } = {}): Promise<OpenedFile> {
     const key = `${machineId}#${sessionId}#${path}`;
-    const cached = this.#files.get(key);
-    if (cached !== undefined && options.refresh !== true) {
-      // Map 的插入顺序即 LRU 顺序：命中就挪到最新
-      this.#files.delete(key);
-      this.#files.set(key, cached);
-      return Promise.resolve(cached);
-    }
+    const cached = options.refresh === true ? undefined : this.#files.get(key);
+    if (cached !== undefined) return Promise.resolve(cached);
     const inflight = this.#fileInflight.get(key);
     if (inflight !== undefined) return inflight;
     const task = (async () => {
@@ -1188,11 +1192,7 @@ export class TrineClient {
       const url = createObjectUrl(blob);
       if (url === undefined) throw new Error('当前环境无法显示文件');
       const opened: OpenedFile = { file, blob, url };
-      const old = this.#files.get(key);
-      if (old !== undefined) URL.revokeObjectURL(old.url);
-      this.#files.delete(key);
       this.#files.set(key, opened);
-      this.#trimFileCache();
       return opened;
     })().finally(() => {
       this.#fileInflight.delete(key);
@@ -1201,16 +1201,12 @@ export class TrineClient {
     return task;
   }
 
-  /** 文件缓存按条数与总字节淘汰最旧的（最新那个即使超额也留着：它正在显示） */
-  #trimFileCache(): void {
-    let total = 0;
-    for (const f of this.#files.values()) total += f.file.size;
-    for (const [key, f] of this.#files) {
-      if (this.#files.size <= 1 || (this.#files.size <= FILE_CACHE_MAX_ENTRIES && total <= FILE_CACHE_MAX_BYTES)) break;
-      URL.revokeObjectURL(f.url);
-      this.#files.delete(key);
-      total -= f.file.size;
-    }
+  /**
+   * 正在显示 `openFile` 给的对象 URL 时占住它（视图挂载时调，卸载时调返回的释放函数）：
+   * 占用期间 LRU 不淘汰它，刷新替换后也等最后一个使用者释放才 revoke。
+   */
+  retainFileUrl(url: string): () => void {
+    return this.#files.retain(url);
   }
 
   #blobs(): BlobClient {
