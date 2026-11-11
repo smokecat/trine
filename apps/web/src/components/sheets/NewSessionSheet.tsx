@@ -612,9 +612,12 @@ export function NewSessionSheet({
               <p>
                 这个目录在 {machine?.name ?? '这台机器'} 上还不存在。将新建以下目录，然后在里面开始会话：
               </p>
-              <ul data-testid="ns-cwd-confirm-list" className="bg-surface-2 rounded-[10px] px-2.5 py-1.5 font-mono text-xs break-all">
+              <ul data-testid="ns-cwd-confirm-list" className="bg-surface-2 flex flex-col gap-1 rounded-[10px] px-2.5 py-1.5 font-mono text-xs break-all">
                 {(confirmCwd?.missing ?? []).map((p) => (
-                  <li key={p}>{p}</li>
+                  <li key={p} className="flex gap-1.5">
+                    <span aria-hidden className="text-brand shrink-0">+</span>
+                    <span>{p}</span>
+                  </li>
                 ))}
               </ul>
             </>

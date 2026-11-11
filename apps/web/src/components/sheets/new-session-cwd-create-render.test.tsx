@@ -133,7 +133,7 @@ describe('NewSessionSheet · 新建工作目录（cwd-create）', () => {
     await act(async () => $('ns-create')!.click());
     await flush();
     expect($('ns-cwd-confirm')).not.toBeNull();
-    const items = Array.from(document.querySelectorAll('[data-testid="ns-cwd-confirm-list"] li')).map((li) => li.textContent);
+    const items = Array.from(document.querySelectorAll('[data-testid="ns-cwd-confirm-list"] li')).map((li) => li.lastElementChild?.textContent);
     expect(items).toEqual(['/home/u/work', '/home/u/work/new']);
     expect(calls.created).toEqual([]);
 
