@@ -223,6 +223,33 @@ describe('Markdown 文件预览：标题 slug 与锚点（§6）', () => {
     expect(renderChat(md)).not.toContain('data-src-line');
   });
 
+  test('开头的 front matter：剥成元数据块，不出分隔线 / 粗体标题，不进 slug，行号仍是文件行号', () => {
+    const md = ['---', 'status: active', 'created: 2026-11-01', 'title: "带引号 <b>x</b>"', '---', '# 任务', '', '正文', '', '## 下一步'].join('\n');
+    const html = renderDoc(md, 'p1');
+    expect(html).toContain('data-testid="file-front-matter"');
+    expect([...html.matchAll(/data-testid="file-front-matter-row"/g)]).toHaveLength(3);
+    expect(html).toContain('2026-11-01');
+    // 值按纯文本：尖括号被转义，不成标签
+    expect(html).toContain('带引号 &lt;b&gt;x&lt;/b&gt;');
+    expect(html).not.toContain('<hr');
+    expect(html).not.toMatch(/<h2[^>]*>[^<]*status/);
+    expect(slugs(html)).toEqual(['任务', '下一步']);
+    const lines = (tag: string): string[] => [...html.matchAll(new RegExp(`<${tag}[^>]*data-src-line="(\\d+)"`, 'g'))].map((m) => m[1]!);
+    expect(lines('h1')).toEqual(['6']);
+    expect(lines('p')).toEqual(['8']);
+    expect(lines('h2')).toEqual(['10']);
+  });
+
+  test('front matter 认不出 key: value 时原样显示；聊天消息不处理', () => {
+    const md = ['---', 'tags:', '  - a', '  - b', '...', '# 标题'].join('\n');
+    const html = renderDoc(md, 'p1');
+    expect(html).toContain('data-testid="file-front-matter-raw"');
+    expect(html).toContain('  - a');
+    expect(slugs(html)).toEqual(['标题']);
+    const chat = renderChat(['---', 'status: active', '---', '正文'].join('\n'));
+    expect(chat).not.toContain('file-front-matter');
+  });
+
   test('raw HTML 标题照样有 slug；sanitize 不放宽（脚本仍被剥掉）', () => {
     const html = renderDoc('<h2 id="x" onclick="alert(1)">原始 <b>标题</b></h2>\n\n<script>alert(1)</script>', 'p1');
     expect(slugs(html)).toEqual(['原始-标题']);

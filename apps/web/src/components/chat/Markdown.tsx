@@ -51,7 +51,7 @@
  * shiki 双主题 `[github-light, github-dark]` 由 streamdown 按 CSS 变量切，
  * 与 app/theme.ts 的三态主题自洽（跟随 `prefers-color-scheme` 与 `.dark`）。
  */
-import { memo, useContext } from 'react';
+import { memo, useContext, useMemo } from 'react';
 import { defaultRehypePlugins, Streamdown, type StreamdownProps } from 'streamdown';
 import { code } from '@streamdown/code';
 import { ImageIcon } from 'lucide-react';
@@ -64,6 +64,7 @@ import {
   type FileOpenIntent,
   type FileOpenTarget,
 } from '@/components/files/file-links.ts';
+import { splitFrontMatter, type FrontMatter } from '@/components/files/front-matter.ts';
 import { createSlugger, splitHref } from '@/components/files/toc-model.ts';
 import { cn } from '@/lib/utils.ts';
 
@@ -389,6 +390,8 @@ export const Markdown = memo(function Markdown({
 }): React.JSX.Element {
   const links = useFileLinks();
   const mode = restricted || links === null ? 'plain' : fileBase === undefined ? 'chat' : 'doc';
+  // 只有文件预览识别开头的 front matter（聊天消息不动）：剥出来单独显示，正文里换成等量空行
+  const frontMatter = useMemo(() => (fileBase !== undefined && !restricted ? splitFrontMatter(text) : undefined), [fileBase, restricted, text]);
   const chosen = restricted ? restrictedComponents : mode === 'chat' ? fileComponents : mode === 'doc' ? fileDocComponents : components;
   const body = (
     <Streamdown
@@ -425,8 +428,48 @@ export const Markdown = memo(function Markdown({
         className,
       )}
     >
-      {text}
+      {frontMatter?.body ?? text}
     </Streamdown>
   );
-  return fileBase === undefined ? body : <FileBaseContext.Provider value={fileBase}>{body}</FileBaseContext.Provider>;
+  if (fileBase === undefined) return body;
+  return (
+    <FileBaseContext.Provider value={fileBase}>
+      {frontMatter !== undefined && <FrontMatterBlock frontMatter={frontMatter} />}
+      {body}
+    </FileBaseContext.Provider>
+  );
 });
+
+/**
+ * 文件开头的元数据：简单 `key: value` 显示成紧凑的小表格，认不出来就原样显示。不是标题，
+ * 不进目录、不影响 slug；带 `data-src-line="1"` 让滚动锚点在文档顶部也有块可认。
+ * 值一律当纯文本（React 转义），不解析、不执行。
+ */
+function FrontMatterBlock({ frontMatter }: { frontMatter: FrontMatter }): React.JSX.Element {
+  const { entries, raw } = frontMatter;
+  return (
+    <div data-testid="file-front-matter" data-src-line="1" className="border-border bg-surface-2 mb-3 rounded-lg border px-3 py-2 text-[12px]">
+      <div className="text-text-3 mb-1 text-[11px] font-medium">元数据</div>
+      {entries === null ? (
+        <pre data-testid="file-front-matter-raw" className="text-text-2 font-mono text-[12px] break-words whitespace-pre-wrap">
+          {raw}
+        </pre>
+      ) : entries.length === 0 ? (
+        <div className="text-text-3">（空）</div>
+      ) : (
+        <table className="w-full border-collapse">
+          <tbody>
+            {entries.map((e, i) => (
+              <tr key={i} data-testid="file-front-matter-row">
+                <th scope="row" className="text-text-3 py-0.5 pr-3 text-left align-top font-mono font-normal whitespace-nowrap">
+                  {e.key}
+                </th>
+                <td className="text-text-2 py-0.5 break-all">{e.value}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
