@@ -55,12 +55,44 @@ export const SIDEBAR_MIN_WIDTH = 240;
 export const SIDEBAR_MAX_WIDTH = 480;
 /** 拖到比最窄还窄这么多就折叠 */
 export const SIDEBAR_COLLAPSE_SLOP = 80;
-/** 主区至少留这么宽，窄窗口上侧栏不能把它挤没 */
-const MAIN_MIN_WIDTH = 480;
+/**
+ * 聊天栏至少这么宽：窄窗口上侧栏不能把它挤没（Sidebar 的 CSS clamp 用同一个值），
+ * 工作区也不能把它挤没（见下）。
+ */
+export const CHAT_MIN_WIDTH = 480;
+
+/**
+ * 会话页的文件工作区（聊天 | 工作区，见 components/workspace）：
+ * - 工作区至少 WORKSPACE_MIN_WIDTH，其中每个组（dockview）至少 WORKSPACE_GROUP_MIN_WIDTH；
+ * - 主区放不下「聊天最小宽 + 分隔条 + 工作区最小宽」时，工作区自动收起成「文件（N）」，
+ *   宽度恢复后还原（不改用户设的宽度）；
+ * - 侧栏照旧只保证聊天最小宽：侧栏拖宽 → 主区变窄 → 先压工作区，再自动收起它。
+ */
+export const WORKSPACE_MIN_WIDTH = 360;
+export const WORKSPACE_GROUP_MIN_WIDTH = 220;
+export const WORKSPACE_SPLITTER_WIDTH = 8;
+/** 工作区宽度的存储上限（防坏数据；实际以主区宽度夹住） */
+export const WORKSPACE_MAX_STORED_WIDTH = 8000;
 
 export function clampSidebarWidth(width: number, viewport: number): number {
-  const max = Math.max(SIDEBAR_MIN_WIDTH, Math.min(SIDEBAR_MAX_WIDTH, viewport - MAIN_MIN_WIDTH));
+  const max = Math.max(SIDEBAR_MIN_WIDTH, Math.min(SIDEBAR_MAX_WIDTH, viewport - CHAT_MIN_WIDTH));
   return Math.round(Math.min(max, Math.max(SIDEBAR_MIN_WIDTH, width)));
+}
+
+/** 主区（聊天 + 工作区）够不够同时放下两栏 */
+export function workspaceFits(mainWidth: number): boolean {
+  return mainWidth >= CHAT_MIN_WIDTH + WORKSPACE_SPLITTER_WIDTH + WORKSPACE_MIN_WIDTH;
+}
+
+/**
+ * 工作区的实际宽度：`stored` 为 null 时取主区一半；再夹到 [最小宽, 主区 − 聊天最小宽 − 分隔条]。
+ * 主区放不下两栏时（应已自动收起）返回最小宽。
+ */
+export function clampWorkspaceWidth(stored: number | null, mainWidth: number): number {
+  const max = mainWidth - CHAT_MIN_WIDTH - WORKSPACE_SPLITTER_WIDTH;
+  const want = stored ?? Math.round((mainWidth - WORKSPACE_SPLITTER_WIDTH) / 2);
+  if (max < WORKSPACE_MIN_WIDTH) return WORKSPACE_MIN_WIDTH;
+  return Math.round(Math.min(max, Math.max(WORKSPACE_MIN_WIDTH, want)));
 }
 
 /** 拖动结果：宽度（已夹住）与松手时是否应折叠 */

@@ -24,7 +24,7 @@ import { NewSessionSheetRoute, useNewSessionSheet } from '@/components/sheets/ne
 import { PlanUsageStrip } from '@/components/usage/PlanUsage.tsx';
 import { useClient, useTrine } from '@/app/runtime.ts';
 import { IS_MAC } from '@/components/composer/composer-keys.ts';
-import { SIDEBAR_MIN_WIDTH } from '@/lib/layout-prefs.ts';
+import { CHAT_MIN_WIDTH, SIDEBAR_MIN_WIDTH } from '@/lib/layout-prefs.ts';
 import { cn } from '@/lib/utils.ts';
 import { ChipLabel, StatusDot } from './StatusDot.tsx';
 import { useSidebarResize, useSidebarShortcut } from './sidebar-resize.ts';
@@ -270,8 +270,8 @@ function ExpandedSidebar({
         width === null && 'w-[300px] min-[1100px]:w-[320px]',
         resize.willCollapse && 'opacity-60',
       )}
-      // 窗口变窄时给主区至少留 480px（与 layout-prefs 的拖动上限同一口径）
-      style={width === null ? undefined : { width: `clamp(${SIDEBAR_MIN_WIDTH}px, ${width}px, 100vw - 480px)` }}
+      // 窗口变窄时给聊天栏至少留 CHAT_MIN_WIDTH（与 layout-prefs 的拖动上限同一口径；工作区放不下时自动收起）
+      style={width === null ? undefined : { width: `clamp(${SIDEBAR_MIN_WIDTH}px, ${width}px, 100vw - ${CHAT_MIN_WIDTH}px)` }}
     >
       <Brand
         trailing={

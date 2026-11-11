@@ -48,7 +48,7 @@ import { z } from 'zod';
 import type { DocStore, KvAdapter } from './adapters.ts';
 import type { HistoryState, MachineCwd, Timeline, TimelineEntry, ToolEntry } from './reducer.ts';
 import { dropPending, isSubagentTool, type PendingChildren } from './tool-tree.ts';
-import { ContentWidthSchema, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH } from './layout-prefs.ts';
+import { ContentWidthSchema, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH, WORKSPACE_MAX_STORED_WIDTH, WORKSPACE_MIN_WIDTH } from './layout-prefs.ts';
 import { BgTasksSchema, HistoryStateSchema, isHistoryEntry, isPendingEntry, PendingChildrenSchema, TimelineEntrySchema } from './reducer.ts';
 
 export const KV_IDENTITY = 'trine.identity';
@@ -192,6 +192,8 @@ export const PrefsSchema = z.object({
   contentWidth: ContentWidthSchema.catch('standard'),
   /** 单个会话覆盖的内容宽度，键为 timelineKey（machineId/sessionId）；坏的条目整张表丢弃 */
   sessionContentWidth: z.record(z.string(), ContentWidthSchema).catch({}),
+  /** PC 会话页文件工作区的宽度（px）；null = 主区一半。见 lib/layout-prefs.ts。`.catch` 同 listGroupBy */
+  workspaceWidth: z.number().int().min(WORKSPACE_MIN_WIDTH).max(WORKSPACE_MAX_STORED_WIDTH).nullable().catch(null),
 });
 export type Prefs = z.infer<typeof PrefsSchema>;
 
@@ -236,6 +238,7 @@ export function defaultPrefs(): Prefs {
     sidebarCollapsed: false,
     contentWidth: 'standard',
     sessionContentWidth: {},
+    workspaceWidth: null,
   };
 }
 
