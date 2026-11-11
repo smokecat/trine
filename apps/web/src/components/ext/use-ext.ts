@@ -10,11 +10,10 @@ import { useClient, useTrine } from '@/app/runtime.ts';
 import { copyText } from '@/lib/clipboard.ts';
 import type { TrineClient } from '@/lib/client.ts';
 import {
-  applyLocalEffects,
   EXT_CLIENT_INSTANCE,
   ExtCatalogCache,
+  executeLocalAction,
   filesOpenTarget,
-  missingLocalHandler,
   isNewer,
   mergeRecords,
   readKey,
@@ -342,8 +341,11 @@ export interface ActionContext {
   refresh: () => void;
   /** 本设备在这个位置声明的特性（webExtFeatures）；缺省 = 不声明 */
   features?: readonly ExtFeature[];
-  /** files.open 的执行器：只有会话面板、agent 支持文件查看时给 */
-  filesOpen?: (effect: ExtFilesOpenEffect) => void;
+  /**
+   * 取**当前**的 files.open 执行器（只有会话面板、agent 支持文件查看时给）。是 getter：结果可能
+   * 在处理器已经没了之后才回来，执行时按那一刻的能力判断。
+   */
+  filesOpen?: () => ((effect: ExtFilesOpenEffect) => void) | undefined;
 }
 
 /** 执行一个视图动作（local 或 token） */
@@ -363,34 +365,27 @@ export function useExtAction(): (action: { local?: readonly ExtLocalEffect[]; to
       const origin = window.location.pathname;
       const stillHere = (): boolean => window.location.pathname === origin;
       const features = ctx.features ?? [];
-      const apply = async (effects: readonly ExtLocalEffect[]): Promise<void> => {
-        // 整个动作一起判断：有本页执行不了的效果（旧缓存、处理器没了）就一条都不执行，不只做一部分
-        const missing = missingLocalHandler(effects, ctx);
-        if (missing !== undefined) {
-          toast.error(`「${action.label}」需要 ${missing}，当前页面不支持，没有执行`);
-          return;
-        }
-        // 绑定发起会话：带 files.open 的动作回来时已在别的会话，整条不执行（不打开、也不插入到别处）
-        if (effects.some((e) => e.type === 'files.open') && filesOpenTarget(origin, window.location.pathname) === 'drop') {
-          toast.info(`已离开发起「${action.label}」的会话，没有打开`);
-          return;
-        }
-        // 同一个动作的多段插入合成一次（逐段插入会被 React 合批成只剩最后一段）
-        const inserts: string[] = [];
-        // 多个 files.open 只打开最后一个：抽屉是单视图，逐个打开只会多留几条历史
-        let open: ExtFilesOpenEffect | undefined;
-        await applyLocalEffects(effects, {
-          insert: (text) => inserts.push(text),
-          copy: copyWithToast,
-          refresh: ctx.refresh,
-          ...(ctx.filesOpen === undefined ? {} : { filesOpen: (e: ExtFilesOpenEffect) => (open = e) }),
+      const apply = (effects: readonly ExtLocalEffect[]): Promise<void> =>
+        executeLocalAction(effects, {
+          // 每一步都取当前的处理器（ctx.filesOpen 是 getter）：等待期间处理器没了就不再调用旧的
+          handlers: () => {
+            const filesOpen = ctx.filesOpen?.();
+            return {
+              insert: (text) => {
+                if (ctx.insert !== undefined && stillHere()) ctx.insert(text);
+                else void copyWithToast(text);
+              },
+              copy: copyWithToast,
+              refresh: ctx.refresh,
+              ...(filesOpen === undefined ? {} : { filesOpen }),
+            };
+          },
+          stillHere: () => filesOpenTarget(origin, window.location.pathname) === 'open',
+          blocked: (reason, detail) => {
+            if (reason === 'missing') toast.error(`「${action.label}」需要 ${detail ?? '新特性'}，当前页面不支持，没有执行`);
+            else toast.info(`已离开发起「${action.label}」的会话，剩下的没有执行`);
+          },
         });
-        if (open !== undefined && ctx.filesOpen !== undefined) ctx.filesOpen(open);
-        if (inserts.length === 0) return;
-        const text = inserts.join('\n');
-        if (ctx.insert !== undefined && stillHere()) ctx.insert(text);
-        else void copyWithToast(text);
-      };
       if (action.local !== undefined && action.token === undefined) {
         await apply(action.local);
         return;

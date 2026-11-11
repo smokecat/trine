@@ -877,6 +877,70 @@ describe('特性协商（files.open）', () => {
     expect(res.view).toBeUndefined();
   });
 
+  test('租约归属：旧实例迟到的退订不删新实例同键的租约', async () => {
+    const h = await harness();
+    h.outputs.set('view', { view: FILES_VIEW });
+    await read(h, 'd1', { features: ['files.open'], client: 'A', watch: { ttlMs: 60_000 } });
+    await read(h, 'd1', { features: ['files.open'], client: 'B', watch: { ttlMs: 60_000 } });
+    expect(h.service.watchCount).toBe(1);
+    await read(h, 'd1', { features: ['files.open'], client: 'A', watch: { ttlMs: 0 } });
+    expect(h.service.watchCount).toBe(1);
+    // 本实例自己的退订照常生效
+    await read(h, 'd1', { features: ['files.open'], client: 'B', watch: { ttlMs: 0 } });
+    expect(h.service.watchCount).toBe(0);
+  });
+
+  test('空实例（旧 web）与非空实例互相切换都会清理旧租约', async () => {
+    const h = await harness();
+    h.outputs.set('view', { view: FILES_VIEW });
+    await read(h, 'd1', { watch: { ttlMs: 60_000 } });
+    await read(h, 'd1', { features: ['files.open'], client: 'B', watch: { ttlMs: 60_000 } });
+    expect(h.service.watchCount).toBe(1);
+    await read(h, 'd1', { watch: { ttlMs: 60_000 } });
+    expect(h.service.watchCount).toBe(1);
+  });
+
+  test('token 只认签发实例：同设备另一个实例拿来 prepare → stale，不执行', async () => {
+    const h = await harness({}, { trust: 'full' });
+    h.outputs.set('view', { view: FILES_VIEW });
+    h.outputs.set('action', { ok: true });
+    await read(h, 'd1', { client: 'A' });
+    const token = tokenOf(h, 'archive');
+    await h.service.prepare('d1', { type: 'ext.action.prepare', ts: 1, seq: 1, dir: 'c2a', reqId: 'p', invocationId: 'inv-x', token, client: 'B' } as never);
+    expect(h.last('ext.action.result')).toMatchObject({ ok: false, error: { code: 'stale' } });
+    expect(h.runs.filter((r) => r.op === 'action')).toHaveLength(0);
+  });
+
+  test('迟到的读取不给已被接管的旧实例签发 token', async () => {
+    const h = await harness({}, { trust: 'full' });
+    let release!: () => void;
+    h.outputs.set('view', () => new Promise((r) => (release = () => r({ view: FILES_VIEW }))));
+    const slow = read(h, 'd1', { client: 'A', reqId: 'slow' });
+    await Bun.sleep(0);
+    h.outputs.set('view', { view: VIEW });
+    await read(h, 'd1', { client: 'B', reqId: 'new', force: true });
+    const before = h.service.tokenCount;
+    release();
+    await slow;
+    expect(h.service.tokenCount).toBe(before);
+    const late = h.sent.map((s) => s.body as { reqId?: string; view?: ExtRawView }).find((b) => b.reqId === 'slow');
+    expect(JSON.stringify(late?.view ?? {})).not.toContain('"token"');
+  });
+
+  test('effectsDropped：扩展 message 很长时先截断它，固定警告完整保留', async () => {
+    const h = await harness({}, { trust: 'full' });
+    h.outputs.set('view', { view: FILES_VIEW });
+    h.outputs.set('action', { ok: true, message: '长'.repeat(500), effects: [{ type: 'files.open', path: '/work/repo/b.md' }] });
+    await read(h);
+    await prepare(h, tokenOf(h, 'archive'));
+    const res = h.last('ext.action.result');
+    expect(res.effectsDropped).toBe(true);
+    expect(res.message!.length).toBeLessThanOrEqual(500);
+    expect(res.message).toContain('没有回滚');
+    expect(res.message).toContain('请勿直接重试');
+    expect(res.message!.startsWith('长')).toBe(true);
+  });
+
   test('应答带有效特性集（结果身份的一部分）；空集时省略', async () => {
     const h = await harness();
     h.outputs.set('view', { view: FILES_VIEW });

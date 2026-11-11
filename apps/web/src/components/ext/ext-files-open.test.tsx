@@ -284,6 +284,19 @@ describe('会话面板 · files.open', () => {
     expect(inserted).toEqual([]);
   });
 
+  test('token 动作：等待期间处理器没了（agent 关了文件查看等）→ 结果回来时不调用旧处理器', async () => {
+    const fake = setup();
+    const opened: ExtFilesOpenEffect[] = [];
+    const panel = await mount((e) => opened.push(e));
+    act(() => $('[data-action-id="later"]')!.click());
+    await tick();
+    panel.setHandler(undefined);
+    fake.releasePrepare!();
+    await tick();
+    await tick();
+    expect(opened).toEqual([]);
+  });
+
   test('token 动作：还在原会话 → 打开', async () => {
     const fake = setup();
     const opened: ExtFilesOpenEffect[] = [];

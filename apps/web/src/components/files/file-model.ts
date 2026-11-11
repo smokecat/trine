@@ -150,9 +150,21 @@ export function trustRisk(path: string, home: string | undefined): 'home' | 'abo
  * 能不能读仍由 agent 判断。
  */
 export function absoluteFilePath(path: string, cwd: string | undefined, home: string | undefined): string | undefined {
-  if (path.startsWith('/') || path === '~' || path.startsWith('~/')) return normalizeDirInput(path, home);
-  if (cwd === undefined || !cwd.startsWith('/')) return undefined;
-  return normalizeDirInput(`${cwd}/${path}`, home);
+  let abs: string;
+  if (path === '~' || path.startsWith('~/')) {
+    if (home === undefined || home === '') return undefined;
+    abs = `${home}${path.slice(1)}`;
+  } else if (path.startsWith('/')) abs = path;
+  else if (cwd !== undefined && cwd.startsWith('/')) abs = `${cwd}/${path}`;
+  else return undefined;
+  // 与 agent 一样按字面处理：**不 trim**，`.. ` 是名字叫「.. 」的条目，不是上一级
+  const parts: string[] = [];
+  for (const seg of abs.split('/')) {
+    if (seg === '' || seg === '.') continue;
+    if (seg === '..') parts.pop();
+    else parts.push(seg);
+  }
+  return `/${parts.join('/')}`;
 }
 
 export function parentDir(path: string): string {

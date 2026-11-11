@@ -109,6 +109,13 @@ describe('链接与路径', () => {
     expect(absoluteFilePath('~/a.md', '/w', undefined)).toBeUndefined();
   });
 
+  test('absoluteFilePath 保留字面空白：「.. 」是名字不是上一级', () => {
+    expect(absoluteFilePath('~/docs/.. ', '/w', '/home/u')).toBe('/home/u/docs/.. ');
+    expect(absoluteFilePath(' a.md', '/w/repo', undefined)).toBe('/w/repo/ a.md');
+    // 父目录照字面算：浏览的是 /home/u/docs，不是 /home
+    expect(parentDir(absoluteFilePath('~/docs/.. ', '/w', '/home/u')!)).toBe('/home/u/docs');
+  });
+
   test('normalizeDirInput', () => {
     expect(normalizeDirInput('~', '/home/u')).toBe('/home/u');
     expect(normalizeDirInput('~/..', '/home/u')).toBe('/home');

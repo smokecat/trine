@@ -3,6 +3,7 @@ import type { ExtPlan, ExtRecord } from '@trine/core';
 import {
   applyLocalEffects,
   ExtCatalogCache,
+  executeLocalAction,
   extensionsFor,
   filesOpenTarget,
   isNewer,
@@ -153,6 +154,63 @@ describe('特性声明与会话绑定', () => {
     expect(responseKey('m', res(['files.open']))).toBe(readKey({ ...t, features: ['files.open'] }));
     // 旧 agent 不回 features：与不声明时的键一致
     expect(responseKey('m', res())).toBe(readKey(t));
+  });
+
+  describe('executeLocalAction', () => {
+    const make = (state: { here: boolean; filesOpen: boolean; onCopy?: () => void }) => {
+      const calls: string[] = [];
+      const deps = {
+        handlers: () => ({
+          insert: (t: string) => calls.push(`insert:${t}`),
+          copy: async (t: string) => {
+            calls.push(`copy:${t}`);
+            await Promise.resolve();
+            state.onCopy?.();
+            return true;
+          },
+          refresh: () => calls.push('refresh'),
+          ...(state.filesOpen ? { filesOpen: (e: { path: string }) => calls.push(`open:${e.path}`) } : {}),
+        }),
+        stillHere: () => state.here,
+        blocked: (reason: string, detail?: string) => calls.push(`blocked:${reason}${detail === undefined ? '' : `:${detail}`}`),
+      };
+      return { calls, deps };
+    };
+
+    test('正常：复制、打开（最后一个）、插入合并', async () => {
+      const { calls, deps } = make({ here: true, filesOpen: true });
+      await executeLocalAction(
+        [
+          { type: 'copy', text: 'c' },
+          { type: 'files.open', path: '/a' },
+          { type: 'prompt.insert', text: 'x' },
+          { type: 'files.open', path: '/b' },
+          { type: 'prompt.insert', text: 'y' },
+        ],
+        deps,
+      );
+      expect(calls).toEqual(['copy:c', 'open:/b', 'insert:x\ny']);
+    });
+
+    test('复制等待期间切到别的会话：丢弃剩余效果，不打开', async () => {
+      const state = { here: true, filesOpen: true, onCopy: () => (state.here = false) };
+      const { calls, deps } = make(state);
+      await executeLocalAction([{ type: 'copy', text: 'c' }, { type: 'files.open', path: '/a' }, { type: 'prompt.insert', text: 'x' }], deps);
+      expect(calls).toEqual(['copy:c', 'blocked:left']);
+    });
+
+    test('等待期间处理器没了：按当前能力判断，不调用旧的', async () => {
+      const state = { here: true, filesOpen: true, onCopy: () => (state.filesOpen = false) };
+      const { calls, deps } = make(state);
+      await executeLocalAction([{ type: 'copy', text: 'c' }, { type: 'files.open', path: '/a' }], deps);
+      expect(calls).toEqual(['copy:c', 'blocked:missing:files.open']);
+    });
+
+    test('一开始就缺处理器：整条不执行（插入也不做）', async () => {
+      const { calls, deps } = make({ here: true, filesOpen: false });
+      await executeLocalAction([{ type: 'prompt.insert', text: 'x' }, { type: 'files.open', path: '/a' }], deps);
+      expect(calls).toEqual(['blocked:missing:files.open']);
+    });
   });
 
   test('整条动作检查：带 files.open 但本页没有处理器 → 整条不执行', () => {

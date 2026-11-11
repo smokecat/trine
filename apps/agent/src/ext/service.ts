@@ -408,11 +408,15 @@ export class ExtensionService {
   async read(deviceId: string, event: ReadEvent): Promise<void> {
     const leaseKey = this.#leaseKey(deviceId, event);
     if (event.watch?.ttlMs === 0) {
-      // 退订不算「接管」：页面卸载时发出的退订可能晚于新实例的请求到达
-      this.#leases.delete(leaseKey);
+      // 退订不算「接管」：页面卸载时发出的退订可能晚于新实例的请求到达。只删属于发起实例的租约，
+      // 旧实例迟到的退订不能删掉新实例同键的租约
+      if (this.#leases.get(leaseKey)?.instance === (event.client ?? '')) this.#leases.delete(leaseKey);
     } else {
       const instance = this.#touchInstance(deviceId, event.client);
       if (event.watch !== undefined) {
+        // 续租：同键的租约若属于别的实例（理论上接管时已清掉），先作废再按本实例建
+        const existing = this.#leases.get(leaseKey);
+        if (existing !== undefined && existing.instance !== instance) this.#leases.delete(leaseKey);
         const own = [...this.#leases.values()].filter((l) => l.deviceId === deviceId).length;
         if (this.#leases.has(leaseKey) || own < MAX_WATCHES_PER_DEVICE) {
           this.#leases.set(leaseKey, { deviceId, instance, read: { ...event, force: false }, expiresAt: this.#now() + event.watch.ttlMs });
@@ -621,6 +625,8 @@ export class ExtensionService {
       if (pointEffects(point) !== undefined) return undefined;
       if (this.#registry.decide(ext.id, 'invoke') === 'deny') return undefined;
     }
+    // 迟到的读取：设备已被别的实例接管，不再给旧实例签发 token（动作不给）
+    if ((this.#instances.get(target.deviceId) ?? '') !== target.instance) return undefined;
     const token = this.#issue({
       ext: ext.id,
       generation: ext.generation,
@@ -683,7 +689,8 @@ export class ExtensionService {
     const issued = this.#tokens.get(event.token);
     // token 一次性：取到就删，失败也不留（重新点击会拿到新视图里的新 token）
     this.#tokens.delete(event.token);
-    if (issued === undefined || issued.deviceId !== deviceId || issued.expiresAt <= this.#now()) {
+    // token 只认签发给的页面实例：同设备的另一个实例（接管后）拿到也不能用
+    if (issued === undefined || issued.deviceId !== deviceId || issued.instance !== instance || issued.expiresAt <= this.#now()) {
       reply({ ok: false, error: { code: 'stale', message: '这个操作已过期，请刷新后重试' } });
       return;
     }
@@ -914,7 +921,7 @@ export class ExtensionService {
       local,
       view,
       viewRev,
-      message: dropped ? [parsed.message, droppedNote].filter((m) => m !== undefined && m !== '').join('；').slice(0, 500) : parsed.message,
+      message: dropped ? withDroppedNote(parsed.message, droppedNote) : parsed.message,
       newSession,
       extraConfirm: false,
       ...(dropped ? { effectsDropped: true } : {}),
@@ -1304,6 +1311,19 @@ function sessionContext(meta: SessionMeta, ext: string): Record<string, unknown>
 
 function cacheKey(ext: LoadedExtension, input: unknown): string {
   return `${ext.id}\n${ext.generation}\n${createHash('sha256').update(JSON.stringify(input)).digest('hex')}`;
+}
+
+/** 结果 message 上限（ExtActionResultSchema.message） */
+const RESULT_MESSAGE_MAX = 500;
+
+/** 「已执行、勿重试」的固定警告优先保留：先截断扩展自己的说明，再接上警告 */
+export function withDroppedNote(message: string | undefined, note: string): string {
+  const fixed = note.slice(0, RESULT_MESSAGE_MAX);
+  if (message === undefined || message === '') return fixed;
+  const room = RESULT_MESSAGE_MAX - fixed.length - 1;
+  if (room <= 0) return fixed;
+  const head = message.length > room ? `${message.slice(0, Math.max(0, room - 1))}…` : message;
+  return `${head}；${fixed}`;
 }
 
 function unsupportedFeature(effects: readonly { type: string }[], features: readonly string[]): ExtFailure {

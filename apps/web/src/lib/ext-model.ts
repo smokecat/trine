@@ -232,6 +232,47 @@ export function missingLocalHandler(effects: readonly ExtLocalEffect[], handlers
   return effects.some((e) => e.type === 'files.open') && handlers.filesOpen === undefined ? 'files.open' : undefined;
 }
 
+export interface LocalActionDeps {
+  /** **当前**的执行器：每一步都重新取，不用点击时捕获的（处理器可能在等待期间没了） */
+  handlers: () => LocalEffectHandlers;
+  /** 浏览器还在发起动作的会话（地址里含机器与会话） */
+  stillHere: () => boolean;
+  /** 整条或剩余部分没执行：missing = 本页没有这个特性的处理器；left = 已离开发起的会话 */
+  blocked: (reason: 'missing' | 'left', detail?: string) => void;
+}
+
+/**
+ * 执行一个动作的本地效果：
+ * - 先按当前处理器检查**整个动作**，缺特性就一条都不执行；
+ * - 带 files.open 的动作绑定发起会话：开始前、每个 await 之后、打开前都复查，离开了就丢弃剩余效果；
+ * - 同一动作的多段插入合成一次（逐段插入会被 React 合批成只剩最后一段）；
+ * - 多个 files.open 只打开最后一个（抽屉是单视图，逐个打开只会多留几条历史）。
+ */
+export async function executeLocalAction(effects: readonly ExtLocalEffect[], deps: LocalActionDeps): Promise<void> {
+  const bound = effects.some((e) => e.type === 'files.open');
+  const missing = missingLocalHandler(effects, deps.handlers());
+  if (missing !== undefined) return deps.blocked('missing', missing);
+  if (bound && !deps.stillHere()) return deps.blocked('left');
+  const inserts: string[] = [];
+  let open: ExtFilesOpenEffect | undefined;
+  for (const effect of effects) {
+    if (effect.type === 'prompt.insert') inserts.push(effect.text);
+    else if (effect.type === 'files.open') open = effect;
+    else if (effect.type === 'refresh') deps.handlers().refresh();
+    else {
+      await deps.handlers().copy(effect.text);
+      if (bound && !deps.stillHere()) return deps.blocked('left');
+    }
+  }
+  if (open !== undefined) {
+    if (!deps.stillHere()) return deps.blocked('left');
+    const filesOpen = deps.handlers().filesOpen;
+    if (filesOpen === undefined) return deps.blocked('missing', 'files.open');
+    filesOpen(open);
+  }
+  if (inserts.length > 0) deps.handlers().insert(inserts.join('\n'));
+}
+
 /**
  * files.open 绑定发起的会话：结果回来时浏览器已经在别的会话（或别的页面）就丢掉，
  * 不把扩展要打开的路径打开到另一个会话里（文件查看按会话鉴权、相对路径按会话 cwd 解析）。

@@ -4,7 +4,7 @@
  * - 入口：有关联时显示第一个提供徽章的扩展给的徽章（`▤ 关联名 · 状态`），否则一个图标按钮。
  * - 面板：桌面右侧抽屉、手机底部 sheet；多个扩展用 tab 切换。打开期间持有订阅，agent 有变化就推。
  */
-import { useMemo, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { BlocksIcon, RefreshCwIcon } from 'lucide-react';
 import type { ExtCatalogItem, ExtFilesOpenEffect, ExtWireAction, ExtWireItem, SessionMeta } from '@trine/core';
@@ -102,6 +102,19 @@ export function ExtPanelSheet({
   const panels = useMemo(() => extensionsFor(catalog ?? [], point), [catalog, point]);
   const [active, setActive] = useState<string | undefined>(undefined);
   const ext = panels.find((p) => p.id === active) ?? panels[0];
+  // 当前的 files.open 执行器：面板关着也随会话页更新。动作结果可能在处理器没了之后才回来，
+  // 执行时经 getter 读这一刻的值，而不是点击时捕获的
+  const agentFilesOpen = useTrine((s) => s.machines[machineId]?.info?.extensions?.features?.includes('files.open') === true);
+  const filesOpenRef = useRef<((effect: ExtFilesOpenEffect) => void) | undefined>(undefined);
+  filesOpenRef.current =
+    onFilesOpen === undefined || sessionId === undefined || !agentFilesOpen
+      ? undefined
+      : (effect) => {
+          // 先关面板，文件抽屉 / 工作区才不会被盖住
+          onOpenChange(false);
+          onFilesOpen(effect);
+        };
+  const getFilesOpen = useCallback(() => filesOpenRef.current, []);
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent
@@ -143,15 +156,7 @@ export function ExtPanelSheet({
                       onOpenChange(false);
                     },
                   })}
-              {...(onFilesOpen === undefined || sessionId === undefined
-                ? {}
-                : {
-                    onFilesOpen: (effect: ExtFilesOpenEffect) => {
-                      // 先关面板，文件抽屉 / 工作区才不会被盖住
-                      onOpenChange(false);
-                      onFilesOpen(effect);
-                    },
-                  })}
+              {...(filesOpenRef.current === undefined ? {} : { getFilesOpen })}
             />
           )}
         </div>
@@ -167,7 +172,7 @@ function PanelBody({
   cwd,
   meta,
   onInsert,
-  onFilesOpen,
+  getFilesOpen,
 }: {
   ext: ExtCatalogItem;
   machineId: string;
@@ -175,14 +180,16 @@ function PanelBody({
   cwd?: string;
   meta: SessionMeta | undefined;
   onInsert?: (text: string) => void;
-  onFilesOpen?: (effect: ExtFilesOpenEffect) => void;
+  /** 当前的 files.open 执行器（getter）；给了才声明 files.open */
+  getFilesOpen?: () => ((effect: ExtFilesOpenEffect) => void) | undefined;
 }): React.JSX.Element {
   const client = useClient();
   const point = sessionId !== undefined ? 'sessionPanel' : 'workspacePanel';
   const agentFeatures = useTrine((s) => s.machines[machineId]?.info?.extensions?.features);
+  const hasFilesOpen = getFilesOpen !== undefined;
   const features = useMemo(
-    () => webExtFeatures(point, onFilesOpen === undefined ? {} : { filesOpen: true }, agentFeatures),
-    [point, onFilesOpen === undefined, agentFeatures],
+    () => webExtFeatures(point, hasFilesOpen ? { filesOpen: true } : {}, agentFeatures),
+    [point, hasFilesOpen, agentFeatures],
   );
   const read = useExtRead(
     sessionId !== undefined
@@ -209,7 +216,7 @@ function PanelBody({
         ...(onInsert === undefined ? {} : { insert: onInsert }),
         refresh: read.refresh,
         features,
-        ...(onFilesOpen === undefined || !features.includes('files.open') ? {} : { filesOpen: onFilesOpen }),
+        ...(getFilesOpen === undefined ? {} : { filesOpen: getFilesOpen }),
       },
     ).finally(() => setBusy(null));
   };
