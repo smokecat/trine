@@ -49,6 +49,11 @@ function setup(options: { roots?: FilesRoot[] | undefined; trusted?: string[] } 
       if (root === undefined) throw new FsRequestError('denied', '不在可浏览的范围内（会话目录或信任目录）', 'out_of_scope');
       return { path: p, root, entries: [{ name: 'a.md', type: 'file', size: 1, mtime: 1 }], truncated: false };
     },
+    openFile: async (_m: string, _s: string, path: string) => {
+      if (path.split('/').includes('.ssh')) throw new FsRequestError('denied', '密钥类文件不提供查看', 'sensitive');
+      // 只模拟拒绝：能打开的文件不在这组用例里
+      throw new FsRequestError('denied', '不在可浏览的范围内（会话目录或信任目录）', 'out_of_scope');
+    },
     setDirTrusted: async (_m: string, path: string, on: boolean) => {
       calls.trusted.push([path, on]);
       if (on) trusted.add(path);
@@ -82,28 +87,28 @@ const tick = (): Promise<void> => act(() => new Promise<void>((r) => setTimeout(
 const $ = (id: string): HTMLElement | null => document.querySelector(`[data-testid="${id}"]`);
 const $$ = (id: string): HTMLElement[] => [...document.querySelectorAll<HTMLElement>(`[data-testid="${id}"]`)];
 
-/** 面板受控：onNavigate 改 path 后重渲染 */
-async function mountPanel(initial: string | undefined): Promise<{ nav: (string | undefined)[] }> {
+/** 面板受控：onNavigate 改 path 后重渲染；`file` = 先打开文件 */
+async function mountPanel(initial: string | undefined, file?: string): Promise<{ nav: (string | undefined)[] }> {
   const nav: (string | undefined)[] = [];
   host = document.createElement('div');
   document.body.appendChild(host);
   root = createRoot(host);
-  const render = (path: string | undefined): void =>
+  const render = (path: string | undefined, filePath?: string): void =>
     root!.render(
       <MemoryRouter>
         <FilePanel
           machineId={MACHINE}
           sessionId="s1"
-          view={{ kind: 'dir', ...(path === undefined ? {} : { path }) }}
+          view={filePath !== undefined ? { kind: 'file', path: filePath } : { kind: 'dir', ...(path === undefined ? {} : { path }) }}
           onNavigate={(v) => {
             nav.push(v.path);
-            act(() => render(v.path));
+            act(() => (v.kind === 'file' ? render(undefined, v.path) : render(v.path)));
           }}
           onClose={() => {}}
         />
       </MemoryRouter>,
     );
-  act(() => render(initial));
+  act(() => render(initial, file));
   await tick();
   return { nav };
 }
@@ -150,6 +155,31 @@ describe('文件面板 · 往上浏览', () => {
     await mountPanel('/home/u/.ssh');
     expect($('file-out-of-scope')).toBeNull();
     expect($('file-error')?.textContent).toContain('密钥类');
+  });
+
+  test('范围外的文件：「浏览所在目录」→ 目录的范围外说明与信任入口（不自动信任）', async () => {
+    const calls = setup();
+    const { nav } = await mountPanel(undefined, '/srv/notes/task/README.md');
+    expect($('file-error')).not.toBeNull();
+    act(() => $('file-browse-parent')!.click());
+    await tick();
+    expect(nav).toEqual(['/srv/notes/task']);
+    expect($('file-out-of-scope')).not.toBeNull();
+    expect($('file-trust-open')).not.toBeNull();
+    expect(calls.trusted).toEqual([]);
+  });
+
+  test('密钥类文件、相对路径：只报错，没有「浏览所在目录」', async () => {
+    setup();
+    await mountPanel(undefined, '/home/u/.ssh/id_rsa');
+    expect($('file-error')?.textContent).toContain('密钥类');
+    expect($('file-browse-parent')).toBeNull();
+    act(() => root?.unmount());
+    host?.remove();
+    root = null;
+    await mountPanel(undefined, 'docs/a.md');
+    expect($('file-error')).not.toBeNull();
+    expect($('file-browse-parent')).toBeNull();
   });
 
   test('旧 agent（没有 roots）：范围外照样说明，但没有信任入口和位置菜单', async () => {

@@ -885,6 +885,13 @@ export function ChatView(): React.JSX.Element {
         sessionId={sessionId}
         meta={meta}
         onInsert={(text) => setInsertRequest((r) => ({ id: (r?.id ?? 0) + 1, text }))}
+        // 扩展的 files.open 走统一的打开 intent（auto：工作区展开时进工作区，否则抽屉）；
+        // agent 不支持文件查看时不给，面板也就不声明这个特性
+        onFilesOpen={
+          fileLinks === null
+            ? undefined
+            : (effect) => fileLinks.open(effect.dir === true ? { dir: true, path: effect.path, target: 'auto' } : { path: effect.path, target: 'auto' })
+        }
       />
 
       <RewindDialog

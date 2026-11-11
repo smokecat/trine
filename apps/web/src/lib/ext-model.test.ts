@@ -4,6 +4,7 @@ import {
   applyLocalEffects,
   ExtCatalogCache,
   extensionsFor,
+  filesOpenTarget,
   isNewer,
   mergeRecords,
   placeRecords,
@@ -13,6 +14,7 @@ import {
   runTokenAction,
   supportsExtensions,
   supportsExtRecords,
+  webExtFeatures,
   type ExtActionDeps,
   type ExtActionPlanEvent,
   type ExtActionResult,
@@ -116,6 +118,32 @@ describe('applyLocalEffects', () => {
       },
     );
     expect(calls).toEqual(['insert:a', 'copy:b', 'refresh']);
+  });
+
+  test('files.open 交给 filesOpen；没有处理器时忽略', async () => {
+    const opened: unknown[] = [];
+    const handlers = { insert: () => {}, copy: async () => true, refresh: () => {} };
+    await applyLocalEffects([{ type: 'files.open', path: '/w/t', dir: true }], { ...handlers, filesOpen: (e) => opened.push(e) });
+    expect(opened).toEqual([{ type: 'files.open', path: '/w/t', dir: true }]);
+    await applyLocalEffects([{ type: 'files.open', path: '/w/a.md' }], handlers);
+    expect(opened).toHaveLength(1);
+  });
+});
+
+describe('特性声明与会话绑定', () => {
+  test('只有会话面板且有 filesOpen 处理器时声明 files.open', () => {
+    const fn = (): void => {};
+    expect(webExtFeatures('sessionPanel', { filesOpen: fn })).toEqual(['files.open']);
+    expect(webExtFeatures('sessionPanel', {})).toEqual([]);
+    for (const point of ['workspacePanel', 'composerAction', 'newSession', 'linkPicker'] as const) {
+      expect(webExtFeatures(point, { filesOpen: fn })).toEqual([]);
+    }
+  });
+
+  test('迟到的 files.open：浏览器已换到别的会话就丢掉', () => {
+    expect(filesOpenTarget('/s/m1/s1', '/s/m1/s1')).toBe('open');
+    expect(filesOpenTarget('/s/m1/s1', '/s/m1/s2')).toBe('drop');
+    expect(filesOpenTarget('/s/m1/s1', '/')).toBe('drop');
   });
 });
 

@@ -7,12 +7,12 @@
 import { useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import { BlocksIcon, RefreshCwIcon } from 'lucide-react';
-import type { ExtCatalogItem, ExtWireAction, ExtWireItem, SessionMeta } from '@trine/core';
+import type { ExtCatalogItem, ExtFilesOpenEffect, ExtWireAction, ExtWireItem, SessionMeta } from '@trine/core';
 import { Button } from '@/components/ui/button.tsx';
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet.tsx';
 import { useIsDesktop } from '@/components/shell/use-media-query.ts';
 import { useClient, useTrine } from '@/app/runtime.ts';
-import { extensionsFor } from '@/lib/ext-model.ts';
+import { extensionsFor, webExtFeatures } from '@/lib/ext-model.ts';
 import { cn } from '@/lib/utils.ts';
 import { ExtBadgeChip, ExtView } from './ExtView.tsx';
 import { updateLinks, useExtAction, useExtCatalog, useExtRead } from './use-ext.ts';
@@ -78,6 +78,7 @@ export function ExtPanelSheet({
   cwd,
   meta,
   onInsert,
+  onFilesOpen,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -89,6 +90,11 @@ export function ExtPanelSheet({
   meta?: SessionMeta | undefined;
   /** 插入到输入框；工作区面板没有输入框，插入类动作退化为复制 */
   onInsert?: (text: string) => void;
+  /**
+   * 扩展的 files.open：会话页在 agent 支持文件查看时给。给了才向 agent 声明 files.open 特性；
+   * 只对会话面板生效（工作区面板没有会话，文件查看无从鉴权）。
+   */
+  onFilesOpen?: ((effect: ExtFilesOpenEffect) => void) | undefined;
 }): React.JSX.Element {
   const desktop = useIsDesktop();
   const catalog = useExtCatalog(machineId);
@@ -137,6 +143,15 @@ export function ExtPanelSheet({
                       onOpenChange(false);
                     },
                   })}
+              {...(onFilesOpen === undefined || sessionId === undefined
+                ? {}
+                : {
+                    onFilesOpen: (effect: ExtFilesOpenEffect) => {
+                      // 先关面板，文件抽屉 / 工作区才不会被盖住
+                      onOpenChange(false);
+                      onFilesOpen(effect);
+                    },
+                  })}
             />
           )}
         </div>
@@ -152,6 +167,7 @@ function PanelBody({
   cwd,
   meta,
   onInsert,
+  onFilesOpen,
 }: {
   ext: ExtCatalogItem;
   machineId: string;
@@ -159,11 +175,14 @@ function PanelBody({
   cwd?: string;
   meta: SessionMeta | undefined;
   onInsert?: (text: string) => void;
+  onFilesOpen?: (effect: ExtFilesOpenEffect) => void;
 }): React.JSX.Element {
   const client = useClient();
+  const point = sessionId !== undefined ? 'sessionPanel' : 'workspacePanel';
+  const features = webExtFeatures(point, { ...(onFilesOpen === undefined ? {} : { filesOpen: onFilesOpen }) });
   const read = useExtRead(
     sessionId !== undefined
-      ? { machineId, ext: ext.id, op: 'view', point: 'sessionPanel', targetSessionId: sessionId }
+      ? { machineId, ext: ext.id, op: 'view', point: 'sessionPanel', targetSessionId: sessionId, features }
       : { machineId, ext: ext.id, op: 'view', point: 'workspacePanel', cwd: cwd ?? '' },
     { watch: true },
   );
@@ -185,6 +204,8 @@ function PanelBody({
         ...(sessionId === undefined ? {} : { sessionId }),
         ...(onInsert === undefined ? {} : { insert: onInsert }),
         refresh: read.refresh,
+        point,
+        ...(onFilesOpen === undefined || point !== 'sessionPanel' ? {} : { filesOpen: onFilesOpen }),
       },
     ).finally(() => setBusy(null));
   };

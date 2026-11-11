@@ -45,6 +45,7 @@ import {
   EXT_RECORDS_PER_SESSION,
   ExtBadgeSchema,
   ExtErrorSchema,
+  ExtFeatureListSchema,
   ExtIdSchema,
   ExtLinkRefSchema,
   ExtLocalEffectSchema,
@@ -1507,6 +1508,11 @@ export const ExtReadSchema = z.object({
   watch: z.object({ ttlMs: z.number().int().min(0).max(EXT_WATCH_MAX_TTL_MS) }).optional(),
   /** force：绕过缓存（手动刷新） */
   force: z.boolean().optional(),
+  /**
+   * 本 web 能执行的特性（如 `files.open`）。agent 取与自己支持、贡献点可执行的交集，
+   * 作为 context.features 给扩展，并过滤输出；缺省 = 空（旧 web）。旧 agent 忽略此字段。
+   */
+  features: ExtFeatureListSchema.optional(),
 });
 
 /** agent → 请求设备：读取结果（带 reqId = 应答；订阅期间的推送不带） */
@@ -1540,6 +1546,8 @@ export const ExtActionPrepareSchema = z.object({
   invocationId: z.string().min(1).max(64),
   token: z.string().min(1).max(128),
   newSession: NewSessionDefaultsSchema.optional(),
+  /** 发起设备此刻能执行的特性：与 token 签发时的有效集再取交集（见 ext.read.features） */
+  features: ExtFeatureListSchema.optional(),
 });
 
 /** agent → 请求设备：需要用户确认的执行计划（确认的就是这里的内容，commit 不会重新计算） */

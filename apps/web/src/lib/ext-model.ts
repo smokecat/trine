@@ -11,6 +11,8 @@ import {
   parseExtCatalog,
   type AgentToClientEvent,
   type ExtCatalogItem,
+  type ExtFeature,
+  type ExtFilesOpenEffect,
   type ExtLocalEffect,
   type ExtPlan,
   type ExtPoint,
@@ -103,6 +105,8 @@ export interface ReadTarget {
   point: ExtPoint;
   targetSessionId?: string;
   cwd?: string;
+  /** 本设备声明的特性（webExtFeatures）；不进 readKey：同一目标只有一个读者（会话面板） */
+  features?: readonly ExtFeature[];
 }
 
 export function readKey(t: ReadTarget): string {
@@ -176,14 +180,36 @@ export interface LocalEffectHandlers {
   insert: (text: string) => void;
   copy: (text: string) => Promise<boolean>;
   refresh: () => void;
+  /**
+   * 打开文件 / 浏览目录（files.open）。只在会话页、agent 支持文件查看时提供；不提供时本设备
+   * 也不声明 files.open 特性（agent 就不会给带它的动作），万一收到也忽略。
+   */
+  filesOpen?: (effect: ExtFilesOpenEffect) => void;
 }
 
 export async function applyLocalEffects(effects: readonly ExtLocalEffect[], handlers: LocalEffectHandlers): Promise<void> {
   for (const effect of effects) {
     if (effect.type === 'prompt.insert') handlers.insert(effect.text);
     else if (effect.type === 'copy') await handlers.copy(effect.text);
+    else if (effect.type === 'files.open') handlers.filesOpen?.(effect);
     else handlers.refresh();
   }
+}
+
+/**
+ * 本设备在某个贡献点声明的特性：会话面板且有 files.open 处理器时声明 files.open；
+ * 其他位置（工作区面板、输入框、新建会话）一律不声明。agent 那边还会再取交集。
+ */
+export function webExtFeatures(point: ExtPoint, handlers: { filesOpen?: unknown }): ExtFeature[] {
+  return point === 'sessionPanel' && handlers.filesOpen !== undefined ? ['files.open'] : [];
+}
+
+/**
+ * files.open 绑定发起的会话：结果回来时浏览器已经在别的会话（或别的页面）就丢掉，
+ * 不把扩展要打开的路径打开到另一个会话里（文件查看按会话鉴权、相对路径按会话 cwd 解析）。
+ */
+export function filesOpenTarget(originPath: string, currentPath: string): 'open' | 'drop' {
+  return originPath === currentPath ? 'open' : 'drop';
 }
 
 /** 计划步骤的人话（确认弹窗用） */

@@ -254,11 +254,14 @@ agent 侧所有产出 SessionMeta 的出口（list、session.created、session.u
 
 - `machine.info.extensions?: { api, rev, count, records? }` — 缺失 = agent 不支持扩展，client 隐藏全部扩展入口（按这个判断，不按版本号）。`rev` 变化时重拉目录。`records: true`（agent ≥ 0.17.0）= 支持时间线记录卡
 - `ext.catalog.request { reqId }` → `ext.catalog.response { reqId, rev, items[] }` — `items` 由 client 逐条宽松解析，不认识的条目只禁用那一条：`{ id, name, version, description?, apiVersion, contributes, capabilities, enabled, policy: { trust: full|custom, capabilities }, status: ok|disabled|error, lastError? }`
-- `ext.read { reqId, ext, op: view|badge|pick, point, targetSessionId?, cwd?, args?: { query? }, locale?, watch?: { ttlMs }, force? }` → `ext.read.response { reqId?, ext, op, point, targetSessionId?, cwd?, rev, ok, view? | badge? | items?, error? }`
-  - 带 `watch` 时建立订阅（同一设备、扩展、贡献点、目标覆盖旧的，`ttlMs` ≤ 10 分钟，`0` 退订）；之后有变化（动作完成、关联变化、会话一轮结束）就防抖 1 秒推送同类型帧（不带 reqId）。client 在面板可见、页面可见时续租
+- `ext.read { reqId, ext, op: view|badge|pick, point, targetSessionId?, cwd?, args?: { query? }, locale?, watch?: { ttlMs }, force?, features?: string[] }` → `ext.read.response { reqId?, ext, op, point, targetSessionId?, cwd?, rev, ok, view? | badge? | items?, error? }`
+  - 带 `watch` 时建立订阅（同一设备、扩展、贡献点、目标、有效特性集覆盖旧的，`ttlMs` ≤ 10 分钟，`0` 退订——退订要带同样的 `features`）；之后有变化（动作完成、关联变化、会话一轮结束）就防抖 1 秒推送同类型帧（不带 reqId）。client 在面板可见、页面可见时续租，续租同样带 `features`
   - `rev` 单调递增，client 丢弃比已显示内容旧的结果
   - 视图里需要 agent 执行的动作只带一次性 `token`；只含本地效果的动作带 `local`
-- `ext.action.prepare { reqId, invocationId, token, newSession?: { model, permissionMode } }` → 需要确认时 `ext.action.plan { reqId, invocationId, planId, plan, expiresAt }`，否则直接 `ext.action.result`
+  - `features`：web 能执行的宿主特性（目前只有 `files.open`，最多 16 项，不认识的忽略）。有效集 = 声明 ∩ agent 支持 ∩ 贡献点可执行（`files.open` 只在 `sessionPanel`），缺省为空；作为 `context.features` 传给扩展，并在输出边界整条过滤用到有效集之外特性的动作。旧 agent 会 strip 这个字段（等于空集），旧 web 不带（同样空集），所以旧的一端永远收不到 `files.open`。详见 [EXTENSIONS.md §特性协商](EXTENSIONS.md#特性协商)
+  - 本地效果 `local[]`：`prompt.insert { text }`、`copy { text }`、`refresh`、`files.open { path, dir? }`（path ≤ 4096、不含 NUL；只在协商出 `files.open` 时出现）
+- `ext.action.prepare { reqId, invocationId, token, newSession?: { model, permissionMode }, features?: string[] }` → 需要确认时 `ext.action.plan { reqId, invocationId, planId, plan, expiresAt }`，否则直接 `ext.action.result`
+  - `features` 与 token 签发时的有效集取交集（只收窄），用于 `invoke` 的扩展输入和返回效果的检查；返回效果用到交集之外的特性时整个结果回 `unsupported`
   - `token` 只对签发设备有效、10 分钟过期、一次性；agent 重启、扩展 reload / 停用 / 改权限后作废。relay 留存的旧帧重连后迟到，也只会因过期被拒
   - `newSession` 是发起设备的新会话默认值，`session.create` 效果用它
   - `plan.steps[]`：`session.create { cwd, title?, prompt, model, permissionMode, links }`、`prompt.send { targetSessionId, sessionTitle, cwd, permissionMode, busy, text }`、`links.add / links.remove`、`invoke { actionLabel, destructive, confirm? }`

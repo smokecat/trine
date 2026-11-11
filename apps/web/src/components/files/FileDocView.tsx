@@ -19,7 +19,7 @@ import { FileDocAnchorContext, useFileLinks, type FileDocAnchors, type FileOpenT
 import { HIGHLIGHT_MAX_BYTES, parentDir } from './file-model.ts';
 import { FileBody } from './FileViewer.tsx';
 import { TOC_RAIL_MIN_WIDTH, TocPopover, TocRail, useContainerWidth, useDocToc } from './MarkdownToc.tsx';
-import { useLoad } from './use-file-load.ts';
+import { isOutOfScope, useLoad } from './use-file-load.ts';
 import { useScrollAnchor } from './use-scroll-anchor.ts';
 import { ErrorBox, ViewHeader, type FileViewChrome } from './ViewHeader.tsx';
 import { useScrollMemory, type FileDocModel } from './view-model.ts';
@@ -232,7 +232,14 @@ export function FileDocView({
           className="min-h-0 flex-1 overflow-auto pb-[env(safe-area-inset-bottom)] [overflow-anchor:none]"
         >
           {load.state === 'loading' && <div className="text-text-3 p-6 text-[13px]">正在读取…</div>}
-          {load.state === 'error' && <ErrorBox message={load.message} onRetry={doRefresh} />}
+          {load.state === 'error' && (
+            <ErrorBox
+              message={load.message}
+              onRetry={doRefresh}
+              // 范围外的文件（只认绝对路径，同目录视图）：给「浏览所在目录」，信任与否由用户在那里决定
+              {...(isOutOfScope(load.error) && path.startsWith('/') ? { onBrowseParent: () => onBrowse(parentDir(path)) } : {})}
+            />
+          )}
           {/*
             DOM 结构只随「有没有目录」变（模式 / 内容决定），**不随宽窄变**：跨过侧栏断点时只换 class、
             加减侧栏，正文与滚动容器都不重挂。没有目录时 contents 不产生盒子，PDF 的 h-full 照旧。

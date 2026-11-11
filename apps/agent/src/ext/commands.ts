@@ -4,7 +4,17 @@
  */
 import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
-import { EXT_API_VERSION, ExtActionOutputSchema, ExtBadgeOutputSchema, ExtErrorOutputSchema, ExtPickOutputSchema, ExtViewOutputSchema } from '@trine/core';
+import {
+  EXT_API_VERSION,
+  EXT_FEATURES,
+  ExtActionOutputSchema,
+  ExtBadgeOutputSchema,
+  ExtErrorOutputSchema,
+  ExtPickOutputSchema,
+  ExtViewOutputSchema,
+  negotiateExtFeatures,
+  type ExtPoint,
+} from '@trine/core';
 import type { ExtListItem } from '../control/protocol.ts';
 import { ExtensionRegistry, inspectExtensionDir, type LoadedExtension } from './registry.ts';
 import { ACTION_TIMEOUT_MS, READ_TIMEOUT_MS, runProcess } from './runner.ts';
@@ -23,6 +33,8 @@ export type ExtSubcommand =
       cwd?: string;
       session?: string;
       args?: string;
+      /** 逗号分隔的特性声明（如 files.open），按贡献点协商后放进 context.features */
+      features?: string;
       allowWrite: boolean;
     };
 
@@ -141,6 +153,11 @@ export async function runExtLocal(command: ExtSubcommand, registryPath: string, 
       cwd,
       session: { id: sessionId, title: '测试会话', state: 'idle', cwd, archived: false, links: [] },
       linkedSessions: [],
+      features: negotiateExtFeatures(
+        command.features?.split(',').map((f) => f.trim()).filter((f) => f !== ''),
+        EXT_FEATURES,
+        point as ExtPoint,
+      ),
     },
     args: command.op === 'action' ? { invocationId: randomUUID(), ...(args as object) } : args,
   };

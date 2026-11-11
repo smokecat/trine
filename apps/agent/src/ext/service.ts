@@ -24,13 +24,18 @@ import {
   ExtErrorOutputSchema,
   ExtPickOutputSchema,
   ExtViewOutputSchema,
+  EXT_FEATURES,
+  effectFeature,
+  effectsAllowedBy,
   isLocalEffect,
+  negotiateExtFeatures,
   type ClientToAgentEvent,
   type ExtBadge,
   type ExtCapability,
   type ExtEffect,
   type ExtError,
   type ExtErrorCode,
+  type ExtFeature,
   type ExtLinkRef,
   type ExtLocalEffect,
   type ExtPlan,
@@ -71,6 +76,9 @@ const COMPOSER_EFFECTS: ReadonlySet<string> = new Set(['prompt.insert', 'links.a
  * 关联取候选项的 link，经宿主的 session.links.update 写入（用户本人操作）。
  */
 const NEW_SESSION_EFFECTS: ReadonlySet<string> = new Set(['prompt.insert']);
+
+/** 本 agent 支持的特性（与 web 声明、贡献点取交集，见 negotiateExtFeatures） */
+export const AGENT_EXT_FEATURES: readonly ExtFeature[] = EXT_FEATURES;
 
 /** 贡献点允许的效果；undefined = 不另设限制 */
 function pointEffects(point: ExtPoint): ReadonlySet<string> | undefined {
@@ -159,7 +167,19 @@ interface TokenRecord {
   action: { id: string; label: string; destructive: boolean; confirm: string | undefined };
   effects: ExtEffect[] | undefined;
   invoke: { params?: Record<string, unknown> } | undefined;
+  /** 签发时的有效特性集（prepare 时再与发起请求的声明取交集） */
+  features: readonly ExtFeature[];
   expiresAt: number;
+}
+
+/** 输出边界上要用到的读取目标 */
+interface WireTarget {
+  ext: LoadedExtension;
+  deviceId: string;
+  point: ExtPoint;
+  targetSessionId: string | undefined;
+  cwd: string;
+  features: readonly ExtFeature[];
 }
 
 /** 已固定的执行步骤：plan 里给人看的 + 执行时要用的 */
@@ -376,7 +396,8 @@ export class ExtensionService {
     try {
       const ext = this.#usable(event.ext);
       checkPoint(ext, event.op, event.point);
-      const { cwd, context } = await this.#context(ext, event.targetSessionId, event.cwd);
+      const features = negotiateExtFeatures(event.features, AGENT_EXT_FEATURES, event.point);
+      const { cwd, context } = await this.#context(ext, event.targetSessionId, event.cwd, features);
       const input = {
         apiVersion: EXT_API_VERSION,
         op: event.op,
@@ -397,7 +418,7 @@ export class ExtensionService {
         if (this.#epochOf(ext.id) === epoch) this.#cache.set(key, { at: this.#now(), output });
         this.#pruneCache();
       }
-      const target = { ext, deviceId, point: event.point, targetSessionId: event.targetSessionId, cwd };
+      const target: WireTarget = { ext, deviceId, point: event.point, targetSessionId: event.targetSessionId, cwd, features };
       switch (event.op) {
         case 'view': {
           const view = ExtViewOutputSchema.parse(output).view;
@@ -451,6 +472,7 @@ export class ExtensionService {
     ext: LoadedExtension,
     targetSessionId: string | undefined,
     requestedCwd: string | undefined,
+    features: readonly ExtFeature[],
   ): Promise<{ cwd: string; context: Record<string, unknown> }> {
     let session: SessionMeta | undefined;
     if (targetSessionId !== undefined) {
@@ -474,6 +496,8 @@ export class ExtensionService {
         cwd,
         ...(session === undefined ? {} : { session: sessionContext(session, ext.id) }),
         linkedSessions: linked,
+        // 有效特性集：在输入里，所以缓存键自然按它隔离
+        features: [...features],
       },
     };
   }
@@ -482,10 +506,7 @@ export class ExtensionService {
   // Raw → Wire（签发 token）
   // -------------------------------------------------------------------------
 
-  #wireView(
-    view: ExtRawView,
-    target: { ext: LoadedExtension; deviceId: string; point: ExtPoint; targetSessionId: string | undefined; cwd: string },
-  ): ExtWireView {
+  #wireView(view: ExtRawView, target: WireTarget): ExtWireView {
     const wire = (action: ExtRawAction, item: { id: string; title: string } | undefined): ExtWireAction | undefined =>
       this.#wireAction(action, item, target);
     return {
@@ -502,10 +523,7 @@ export class ExtensionService {
     };
   }
 
-  #wirePickItems(
-    items: readonly ExtRawPickItem[],
-    target: { ext: LoadedExtension; deviceId: string; point: ExtPoint; targetSessionId: string | undefined; cwd: string },
-  ): ExtWirePickItem[] {
+  #wirePickItems(items: readonly ExtRawPickItem[], target: WireTarget): ExtWirePickItem[] {
     return items.map(({ effects, ...item }) => {
       if (effects === undefined) return item;
       const action = this.#wireAction({ id: `pick:${item.id}`, label: item.title, effects }, item, target);
@@ -518,12 +536,11 @@ export class ExtensionService {
     });
   }
 
-  /** 不允许的动作（越过贡献点、能力被禁）直接不给，返回 undefined */
-  #wireAction(
-    action: ExtRawAction,
-    item: { id: string; title: string } | undefined,
-    target: { ext: LoadedExtension; deviceId: string; point: ExtPoint; targetSessionId: string | undefined; cwd: string },
-  ): ExtWireAction | undefined {
+  /**
+   * 不允许的动作（越过贡献点、能力被禁、用到有效特性集之外的效果）直接不给，返回 undefined。
+   * 特性按整个动作过滤：不拆开只给其中能执行的效果，也不依赖扩展自觉看 context.features。
+   */
+  #wireAction(action: ExtRawAction, item: { id: string; title: string } | undefined, target: WireTarget): ExtWireAction | undefined {
     const { ext, point } = target;
     const common = {
       id: action.id,
@@ -533,6 +550,7 @@ export class ExtensionService {
       ...(action.confirm === undefined ? {} : { confirm: action.confirm }),
     };
     if (action.effects !== undefined) {
+      if (!effectsAllowedBy(action.effects, target.features)) return undefined;
       const allowed = pointEffects(point);
       for (const effect of action.effects) {
         if (allowed !== undefined && !allowed.has(effect.type)) return undefined;
@@ -562,6 +580,7 @@ export class ExtensionService {
       action: { id: action.id, label: action.label, destructive: action.destructive === true, confirm: action.confirm },
       effects: action.effects,
       invoke: action.invoke,
+      features: target.features,
       expiresAt: this.#now() + TOKEN_TTL_MS,
     });
     return { ...common, token };
@@ -599,13 +618,16 @@ export class ExtensionService {
       this.#replyStatus(deviceId, event.reqId, event.invocationId);
       return;
     }
-    const token = this.#tokens.get(event.token);
+    const issued = this.#tokens.get(event.token);
     // token 一次性：取到就删，失败也不留（重新点击会拿到新视图里的新 token）
     this.#tokens.delete(event.token);
-    if (token === undefined || token.deviceId !== deviceId || token.expiresAt <= this.#now()) {
+    if (issued === undefined || issued.deviceId !== deviceId || issued.expiresAt <= this.#now()) {
       reply({ ok: false, error: { code: 'stale', message: '这个操作已过期，请刷新后重试' } });
       return;
     }
+    // 有效特性集只会收窄：签发时的 ∩ 发起这次点击的设备此刻声明的
+    const declared = negotiateExtFeatures(event.features, AGENT_EXT_FEATURES, issued.point);
+    const token: TokenRecord = { ...issued, features: issued.features.filter((f) => declared.includes(f)) };
     this.#invocations.set(event.invocationId, { deviceId, state: 'running', at: this.#now() });
     try {
       const ext = this.#usable(token.ext);
@@ -615,6 +637,7 @@ export class ExtensionService {
         return;
       }
       const effects = token.effects ?? [];
+      if (!effectsAllowedBy(effects, token.features)) throw unsupportedFeature(effects, token.features);
       const steps = await this.#resolveSteps(token, effects.filter((e): e is ExtRemoteEffect => !isLocalEffect(e)), event.newSession);
       const local = effects.filter(isLocalEffect);
       await this.#planOrRun(deviceId, event.reqId, event.invocationId, token, ext, steps, {
@@ -749,7 +772,7 @@ export class ExtensionService {
     newSession: PlanRecord['newSession'],
   ): Promise<void> {
     this.#assertCurrent(token);
-    const { cwd, context } = await this.#context(ext, token.targetSessionId, token.cwd);
+    const { cwd, context } = await this.#context(ext, token.targetSessionId, token.cwd, token.features);
     // 会话换了目录：扩展会在别的数据上执行，不跑。在会话链上确认一次，排在前面的切目录已生效
     if (cwd !== token.cwd) throw new ExtFailure('stale', '会话的工作目录已变化，请刷新后重试');
     if (token.targetSessionId !== undefined) {
@@ -781,6 +804,8 @@ export class ExtensionService {
     const parsed = ExtActionOutputSchema.parse(output);
     if (!parsed.ok) throw new ExtFailure('extension_error', parsed.message ?? '扩展报告操作失败');
     const effects = parsed.effects ?? [];
+    // 整个动作的效果里有发起设备执行不了的：一个都不执行（不拆开只做一部分）
+    if (!effectsAllowedBy(effects, token.features)) throw unsupportedFeature(effects, token.features);
     const allowed = pointEffects(token.point);
     for (const effect of effects) {
       if (allowed !== undefined && !allowed.has(effect.type)) {
@@ -790,7 +815,14 @@ export class ExtensionService {
     let view: ExtWireView | undefined;
     let viewRev: number | undefined;
     if (parsed.view !== undefined) {
-      view = this.#wireView(parsed.view, { ext, deviceId, point: token.point, targetSessionId: token.targetSessionId, cwd });
+      view = this.#wireView(parsed.view, {
+        ext,
+        deviceId,
+        point: token.point,
+        targetSessionId: token.targetSessionId,
+        cwd,
+        features: token.features,
+      });
       viewRev = ++this.#rev;
     }
     const local = effects.filter(isLocalEffect);
@@ -1095,7 +1127,9 @@ export class ExtensionService {
   // -------------------------------------------------------------------------
 
   #leaseKey(deviceId: string, e: ReadEvent): string {
-    return JSON.stringify([deviceId, e.ext, e.op, e.point, e.targetSessionId ?? '', e.cwd ?? '', e.args?.query ?? '', e.locale ?? '']);
+    // 特性按协商后的有效集进键：声明了不同特性的订阅各推各的（推送结果里的动作不同）
+    const features = negotiateExtFeatures(e.features, AGENT_EXT_FEATURES, e.point).join(',');
+    return JSON.stringify([deviceId, e.ext, e.op, e.point, e.targetSessionId ?? '', e.cwd ?? '', e.args?.query ?? '', e.locale ?? '', features]);
   }
 
   #markDirty(match: (lease: Lease) => boolean): void {
@@ -1183,6 +1217,11 @@ function sessionContext(meta: SessionMeta, ext: string): Record<string, unknown>
 
 function cacheKey(ext: LoadedExtension, input: unknown): string {
   return `${ext.id}\n${ext.generation}\n${createHash('sha256').update(JSON.stringify(input)).digest('hex')}`;
+}
+
+function unsupportedFeature(effects: readonly { type: string }[], features: readonly string[]): ExtFailure {
+  const missing = effects.map((e) => effectFeature(e.type)).find((f) => f !== undefined && !features.includes(f));
+  return new ExtFailure('unsupported', `这里不能执行 ${missing ?? '该效果'}（请升级 web，或在会话面板里使用）`);
 }
 
 function compact<T>(items: readonly (T | undefined)[]): T[] {

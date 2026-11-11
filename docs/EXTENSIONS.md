@@ -36,6 +36,7 @@ trine-agent ext add ./my-extension           # 注册；agent 在运行时立即
 trine-agent ext list
 trine-agent ext test my-ext view --cwd ~/project   # 用合成上下文跑一次，打印规范化输出
 trine-agent ext test my-ext action --args '{"actionId":"archive"}' --allow-write
+trine-agent ext test my-ext view --features files.open   # 模拟新 web 声明的特性
 trine-agent ext reload my-ext                # 扩展升级后重读 manifest
 trine-agent ext remove my-ext                # 它写下的会话关联保留
 ```
@@ -101,12 +102,14 @@ agent 执行 `<entry...> <op>`，op 是 `view`、`badge`、`pick`、`action` 之
     "session": { "id": "…", "title": "…", "state": "idle", "cwd": "/path/to/project",
                  "archived": false, "links": [{ "ref": "task-a", "label": "Task A" }] },
     "linkedSessions": [{ "id": "…", "title": "…", "state": "idle", "cwd": "…",
-                         "archived": false, "links": [{ "ref": "…", "label": "…" }] }]
+                         "archived": false, "links": [{ "ref": "…", "label": "…" }] }],
+    "features": ["files.open"]
   },
   "args": {}
 }
 ```
 
+- `features`：这次调用里能用的宿主特性，见[特性协商](#特性协商)。旧 agent 不带这个字段，按空数组处理。
 - `session.links`、`linkedSessions` 里只有**本扩展**的关联。`linkedSessions` 是这台机器上带本扩展关联的会话
   （最多 200 个，不限目录），扩展可以据此显示「这个任务关联了哪些会话」。
 - `newSession` 的 `pick` 没有 `session`，`cwd` 是用户在新建会话 sheet 里选的目录。
@@ -140,6 +143,7 @@ PickItem = { id, title, subtitle?, badges?, link?: { ref, label }, effects?: Eff
 Effect   = { type: 'prompt.insert', text }                        // 插入输入框（本设备执行）
          | { type: 'copy', text }                                 // 复制（本设备执行）
          | { type: 'refresh' }                                    // 刷新视图（本设备执行）
+         | { type: 'files.open', path, dir?: boolean }            // 打开文件 / 浏览目录（本设备执行，需特性协商）
          | { type: 'prompt.send', text }                          // 发给当前会话（agent 执行）
          | { type: 'session.create', prompt, cwd?, title?, links? } // 新建会话并发送（agent 执行）
          | { type: 'links.add', links: { ref, label }[] }         // agent 执行
@@ -153,6 +157,42 @@ Effect   = { type: 'prompt.insert', text }                        // 插入输�
   注意默认值可能是 bypass，确认弹窗会醒目标出。
 - 指向会话的效果（`prompt.send`、`links.*`）只在会话面板里可用。
 - `ref` 是扩展自己定义的字符串，要在扩展的数据里保持稳定（归档、改名不变）。
+- `files.open`（agent 与 web 都较新时）：在会话的文件查看里打开 `path`（`dir: true` 时浏览目录）。
+  工作区展开时进工作区，否则开文件抽屉；执行时扩展面板会先关上。`path` 建议给绝对路径
+  （相对路径按会话目录解析），最长 4096 字符，不能含 NUL。
+  - 不新增权限能力、不用在 manifest 里声明：能不能看仍由 agent 的文件查看决定（会话目录、信任目录、
+    密钥类文件始终不可见）。路径在范围外时，目录会显示「不在可浏览范围内」与信任入口，文件会给
+    「浏览所在目录」，**是否信任由用户决定，扩展不能让 trine 自动信任任何目录**。
+  - 结果回来时用户已经换到别的会话，就不打开（不会打开到另一个会话里）。
+  - 一个动作里有多个 `files.open` 时只执行最后一个。
+
+## 特性协商
+
+有些效果只有新版本的 web 会执行（目前只有 `files.open`）。为了不让旧 web 收到它不认识的内容
+（旧 web 会把整份视图判为无效），这类效果要经过协商：
+
+1. web 在 `ext.read`（读取、订阅与每次续租）和 `ext.action.prepare` 里声明自己能执行的特性。
+2. agent 取 **web 声明 ∩ agent 支持 ∩ 贡献点能执行** 作为有效特性集，缺省为空。
+   `files.open` 只在会话内的 `sessionPanel` 能执行；`workspacePanel`（没有会话）、`composerAction`、
+   `newSession`、`linkPicker` 一律不含。web 不在会话页、或 agent 不支持文件查看时也不声明。
+3. 有效特性集随读取、订阅、动作令牌保存（点击时再与发起设备此刻的声明取交集，只会收窄），
+   并作为输入里的 `context.features` 传给扩展；`invoke` 的 `action` op 拿到的是令牌里的那一份。
+   读取缓存的键包含输入，所以不同特性集的结果互不复用。
+4. agent 在输出边界检查：视图 / 候选项里**用到有效集之外特性的整个动作**不下发（不会拆开只留一部分）；
+   `invoke` 返回的效果里有这种效果时，整个结果按 `unsupported` 失败，其中的效果一个都不执行。
+   这不依赖扩展自觉。
+
+兼容：
+
+| 组合 | 结果 |
+|---|---|
+| 新 web + 新 agent，会话面板 | `context.features` 含 `files.open`，动作可用 |
+| 旧 web（不声明） | 空集，带 `files.open` 的动作被过滤，旧 web 永远收不到 |
+| 旧 agent | 忽略 web 的声明、不传 `features`；它也不认识 `files.open`，扩展若照样输出会被判为无效 |
+| 旧扩展（不看 `features`） | 照常工作；它本来就不会输出 `files.open` |
+
+扩展的写法：只在 `context.features` 含 `files.open` 时才输出这类动作，旧 agent / 旧 web 下保持原样。
+用 `trine-agent ext test ID view --features files.open` 可以模拟新 web 的声明。
 
 ## 贡献点
 
@@ -167,7 +207,7 @@ Effect   = { type: 'prompt.insert', text }                        // 插入输�
 
 ## 动作的执行
 
-- 只含本地效果（`prompt.insert`、`copy`、`refresh`）的动作，由点击的设备直接执行。
+- 只含本地效果（`prompt.insert`、`copy`、`refresh`、`files.open`）的动作，由点击的设备直接执行。
 - 其他动作在网页上只是一个一次性的令牌：只对拿到它的设备有效，10 分钟过期，agent 重启、扩展 reload、
   停用或改权限后作废。点击后 agent 按令牌里固定的效果生成执行计划：
   - 需要确认时把计划发给用户。确认弹窗显示的就是将要执行的内容（完整的消息、目录、目标会话、模型、权限模式），
@@ -184,7 +224,7 @@ Effect   = { type: 'prompt.insert', text }                        // 插入输�
 
 | 能力 | 默认 |
 |---|---|
-| 读取、`copy`、`refresh` | 总是允许 |
+| 读取、`copy`、`refresh`、`files.open` | 总是允许（`files.open` 受文件查看的范围限制） |
 | `prompt.insert` | 允许 |
 | `links.write`（扩展动作改关联） | 允许 |
 | `invoke`（扩展自己的操作） | 允许；扩展标了 `destructive` 或 `confirm` 的动作要确认 |

@@ -56,13 +56,29 @@ export function ViewHeader({
   );
 }
 
-export function ErrorBox({ message, onRetry }: { message: string; onRetry: () => void }): React.JSX.Element {
+export function ErrorBox({
+  message,
+  onRetry,
+  onBrowseParent,
+}: {
+  message: string;
+  onRetry: () => void;
+  /** 文件在范围外：去所在目录（那里有信任流程，由用户决定要不要信任） */
+  onBrowseParent?: (() => void) | undefined;
+}): React.JSX.Element {
   return (
     <div data-testid="file-error" className="flex flex-col items-center gap-3 p-10 text-center text-[13px]">
       <div className="text-red">{message}</div>
-      <Button size="sm" variant="outline" onClick={onRetry}>
-        重试
-      </Button>
+      <div className="flex flex-wrap justify-center gap-2">
+        {onBrowseParent !== undefined && (
+          <Button size="sm" data-testid="file-browse-parent" onClick={onBrowseParent}>
+            浏览所在目录
+          </Button>
+        )}
+        <Button size="sm" variant="outline" onClick={onRetry}>
+          重试
+        </Button>
+      </div>
     </div>
   );
 }
