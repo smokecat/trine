@@ -1,0 +1,81 @@
+/*
+ * dockview 主题：把 --dv-* 映射到应用 token。styles.css 的 :root / .dark 已经切换这些 token，
+ * 所以一个主题类就能跟随 light/dark，不需要两套主题。
+ */
+.dockview-theme-trine {
+  color-scheme: inherit;
+  --dv-paneview-active-outline-color: var(--accent);
+  --dv-tabs-and-actions-container-font-size: 13px;
+  --dv-tabs-and-actions-container-height: 34px;
+  --dv-tab-font-size: 13px;
+  --dv-tab-close-icon-size: inherit;
+  --dv-border-radius: 0px;
+  --dv-tab-margin: 0;
+  --dv-spacing-padding: 0px;
+  --dv-tab-border-radius: 0px;
+  --dv-sash-border-radius: 0px;
+  --dv-dropdown-border-radius: 8px;
+  --dv-overlay-z-index: 30;
+
+  --dv-group-view-background-color: var(--surface);
+  --dv-tabs-and-actions-container-background-color: var(--surface-2);
+  --dv-activegroup-visiblepanel-tab-background-color: var(--surface);
+  --dv-activegroup-hiddenpanel-tab-background-color: var(--surface-2);
+  --dv-inactivegroup-visiblepanel-tab-background-color: var(--surface);
+  --dv-inactivegroup-hiddenpanel-tab-background-color: var(--surface-2);
+  --dv-tab-divider-color: var(--border-c);
+  --dv-activegroup-visiblepanel-tab-color: var(--text);
+  --dv-activegroup-hiddenpanel-tab-color: var(--text-2);
+  --dv-inactivegroup-visiblepanel-tab-color: var(--text-2);
+  --dv-inactivegroup-hiddenpanel-tab-color: var(--text-3);
+  --dv-separator-border: var(--border-c);
+  --dv-paneview-header-border-color: var(--border-c);
+  --dv-scrollbar-background-color: var(--border-strong);
+  --dv-tabs-container-scrollbar-color: var(--border-strong);
+  --dv-icon-hover-background-color: var(--accent-soft);
+
+  /* 拖放提示 */
+  --dv-drag-over-background-color: var(--accent-soft);
+  --dv-drag-over-border-color: var(--accent-border);
+  --dv-drag-over-border: 2px solid var(--accent-border);
+  --dv-edge-dock-indicator-color: var(--accent);
+
+  /* 分隔条：平时一条细线，hover / 拖动时显示强调色 */
+  --dv-sash-color: transparent;
+  --dv-active-sash-color: var(--accent-border);
+  --dv-active-sash-transition-duration: 0.1s;
+  --dv-active-sash-transition-delay: 0.3s;
+
+  --dv-floating-box-shadow: var(--shadow-card);
+  --dv-floating-border: 1px solid var(--border-c);
+  --dv-floating-group-border: none;
+}
+
+/* 组之间的分隔线（sash 本身透明） */
+.dockview-theme-trine .dv-split-view-container > .dv-view-container > .dv-view:not(:first-child) {
+  border-left: 1px solid var(--border-c);
+}
+.dockview-theme-trine .dv-split-view-container.dv-vertical > .dv-view-container > .dv-view:not(:first-child) {
+  border-left: none;
+  border-top: 1px solid var(--border-c);
+}
+
+/* tab 条底边 */
+.dockview-theme-trine .dv-tabs-and-actions-container {
+  border-bottom: 1px solid var(--border-c);
+}
+
+/* 活动组的可见 tab 顶部一条强调色；非活动组的可见 tab 用弱一些的线，区分活动 / 非活动组 */
+.dockview-theme-trine .dv-groupview .dv-tabs-and-actions-container .dv-tab.dv-active-tab {
+  box-shadow: inset 0 2px 0 var(--border-strong);
+}
+.dockview-theme-trine .dv-groupview.dv-active-group > .dv-tabs-and-actions-container .dv-tab.dv-active-tab {
+  box-shadow: inset 0 2px 0 var(--accent);
+}
+.dockview-theme-trine .dv-tab:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -2px;
+}
+.dockview-theme-trine .dv-tab {
+  padding: 0;
+}
