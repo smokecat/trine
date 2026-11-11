@@ -43,7 +43,7 @@ import type {
 } from '@trine/core';
 import type { Clock, DocStore, KvAdapter, SocketFactory } from './adapters.ts';
 import { Connection, type ConnectionSnapshot } from './connection.ts';
-import { FileCache } from './file-cache.ts';
+import { FileCache, type FileLease } from './file-cache.ts';
 import { Inbound, type DroppedInfo } from './envelope.ts';
 import { ensureIdentity } from './identity.ts';
 import { Outbox, OutboxScopeFatalError, type OutboundBody } from './outbox.ts';
@@ -308,7 +308,6 @@ export class TrineClient {
     sizeOf: (f) => f.file.size,
     revoke: (url) => URL.revokeObjectURL(url),
   });
-  readonly #fileInflight = new Map<string, Promise<OpenedFile>>();
   #blobClient: BlobClient | null = null;
   #blobConfig: Promise<BlobConfig> | null = null;
   readonly #listeners = new Map<keyof ClientEvents, Set<Listener>>();
@@ -1168,45 +1167,42 @@ export class TrineClient {
    * `refresh` 时重新向 agent 要（旧的对象 URL 释放）。
    */
   openFile(machineId: string, sessionId: string, path: string, options: { refresh?: boolean } = {}): Promise<OpenedFile> {
-    const key = `${machineId}#${sessionId}#${path}`;
-    const cached = options.refresh === true ? undefined : this.#files.get(key);
-    if (cached !== undefined) return Promise.resolve(cached);
-    const inflight = this.#fileInflight.get(key);
-    if (inflight !== undefined) return inflight;
-    const task = (async () => {
-      const res = await this.request<Extract<OutboundBody, { type: 'fs.read.request' }>>(
-        machineId,
-        { type: 'fs.read.request', sessionId, path },
-        { timeoutMs: Math.max(this.#requestTimeoutMs, 60_000) },
-      );
-      if (res.type !== 'fs.read.response') throw new Error(`意外的应答 ${res.type}`);
-      if (!res.ok || res.file === undefined) {
-        throw new FsRequestError(res.error?.code ?? 'io', res.error?.message ?? '读取文件失败', res.error?.reason);
-      }
-      const file = res.file;
-      const parts: Uint8Array[] = [];
-      await this.#blobs().downloadDecrypted(file.blobId, file.key, (chunk) => {
-        parts.push(chunk);
-      }, { maxBytes: file.size });
-      const blob = new Blob(parts as BlobPart[], { type: file.mime === '' ? 'application/octet-stream' : file.mime });
-      const url = createObjectUrl(blob);
-      if (url === undefined) throw new Error('当前环境无法显示文件');
-      const opened: OpenedFile = { file, blob, url };
-      this.#files.set(key, opened);
-      return opened;
-    })().finally(() => {
-      this.#fileInflight.delete(key);
+    // 不需要占用（测试 / 一次性读取）：拿到即释放租约，URL 由缓存照常管理
+    return this.openFileLease(machineId, sessionId, path, options).then(({ value, release }) => {
+      release();
+      return value;
     });
-    this.#fileInflight.set(key, task);
-    return task;
   }
 
   /**
-   * 正在显示 `openFile` 给的对象 URL 时占住它（视图挂载时调，卸载时调返回的释放函数）：
-   * 占用期间 LRU 不淘汰它，刷新替换后也等最后一个使用者释放才 revoke。
+   * 打开文件并占住它的对象 URL（租约在结果交给调用方之前就已取得，见 file-cache.ts）：
+   * 显示它的视图在取消加载、卸载、换内容时调 `release`。占用期间 LRU 不淘汰它，
+   * 刷新替换后也等最后一个使用者释放才 revoke。
    */
-  retainFileUrl(url: string): () => void {
-    return this.#files.retain(url);
+  openFileLease(machineId: string, sessionId: string, path: string, options: { refresh?: boolean } = {}): Promise<FileLease<OpenedFile>> {
+    const key = `${machineId}#${sessionId}#${path}`;
+    return this.#files.load(key, () => this.#downloadFile(machineId, sessionId, path), options);
+  }
+
+  async #downloadFile(machineId: string, sessionId: string, path: string): Promise<OpenedFile> {
+    const res = await this.request<Extract<OutboundBody, { type: 'fs.read.request' }>>(
+      machineId,
+      { type: 'fs.read.request', sessionId, path },
+      { timeoutMs: Math.max(this.#requestTimeoutMs, 60_000) },
+    );
+    if (res.type !== 'fs.read.response') throw new Error(`意外的应答 ${res.type}`);
+    if (!res.ok || res.file === undefined) {
+      throw new FsRequestError(res.error?.code ?? 'io', res.error?.message ?? '读取文件失败', res.error?.reason);
+    }
+    const file = res.file;
+    const parts: Uint8Array[] = [];
+    await this.#blobs().downloadDecrypted(file.blobId, file.key, (chunk) => {
+      parts.push(chunk);
+    }, { maxBytes: file.size });
+    const blob = new Blob(parts as BlobPart[], { type: file.mime === '' ? 'application/octet-stream' : file.mime });
+    const url = createObjectUrl(blob);
+    if (url === undefined) throw new Error('当前环境无法显示文件');
+    return { file, blob, url };
   }
 
   #blobs(): BlobClient {

@@ -20,7 +20,7 @@ import { absoluteFilePath, HIGHLIGHT_MAX_BYTES, parentDir } from './file-model.t
 import { FileBody } from './FileViewer.tsx';
 import { useFilesInfo } from './TrustDir.tsx';
 import { TOC_RAIL_MIN_WIDTH, TocPopover, TocRail, useContainerWidth, useDocToc } from './MarkdownToc.tsx';
-import { isOutOfScope, useLoad } from './use-file-load.ts';
+import { isOutOfScope, useLeasedLoad } from './use-file-load.ts';
 import { useScrollAnchor } from './use-scroll-anchor.ts';
 import { ErrorBox, ViewHeader, type FileViewChrome } from './ViewHeader.tsx';
 import { useScrollMemory, type FileDocModel } from './view-model.ts';
@@ -49,6 +49,7 @@ export function FileDocView({
   onModelChange,
   onBrowse,
   chrome,
+  captureRef,
 }: {
   machineId: string;
   sessionId: string;
@@ -60,20 +61,28 @@ export function FileDocView({
   /** 去某个目录（面包屑、所在目录）；省略 dir = 会话目录 */
   onBrowse: (dir?: string) => void;
   chrome?: FileViewChrome;
+  /**
+   * 外壳要「此刻」的内容状态时用（抽屉交接到工作区）：滚动上报有防抖，model 里的可能是旧的，
+   * 这里同步读滚动容器与锚点
+   */
+  captureRef?: React.RefObject<(() => FileDocModel) | null> | undefined;
 }): React.JSX.Element {
   const client = useClient();
   const [refresh, setRefresh] = useState(false);
   const { mode, wrap } = model;
-  const [load, reload] = useLoad<OpenedFile>(
-    client === null ? null : () => client.openFile(machineId, sessionId, path, { refresh }),
+  // 显示期间占住对象 URL（图片 / PDF / 下载链接都用它）：租约在结果到达时就取得，别处打开新文件触发
+  // LRU、或别处刷新同一文件，都不会把这里正在用的 URL revoke 掉；取消、卸载（含工作区隐藏 tab）即释放
+  const [load, reload] = useLeasedLoad<OpenedFile>(
+    client === null
+      ? null
+      : () =>
+          typeof client.openFileLease === 'function'
+            ? client.openFileLease(machineId, sessionId, path, { refresh })
+            : client.openFile(machineId, sessionId, path, { refresh }).then((value) => ({ value, release: () => {} })),
     [client, machineId, sessionId, path],
   );
   const opened = load.state === 'ok' ? load.value : undefined;
   const file = opened?.file;
-  // 显示期间占住对象 URL（图片 / PDF / 下载链接都用它）：别处打开新文件触发 LRU、或别处刷新同一文件，
-  // 都不会把这里正在用的 URL revoke 掉；卸载（含工作区隐藏 tab）即释放
-  const openedUrl = opened?.url;
-  useEffect(() => (client === null || openedUrl === undefined ? undefined : client.retainFileUrl?.(openedUrl)), [client, openedUrl]);
   const sessionCwd = useTrine((s) => s.sessions[machineId]?.[sessionId]?.cwd);
   const home = useFilesInfo(machineId)?.home;
   const absPath = absoluteFilePath(path, sessionCwd, home);
@@ -115,6 +124,19 @@ export function FileDocView({
     (top) => onModelChange({ scrollTop: top, anchor: scrollAnchor.anchor.current ?? undefined }),
     { restoring: memoryRestoring },
   );
+
+  useLayoutEffect(() => {
+    if (captureRef === undefined) return;
+    captureRef.current = () => {
+      const el = scrollRef.current;
+      if (el === null) return model;
+      captureAnchorNow();
+      return { ...model, scrollTop: el.scrollTop, anchor: scrollAnchor.anchor.current ?? undefined };
+    };
+    return () => {
+      captureRef.current = null;
+    };
+  });
 
   const toc = useDocToc(scrollEl);
   const rawId = useId();

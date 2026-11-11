@@ -16,6 +16,12 @@ export interface FileCacheOptions<T> {
   revoke: (url: string) => void;
 }
 
+/** 一份占用：`release` 幂等 */
+export interface FileLease<T> {
+  value: T;
+  release: () => void;
+}
+
 export class FileCache<T extends { url: string }> {
   readonly #entries = new Map<string, T>();
   /** url → 使用者个数 */
@@ -43,12 +49,47 @@ export class FileCache<T extends { url: string }> {
 
   /** 放入（同键的旧条目被替换：没人用就立即释放，有人用就退役） */
   set(key: string, value: T): void {
+    this.#put(key, value);
+    this.#trim();
+  }
+
+  #put(key: string, value: T): void {
     const old = this.#entries.get(key);
     this.#entries.delete(key);
     if (old !== undefined && old.url !== value.url) this.#drop(old.url);
     this.#entries.set(key, value);
-    this.#trim();
   }
+
+  /**
+   * 取得一份租约：命中缓存时同步占住；否则加载（同键并发共用一次加载）。
+   *
+   * 租约在结果交给调用方**之前**就已取得——不能等 React effect 再 retain：并发完成的几个大文件
+   * 写入缓存时会互相淘汰，等到 effect 跑起来，前一个的 URL 可能已被 revoke。做法：
+   * 加载写入缓存时先挂一个「过渡占用」再淘汰，等所有等待者（同一轮 microtask）各自 retain 后，
+   * 下一个宏任务再释放过渡占用。调用方用完（取消、卸载、换内容）必须调 `release`。
+   */
+  load(key: string, loader: () => Promise<T>, options: { refresh?: boolean } = {}): Promise<FileLease<T>> {
+    const hit = options.refresh === true ? undefined : this.get(key);
+    if (hit !== undefined) return Promise.resolve({ value: hit, release: this.retain(hit.url) });
+    let task = this.#inflight.get(key);
+    if (task === undefined) {
+      task = loader()
+        .then((value) => {
+          this.#put(key, value);
+          const hold = this.retain(value.url);
+          this.#trim();
+          setTimeout(hold, 0);
+          return value;
+        })
+        .finally(() => {
+          this.#inflight.delete(key);
+        });
+      this.#inflight.set(key, task);
+    }
+    return task.then((value) => ({ value, release: this.retain(value.url) }));
+  }
+
+  readonly #inflight = new Map<string, Promise<T>>();
 
   /**
    * 占住一个 URL（可见消费者挂载时调用），返回释放函数（幂等）。

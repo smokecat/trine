@@ -42,3 +42,43 @@ export function useLoad<T>(fn: (() => Promise<T>) | null, deps: readonly unknown
   const reload = useCallback(() => setTick((t) => t + 1), []);
   return [load, reload];
 }
+
+/** 带租约的结果（如 client.openFileLease：占住对象 URL） */
+export interface Leased<T> {
+  value: T;
+  release: () => void;
+}
+
+/**
+ * 同 useLoad，但结果带租约：租约在结果到达时就已取得（不是等提交后的 effect），并且
+ * - 加载被取消（deps 变了、卸载、刷新）时，迟到的结果立即释放；
+ * - 结果交给 React 后、在下一次加载 / 卸载时释放（包括还没提交就被丢弃的情况）。
+ */
+export function useLeasedLoad<T>(fn: (() => Promise<Leased<T>>) | null, deps: readonly unknown[]): [Load<T>, () => void] {
+  const [load, setLoad] = useState<Load<T>>({ state: 'loading' });
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    if (fn === null) return;
+    let alive = true;
+    let release: (() => void) | null = null;
+    setLoad({ state: 'loading' });
+    fn().then(
+      (leased) => {
+        if (!alive) {
+          leased.release();
+          return;
+        }
+        release = leased.release;
+        setLoad({ state: 'ok', value: leased.value });
+      },
+      (err: unknown) => alive && setLoad({ state: 'error', message: fileErrorText(err), error: err }),
+    );
+    return () => {
+      alive = false;
+      release?.();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- fn 每次渲染都是新的，按 deps 与 tick 触发
+  }, [...deps, tick]);
+  const reload = useCallback(() => setTick((t) => t + 1), []);
+  return [load, reload];
+}
