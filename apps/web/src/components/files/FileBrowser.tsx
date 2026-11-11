@@ -7,6 +7,7 @@ import type { FsEntry } from '@trine/core';
 import type { FsListing } from '@/lib/client.ts';
 import { formatBytes, formatRelativeTime } from '@/lib/format.ts';
 import { cn } from '@/lib/utils.ts';
+import { targetForClick, type FileOpenTarget } from './file-links.ts';
 import { joinPath, pathCrumbs, visibleEntries } from './file-model.ts';
 
 function entryIcon(entry: FsEntry): React.JSX.Element {
@@ -73,8 +74,9 @@ export function FileList({
 }: {
   listing: FsListing;
   showHidden: boolean;
-  onBrowse: (dir: string) => void;
-  onOpen: (path: string) => void;
+  /** `target`：按点击修饰键给出（Alt = side），外壳据此决定就地导航还是走打开 intent */
+  onBrowse: (dir: string, target: FileOpenTarget) => void;
+  onOpen: (path: string, target: FileOpenTarget) => void;
   now?: number;
 }): React.JSX.Element {
   const entries = visibleEntries(listing.entries, showHidden);
@@ -100,7 +102,7 @@ export function FileList({
                 data-denied={e.denied === true || undefined}
                 disabled={!clickable}
                 title={e.denied === true ? '不提供查看（密钥类文件或范围外的链接）' : path}
-                onClick={() => (e.type === 'dir' ? onBrowse(path) : onOpen(path))}
+                onClick={(ev) => (e.type === 'dir' ? onBrowse(path, targetForClick(ev)) : onOpen(path, targetForClick(ev)))}
                 className={cn(
                   'flex min-h-11 w-full items-center gap-2.5 px-4 py-2 text-left text-[13px]',
                   clickable ? 'hover:bg-surface-2 cursor-pointer' : 'text-text-3 cursor-default',

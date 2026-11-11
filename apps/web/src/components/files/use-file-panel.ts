@@ -7,7 +7,9 @@
  * 所以就地 replace 掉参数。location.state 原有的字段（来源页 `from`）保留。
  *
  * 打开文件时要定位的锚点（`a.md#安装`）放在 location.state 的 `fileFragment`，不进查询参数：
- * 路径里的 `#` 是文件名的一部分，锚点要单独传；返回到这一条历史时照样定位。
+ * 路径里的 `#` 是文件名的一部分，锚点要单独传；返回到这一条历史时、刷新页面后照样定位。
+ * 限制：location.state 只属于本标签页的这条历史，**复制 URL、新标签 / 深链打开不携带锚点**，
+ * 只会打开文件本身（从顶部开始）。
  */
 import { useCallback, useMemo } from 'react';
 import { useLocation, useNavigate } from 'react-router';

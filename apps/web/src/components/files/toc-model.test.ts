@@ -2,7 +2,7 @@
  * 标题 slug、锚点匹配、目录筛选、当前节的纯逻辑。
  */
 import { describe, expect, test } from 'bun:test';
-import { activeIndex, createSlugger, matchFragment, slugify, splitHref, tocItems } from './toc-model.ts';
+import { activeIndex, createSlugger, resolveAnchor, slugify, splitHref, tocItems } from './toc-model.ts';
 
 describe('slugify / createSlugger', () => {
   test('GitHub 风格：小写、去标点、空格变 -，中文保留', () => {
@@ -23,22 +23,38 @@ describe('slugify / createSlugger', () => {
   });
 });
 
-describe('matchFragment', () => {
-  const slugs = ['安装步骤', 'hello-world', '用法-1', 'faq'];
+describe('resolveAnchor', () => {
+  const slugs = ['安装步骤', 'hello-world', '用法-1', 'faq'].map((slug) => ({ slug }));
+  const slugOf = (f: string): string | undefined => {
+    const i = resolveAnchor(f, slugs);
+    return i === undefined ? undefined : slugs[i]!.slug;
+  };
   test('原文、百分号编码、大小写与空格、user-content 前缀都能对上', () => {
-    expect(matchFragment('安装步骤', slugs)).toBe('安装步骤');
-    expect(matchFragment('%E5%AE%89%E8%A3%85%E6%AD%A5%E9%AA%A4', slugs)).toBe('安装步骤');
-    expect(matchFragment('#Hello World', slugs)).toBe('hello-world');
-    expect(matchFragment('Hello, World!', slugs)).toBe('hello-world');
-    expect(matchFragment('user-content-faq', slugs)).toBe('faq');
-    expect(matchFragment('用法-1', slugs)).toBe('用法-1');
+    expect(slugOf('安装步骤')).toBe('安装步骤');
+    expect(slugOf('%E5%AE%89%E8%A3%85%E6%AD%A5%E9%AA%A4')).toBe('安装步骤');
+    expect(slugOf('#Hello World')).toBe('hello-world');
+    expect(slugOf('Hello, World!')).toBe('hello-world');
+    expect(slugOf('user-content-faq')).toBe('faq');
+    expect(slugOf('用法-1')).toBe('用法-1');
   });
 
   test('对不上、空锚点、坏编码：undefined', () => {
-    expect(matchFragment('不存在', slugs)).toBeUndefined();
-    expect(matchFragment('', slugs)).toBeUndefined();
-    expect(matchFragment('#', slugs)).toBeUndefined();
-    expect(matchFragment('%E5%AE', slugs)).toBeUndefined();
+    expect(slugOf('不存在')).toBeUndefined();
+    expect(slugOf('')).toBeUndefined();
+    expect(slugOf('#')).toBeUndefined();
+    expect(slugOf('%E5%AE')).toBeUndefined();
+  });
+
+  test('精确优先：显式 id 先于标题 slug，精确先于大小写/slugify 兼容', () => {
+    const targets = [{ slug: 'faq' }, { id: 'FAQ' }, { slug: 'custom-title', id: 'custom' }, { id: 'user-content-fn-1' }];
+    expect(resolveAnchor('FAQ', targets)).toBe(1);
+    expect(resolveAnchor('faq', targets)).toBe(0);
+    expect(resolveAnchor('custom', targets)).toBe(2);
+    expect(resolveAnchor('Custom Title', targets)).toBe(2);
+    expect(resolveAnchor('fn-1', targets)).toBe(3);
+    expect(resolveAnchor('user-content-fn-1', targets)).toBe(3);
+    // 只有大小写不同的 id：兼容匹配能找到
+    expect(resolveAnchor('Fn-1', [{ id: 'fn-1' }])).toBe(0);
   });
 });
 

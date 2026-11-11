@@ -23,7 +23,11 @@ interface FileOpenCommon {
 export interface FileOpenFileIntent extends FileOpenCommon {
   dir?: false;
   path: string;
-  /** 加载后定位到的锚点（已解码的原文，如 `安装步骤`）；与路径分开传，路径里的 `#` 是文件名的一部分 */
+  /**
+   * 加载后定位到的锚点（已解码的原文，如 `安装步骤`）；与路径分开传，路径里的 `#` 是文件名的一部分。
+   * 抽屉把它存在 location.state（见 use-file-panel.ts）：同一历史条目里前进/后退/刷新页面都在，
+   * 但**复制 URL、新标签打开不携带锚点**（只有 `?file=` 路径）。
+   */
   fragment?: string;
 }
 
@@ -96,7 +100,8 @@ export const FileBaseContext = createContext<string | undefined>(undefined);
  */
 export interface FileDocAnchors {
   ns: string;
-  jump: (fragment: string) => boolean;
+  /** `focus`：用户主动跳转时把焦点移到目标（键盘 / 读屏从目标节继续） */
+  jump: (fragment: string, options?: { focus?: boolean }) => boolean;
 }
 
 export const FileDocAnchorContext = createContext<FileDocAnchors | null>(null);

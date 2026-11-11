@@ -12,6 +12,7 @@ import { Sheet, SheetContent, SheetDescription, SheetTitle } from '@/components/
 import { useIsDesktop } from '@/components/shell/use-media-query.ts';
 import { FileDirView } from './FileDirView.tsx';
 import { FileDocView } from './FileDocView.tsx';
+import { useFileLinks, type FileOpenTarget } from './file-links.ts';
 import type { FileViewChrome } from './ViewHeader.tsx';
 import { DEFAULT_DIR_MODEL, DEFAULT_DOC_MODEL, type FileDirModel, type FileDocModel } from './view-model.ts';
 
@@ -49,7 +50,16 @@ export function FilePanel({
 }): React.JSX.Element {
   const desktop = useIsDesktop();
   const chrome: FileViewChrome = { Title: DrawerTitle, Description: DrawerDescription, onClose };
-  const browse = (dir?: string): void => onNavigate(dir === undefined ? { kind: 'dir' } : { kind: 'dir', path: dir });
+  const links = useFileLinks();
+  // 抽屉内普通点击就地导航（push 历史）；显式 side（Alt+点击）走完整打开 intent，由路由决定去处
+  const browse = (dir?: string, target?: FileOpenTarget): void => {
+    if (target === 'side' && links !== null) links.open(dir === undefined ? { dir: true, target } : { dir: true, path: dir, target });
+    else onNavigate(dir === undefined ? { kind: 'dir' } : { kind: 'dir', path: dir });
+  };
+  const openFile = (path: string, target: FileOpenTarget): void => {
+    if (target === 'side' && links !== null) links.open({ path, target });
+    else onNavigate({ kind: 'file', path });
+  };
   return (
     <Sheet open={view !== null} onOpenChange={(open) => !open && onClose()}>
       <SheetContent
@@ -83,7 +93,7 @@ export function FilePanel({
             sessionId={sessionId}
             path={view.path}
             onBrowse={browse}
-            onOpenFile={(p) => onNavigate({ kind: 'file', path: p })}
+            onOpenFile={openFile}
             chrome={chrome}
           />
         )}

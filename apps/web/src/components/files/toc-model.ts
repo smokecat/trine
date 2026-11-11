@@ -1,7 +1,7 @@
 /**
  * Markdown 文件预览的标题锚点与目录（方案 §6）的纯逻辑：
  * - slug：GitHub 风格（小写、去标点、空格变 `-`，保留中文等各种文字），重复的加 `-1`、`-2`；
- * - 锚点匹配：链接里的 `#x` 可能是原文、百分号编码、或手写的大小写/空格，统一换算后找 slug；
+ * - 锚点匹配：链接里的 `#x` 可能是原文、百分号编码、或手写的大小写/空格；先精确、后兼容（见 resolveAnchor）；
  * - 目录：h1–h4，至少 3 个标题才显示。
  */
 import { decodeHref } from './file-model.ts';
@@ -44,17 +44,41 @@ export function createSlugger(): (text: string) => string {
 }
 
 /**
- * 把链接里的锚点换算成文档里的 slug：先按原文（解码后）比，再按小写、slugify 后比，
- * 也认 GitHub 渲染出的 `user-content-` 前缀。找不到返回 undefined。
+ * 预览里一个可定位的目标：标题有 slug（可能还有作者写的显式 id 作别名），
+ * 其他带 id 的元素（raw HTML、脚注）只有 id。
  */
-export function matchFragment(fragment: string, slugs: readonly string[]): string | undefined {
+export interface AnchorTarget {
+  slug?: string | undefined;
+  id?: string | undefined;
+}
+
+const USER_CONTENT = /^user-content-/i;
+
+/**
+ * 把链接里的锚点换算成预览里的目标（返回下标）。顺序：
+ * 1. 精确：原文 / 解码后，先比显式 id（作者写的锚点优先），再比标题 slug；
+ * 2. 兼容：去 `user-content-` 前缀（GitHub 脚注、旧链接）、大小写不敏感、slugify 后再比，
+ *    同样 id 在前、slug 在后。
+ * 精确命中永远优先于兼容匹配：`## FAQ` 与 `<p id="FAQ">` 并存时 `#FAQ` 落到后者。
+ */
+export function resolveAnchor(fragment: string, targets: readonly AnchorTarget[]): number | undefined {
   const raw = fragment.startsWith('#') ? fragment.slice(1) : fragment;
   const decoded = decodeHref(raw).trim();
   if (decoded === '') return undefined;
-  const bare = decoded.replace(/^user-content-/i, '');
-  const set = new Set(slugs);
-  for (const c of [decoded, bare, decoded.toLowerCase(), bare.toLowerCase(), slugify(decoded), slugify(bare)]) {
-    if (c !== '' && set.has(c)) return c;
+  const find = (pred: (t: AnchorTarget) => boolean): number | undefined => {
+    const i = targets.findIndex(pred);
+    return i === -1 ? undefined : i;
+  };
+  for (const c of new Set([raw, decoded])) {
+    const hit = find((t) => t.id === c) ?? find((t) => t.slug === c);
+    if (hit !== undefined) return hit;
+  }
+  const bare = decoded.replace(USER_CONTENT, '');
+  const norm = (s: string | undefined): string | undefined => s?.replace(USER_CONTENT, '').toLowerCase();
+  const candidates = [...new Set([bare.toLowerCase(), slugify(decoded), slugify(bare)])].filter((c) => c !== '');
+  for (const c of candidates) {
+    const hit = find((t) => norm(t.id) === c) ?? find((t) => t.slug === c);
+    if (hit !== undefined) return hit;
   }
   return undefined;
 }

@@ -141,7 +141,9 @@ function FileAwareLink({
             // Ctrl/Cmd/Shift 点击不劫持
             if (e.ctrlKey || e.metaKey || e.shiftKey) return;
             e.preventDefault();
-            anchors.jump(fragment);
+            // 显式 side（Alt）优先：走完整 intent，由路由决定去处（工作区里另开一份）
+            if (targetForClick(e) === 'side' && base !== undefined) links.open({ path: base, fragment, target: 'side' });
+            else anchors.jump(fragment, { focus: true });
           }}
           className={cn('text-brand-ink underline', className)}
         >
@@ -155,7 +157,7 @@ function FileAwareLink({
     // 聊天里只认像路径的（`[x](foo)` 这种裸词不算）；文件里的相对链接都当文件
     const detected = base === undefined ? detectPath(target) : { path: target, dir: target.endsWith('/') };
     if (detected !== undefined) {
-      // 指回本文件的 `a.md#x`：当成同文件锚点
+      // 指回本文件的 `a.md#x`：普通点击当成同文件锚点；显式 side（Alt）优先，照常走 intent
       const sameFile = anchors !== null && base !== undefined && !detected.dir && detected.path === base && fragment !== undefined;
       return (
         <button
@@ -164,7 +166,11 @@ function FileAwareLink({
           data-path={detected.path}
           {...(fragment === undefined ? {} : { 'data-fragment': fragment })}
           title={detected.path}
-          onClick={(e) => (sameFile ? anchors.jump(fragment) : links.open(intentFor(detected, targetForClick(e), fragment)))}
+          onClick={(e) => {
+            const target = targetForClick(e);
+            if (sameFile && target !== 'side') anchors.jump(fragment, { focus: true });
+            else links.open(intentFor(detected, target, fragment));
+          }}
           className={cn('text-brand-ink cursor-pointer text-left underline', className)}
         >
           {children}
@@ -212,6 +218,7 @@ const HEADING_CLASS = ['text-3xl', 'text-2xl', 'text-xl', 'text-lg', 'text-base'
 /**
  * 文件预览里的标题：slug 由 rehype 插件写进 `data-heading-slug`（每次转换重新编号），
  * id 在这里加上本预览实例的前缀——同屏多个预览（抽屉 + 工作区）不会撞 id。
+ * tabIndex=-1：目录 / 锚点跳转后把焦点移到这里，键盘与读屏从目标节继续。
  */
 function DocHeading({ level, node: _node, id: _id, className, children, ...props }: HeadingProps & { level: 1 | 2 | 3 | 4 | 5 | 6 }): React.JSX.Element {
   const anchors = useContext(FileDocAnchorContext);
@@ -220,9 +227,9 @@ function DocHeading({ level, node: _node, id: _id, className, children, ...props
   return (
     <Tag
       {...props}
-      {...(anchors !== null && slug !== undefined ? { id: `${anchors.ns}-${slug}` } : {})}
+      {...(anchors !== null && slug !== undefined ? { id: `${anchors.ns}-${slug}`, tabIndex: -1 } : {})}
       data-streamdown={`heading-${level}`}
-      className={cn('mt-6 mb-2 scroll-mt-2 font-semibold', HEADING_CLASS[level - 1], className)}
+      className={cn('mt-6 mb-2 scroll-mt-2 font-semibold focus:outline-none', HEADING_CLASS[level - 1], className)}
     >
       {children}
     </Tag>
@@ -252,13 +259,20 @@ function hastText(node: HastNode): string {
 }
 
 /**
- * 标题 slug（方案 §6）：放在 sanitize 之后（sanitize 会给 id 加 `user-content-` 前缀，这里不用 id，
- * 只写 `data-heading-slug`）、harden 之前。slugger 在**每次转换**里新建——streamdown 缓存的是
- * 处理器，插件闭包里不能留跨转换的计数，也不往外回调（标题列表由预览在提交后从 DOM 读）。
+ * 标题 slug（方案 §6）：放在 sanitize 之后、harden 之前，写 `data-heading-slug`。
+ * raw HTML 标题上作者写的 id（`<h2 id="custom">`）挪到 `data-anchor-id` 作为锚点别名，
+ * DOM 上的 id 由 DocHeading 统一换成「实例前缀 + slug」。注意：锁定的 streamdown 2.6 把 sanitize 的
+ * `clobberPrefix` 设成了空串，raw HTML 的 id 原样保留、**不会**带 `user-content-`（脚注的
+ * `user-content-fn-*` 是 remark-rehype 自己加的）；非标题元素的 id 保持原样，定位时按原值匹配。
+ * slugger 在**每次转换**里新建——streamdown 缓存的是处理器，插件闭包里不能留跨转换的计数，
+ * 也不往外回调（标题列表由预览在提交后从 DOM 读）。
  */
 function addHeadingSlugs(tree: HastNode, slugger: (text: string) => string): void {
-  if (tree.type === 'element' && tree.properties !== undefined && /^h[1-6]$/.test(tree.tagName ?? '')) {
-    tree.properties['dataHeadingSlug'] = slugger(hastText(tree));
+  const props = tree.properties;
+  if (tree.type === 'element' && props !== undefined && /^h[1-6]$/.test(tree.tagName ?? '')) {
+    props['dataHeadingSlug'] = slugger(hastText(tree));
+    if (typeof props['id'] === 'string' && props['id'] !== '') props['dataAnchorId'] = props['id'];
+    delete props['id'];
     return;
   }
   for (const child of tree.children ?? []) addHeadingSlugs(child, slugger);

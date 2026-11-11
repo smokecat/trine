@@ -9,6 +9,7 @@ import type { FsListing } from '@/lib/client.ts';
 import { cn } from '@/lib/utils.ts';
 import { Button } from '@/components/ui/button.tsx';
 import { Breadcrumbs, FileList } from './FileBrowser.tsx';
+import type { FileOpenTarget } from './file-links.ts';
 import { parentDir } from './file-model.ts';
 import { LocationMenu, OutOfScopeNotice, TrustDirDialog, useFilesInfo } from './TrustDir.tsx';
 import { isOutOfScope, useLoad } from './use-file-load.ts';
@@ -54,8 +55,9 @@ export function FileDirView({
   model?: FileDirModel | undefined;
   onModelChange?: ((patch: Partial<FileDirModel>) => void) | undefined;
   /** 去别的目录；省略 dir = 会话目录 */
-  onBrowse: (dir?: string) => void;
-  onOpenFile: (path: string) => void;
+  /** `target`：列表条目按点击修饰键给（Alt = side），其余入口省略（就地导航） */
+  onBrowse: (dir?: string, target?: FileOpenTarget) => void;
+  onOpenFile: (path: string, target: FileOpenTarget) => void;
   chrome?: FileViewChrome;
 }): React.JSX.Element {
   const client = useClient();
@@ -137,7 +139,7 @@ export function FileDirView({
           <OutOfScopeNotice path={outOfScope} canTrust={roots !== undefined && outOfScope !== '/'} onTrust={() => setTrustPath(outOfScope)} onSessionDir={() => browse(undefined)} />
         )}
         {load.state === 'error' && outOfScope === undefined && <ErrorBox message={load.message} onRetry={reload} />}
-        {listing !== undefined && <FileList listing={listing} showHidden={showHidden} onBrowse={(dir) => browse(dir)} onOpen={onOpenFile} />}
+        {listing !== undefined && <FileList listing={listing} showHidden={showHidden} onBrowse={(dir, target) => onBrowse(dir, target)} onOpen={onOpenFile} />}
       </div>
       {trustPath !== null && (
         <TrustDirDialog
