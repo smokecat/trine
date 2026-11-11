@@ -316,6 +316,7 @@ agent 侧所有产出 SessionMeta 的出口（list、session.created、session.u
 - `cwd.setDefault` — `{ path }`；新建会话表单以 defaultCwd 预选
 - `cwd.pin` — `{ path, pinned }`；置顶工作区（§2.3）
 - `cwd.pin.move`（req/resp）— `{ path, before }`；调整置顶工作区顺序（§2.3）
+- `cwd.prepare.request { reqId, path, create }`（cwd-create，`machine.info.cwd.create: true` 的 agent ≥ 0.27.0）— 新建会话前检查（`create: false`）或创建（`create: true`，`mkdir -p`）工作目录。应答 `cwd.prepare.response { reqId, ok, path?, status?: exists | missing | created, missing?: [path], error?: { code, message } }` 只回请求方、不广播；`path` 是解析后的绝对路径（`~` 已展开），新建会话用它；`missing` 是要新建（已新建）的各级目录，从浅到深，最多 16 级。`code ∈ invalid（相对路径、含 NUL、超过 16 级）| denied | not_dir（路径或某级祖先是文件、失效的符号链接）| failed（没有权限、只读、磁盘满等）`。已存在的目录一律 `exists`，不做别的判断（预检不能把 session.create 原本能用的目录拦下）；要新建时，字面路径和「最深已存在祖先的真实路径 + 其余段」都不能落在密钥类路径、trine home 或 `/proc` `/sys` `/dev` 里（同文件查看），建完按真实路径复查。不提权。`session.create` 不变：client（新建会话面板）开始前先检查，`missing` 时弹确认框列出各级目录，确认后创建再建会话；失败时撤掉仍在待发队列里的帧。没有能力位的 agent 不预检，行为同以前
 - 变更广播 `cwd.updated` — 多客户端设备保持一致
 - 会话内当前 cwd 的展示：会话头部元信息行（低优先级折叠态），点开会话设置 sheet 查看/切换——数据即 `session.status.cwd`，无需独立事件
 

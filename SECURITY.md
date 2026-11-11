@@ -62,6 +62,11 @@ is not a substitute for those controls, backups or TLS.
   from 0.24.0 `/proc`, `/sys` and `/dev`, where process environments can hold tokens)
   and checks symlink targets, but anything else in scope is readable. Set
   `TRINE_FILES=off` on the agent to disable it.
+- From agent 0.27.0, any paired device can have the agent create a missing working directory
+  for a new session (`mkdir -p` as the agent's user, after a confirmation in the browser). As
+  with trusting a directory, this adds nothing a paired device could not already do through a
+  session. The agent still refuses to create directories under key-material paths, its own
+  home or `/proc`, `/sys` and `/dev`, checks symlinked ancestors and never uses `sudo`.
 - A compromised frontend host can replace JavaScript and steal browser keys or plaintext.
   Same-origin hosting trusts the relay host to serve the correct frontend.
 - A compromised paired device or agent can read content and send authorized operations.

@@ -51,6 +51,11 @@ the agent runs on your own computer.
   snippets live behind a `+` button so the input keeps its width.
 - Lists, resumes, renames and archives sessions across paired machines; right-click or
   multi-select (Ctrl/Cmd/Shift-click) to archive in bulk, and copy a session's working directory.
+- Starts a new session in a directory that does not exist yet: the new-session sheet marks the
+  path as new, and "开始会话" first asks you to confirm the directories the agent will create
+  (`mkdir -p`, at most 16 levels). It never creates them under key-material directories such as
+  `.ssh` or `.git`, inside the agent's own home, or under `/proc`, `/sys` and `/dev`; it does not
+  use `sudo`. Requires agent 0.27.0 or later; older agents start the session as before.
 - Shows CPU, memory, disk, network and claude process usage for each agent machine (list header,
   machine cards, machine details). It refreshes only while the page is visible, at an interval set
   in Settings (1 minute by default, 5 seconds on the machine page), and can be refreshed by hand.
