@@ -40,8 +40,12 @@ describe('createFileLinks', () => {
 
   test('只有抽屉：side 也落到抽屉', () => {
     const drawer: FileOpenIntent[] = [];
-    createFileLinks({ drawer: (i) => void drawer.push(i) }).open({ path: 'x.md', target: 'side' });
+    const links = createFileLinks({ drawer: (i) => void drawer.push(i) });
+    links.open({ path: 'x.md', target: 'side' });
     expect(drawer).toHaveLength(1);
+    // 没有工作区：调用点不显示「在侧边打开」
+    expect(links.sideAvailable).toBe(false);
+    expect(createFileLinks({ drawer: () => {}, workspace: workspace(false, []) }).sideAvailable).toBe(true);
   });
 
   test('Alt 才是 side', () => {

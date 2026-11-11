@@ -28,7 +28,7 @@
  */
 import { useState } from 'react';
 import { toast } from 'sonner';
-import { CopyIcon, FileSearchIcon } from 'lucide-react';
+import { CopyIcon, FileSearchIcon, PanelRightOpenIcon } from 'lucide-react';
 import type { BgTask, SubagentState } from '@trine/core';
 import { copyText } from '@/lib/clipboard.ts';
 import { targetForClick, useFileLinks } from '@/components/files/file-links.ts';
@@ -371,9 +371,21 @@ export function ToolCard({
             title={`预览 ${filePath}（Alt+点击在侧边打开）`}
             aria-label={`预览 ${filePath}`}
             onClick={(e) => fileLinks?.open({ path: filePath, target: targetForClick(e) })}
-            className="text-text-3 hover:text-text shrink-0 self-stretch px-2.5"
+            className={cn('text-text-3 hover:text-text shrink-0 self-stretch', fileLinks?.sideAvailable === true ? 'px-1.5' : 'px-2.5')}
           >
             <FileSearchIcon className="size-3.5" />
+          </button>
+        )}
+        {filePath !== undefined && fileLinks?.sideAvailable === true && (
+          <button
+            type="button"
+            data-testid="tool-open-side"
+            title={`在侧边打开 ${filePath}（工作区里保留为 tab）`}
+            aria-label={`在侧边打开 ${filePath}`}
+            onClick={() => fileLinks.open({ path: filePath, target: 'side' })}
+            className="text-text-3 hover:text-text shrink-0 self-stretch pr-2.5 pl-1"
+          >
+            <PanelRightOpenIcon className="size-3.5" />
           </button>
         )}
       </div>

@@ -41,6 +41,8 @@ export type FileOpenIntent = FileOpenFileIntent | FileOpenDirIntent;
 
 export interface FileLinks {
   open: (intent: FileOpenIntent) => void;
+  /** 有工作区可去（桌面宽度）：调用点据此显示显式的「在侧边打开」入口 */
+  sideAvailable?: boolean;
 }
 
 /** 工作区（C2）接入点：展开状态由它自己报，打开由它自己做 */
@@ -66,6 +68,7 @@ export function resolveFileOpenTarget(target: FileOpenTarget, workspace: FileWor
 
 export function createFileLinks(handlers: FileOpenHandlers): FileLinks {
   return {
+    sideAvailable: handlers.workspace != null,
     open: (intent) => {
       if (resolveFileOpenTarget(intent.target, handlers.workspace) === 'workspace') handlers.workspace!.open(intent);
       else handlers.drawer(intent);

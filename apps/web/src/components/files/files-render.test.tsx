@@ -65,6 +65,18 @@ describe('ToolCard 文件预览入口', () => {
       { path: '/w/repo/docs/plan.md', target: 'side' },
       { path: '/w/repo/docs/plan.md', target: 'auto' },
     ]);
+    // 没有工作区（手机 / 窄屏）：不显示显式的「在侧边打开」
+    expect($(el, 'tool-open-side')).toBeNull();
+    act(() =>
+      root?.render(
+        <FileLinksContext.Provider value={{ ...links, sideAvailable: true }}>
+          <ToolCard entry={tool({ filePath: '/w/repo/docs/plan.md' })} runningElapsedMs={null} />
+        </FileLinksContext.Provider>,
+      ),
+    );
+    opened.length = 0;
+    act(() => $(el, 'tool-open-side')!.click());
+    expect(opened).toEqual([{ path: '/w/repo/docs/plan.md', target: 'side' }]);
     act(() => root?.render(<ToolCard entry={tool({ filePath: '/w/repo/docs/plan.md' })} runningElapsedMs={null} />));
     expect($(el, 'tool-open-file')).toBeNull();
     act(() =>
