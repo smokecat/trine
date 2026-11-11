@@ -57,11 +57,13 @@ export function FileBody({
   );
 }
 
-function useText(blob: Blob): string | undefined {
+/** Blob 解码成文本；blob 省略 = 不解码 */
+export function useText(blob: Blob | undefined): string | undefined {
   const [text, setText] = useState<string | undefined>(undefined);
   useEffect(() => {
     let alive = true;
     setText(undefined);
+    if (blob === undefined) return;
     void blob.text().then((t) => {
       if (alive) setText(t);
     });

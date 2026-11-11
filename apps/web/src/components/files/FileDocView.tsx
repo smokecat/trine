@@ -7,7 +7,7 @@
  * markdown 预览带目录与锚点（方案 §6）：标题 id 加本实例前缀（useId），锚点只在本视图的
  * 滚动容器里定位；intent 带来的 `fragment` 等预览渲染出来再定位，找不到给提示。
  */
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { DownloadIcon, EyeIcon, EyeOffIcon, RefreshCwIcon, WrapTextIcon } from 'lucide-react';
 import { useClient } from '@/app/runtime.ts';
 import type { OpenedFile } from '@/lib/client.ts';
@@ -15,10 +15,11 @@ import { formatBytes, formatDateTime } from '@/lib/format.ts';
 import { cn } from '@/lib/utils.ts';
 import { Button } from '@/components/ui/button.tsx';
 import { Breadcrumbs } from './FileBrowser.tsx';
-import { FileBody } from './FileViewer.tsx';
 import { FileDocAnchorContext, useFileLinks, type FileDocAnchors, type FileOpenTarget } from './file-links.ts';
 import { HIGHLIGHT_MAX_BYTES, parentDir } from './file-model.ts';
-import { TOC_RAIL_MIN_WIDTH, TocPopover, TocRail, useContainerWidth, useDocToc } from './MarkdownToc.tsx';
+import { FileBody, useText } from './FileViewer.tsx';
+import { restoreReading, TOC_RAIL_MIN_WIDTH, TocPopover, TocRail, useContainerWidth, useDocToc } from './MarkdownToc.tsx';
+import { applyRendered, applySource, captureRendered, captureSource, type ModeMark } from './mode-scroll.ts';
 import { useLoad } from './use-file-load.ts';
 import { ErrorBox, ViewHeader, type FileViewChrome } from './ViewHeader.tsx';
 import { useScrollMemory, type FileDocModel } from './view-model.ts';
@@ -131,14 +132,44 @@ export function FileDocView({
     // 源码模式：切回渲染时再定位
     if (mode !== 'rendered' || !toc.hasPreview) return;
     setPending(undefined);
-    const ok = jump(pending.fragment, { smooth: false });
+    // 打开带来的定位与同文件跳转一致：焦点落到目标标题；刷新后的复核不抢焦点
+    const ok = jump(pending.fragment, { smooth: false, focus: pending.reason === 'open' });
     landed.current = ok ? pending.fragment : undefined;
     setMissing(ok ? null : { fragment: pending.fragment, reason: pending.reason });
   }, [pending, load.state, opened, mode, toc.hasPreview, toc.version, jump]);
 
+  // 源码 / 渲染切换：像素位置在两种模式下不可比，按「读到第几个标题」换算（见 mode-scroll.ts）
+  const isMarkdown = opened?.file.kind === 'markdown';
+  const sourceText = useText(isMarkdown ? opened.blob : undefined);
+  const modeMark = useRef<ModeMark | null>(null);
+  const toggleMode = (): void => {
+    const el = scrollRef.current;
+    if (el !== null) modeMark.current = mode === 'rendered' ? captureRendered(el) : captureSource(el, sourceText ?? '');
+    onModelChange({ mode: mode === 'rendered' ? 'source' : 'rendered' });
+  };
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    const mark = modeMark.current;
+    if (el === null || mark === null) return;
+    modeMark.current = null;
+    if (mode === 'rendered') applyRendered(el, mark);
+    else applySource(el, sourceText ?? '', mark);
+  }, [mode, sourceText]);
+
   const showToc = mode === 'rendered' && toc.items.length > 0;
   const width = useContainerWidth(scrollEl);
   const rail = showToc && width >= TOC_RAIL_MIN_WIDTH;
+  // 跨过侧栏断点：正文宽度变了会重排，浏览器也可能重置滚动——让当前节标题回到原来的偏移
+  // （只管纯宽度变化：目录出现 / 消失是模式切换或内容变化，那边自己定位）
+  const prevLayout = useRef({ rail, showToc });
+  useLayoutEffect(() => {
+    const prev = prevLayout.current;
+    prevLayout.current = { rail, showToc };
+    if (prev.rail === rail || !prev.showToc || !showToc) return;
+    const el = scrollRef.current;
+    const mark = toc.reading.current;
+    if (el !== null && mark !== null) restoreReading(el, mark);
+  }, [rail, showToc, toc.reading]);
   const body =
     opened === undefined ? null : (
       <FileDocAnchorContext.Provider value={anchors}>
@@ -173,7 +204,7 @@ export function FileDocView({
             aria-label={mode === 'rendered' ? '查看源码' : '查看渲染效果'}
             aria-pressed={mode === 'source'}
             title={mode === 'rendered' ? '查看源码' : '查看渲染效果'}
-            onClick={() => onModelChange({ mode: mode === 'rendered' ? 'source' : 'rendered' })}
+            onClick={toggleMode}
           >
             {mode === 'rendered' ? <EyeOffIcon /> : <EyeIcon />}
           </Button>
@@ -196,28 +227,33 @@ export function FileDocView({
       </ViewHeader>
       <div className="relative flex min-h-0 flex-1 flex-col">
         <div ref={setScrollRefs} onScroll={onScroll} data-testid="file-scroll" className="min-h-0 flex-1 overflow-auto pb-[env(safe-area-inset-bottom)]">
-          {missing !== null && (
-            <div
-              data-testid="file-anchor-missing"
-              data-reason={missing.reason}
-              role="status"
-              className="text-text-2 border-border bg-surface-2 flex items-center gap-2 border-b px-4 py-1.5 text-[12px]"
-            >
-              <span className="min-w-0 flex-1 truncate">{MISSING_TEXT[missing.reason](missing.fragment)}</span>
-              <button type="button" className="text-text-3 hover:text-text shrink-0" onClick={() => setMissing(null)}>
-                知道了
-              </button>
-            </div>
-          )}
           {load.state === 'loading' && <div className="text-text-3 p-6 text-[13px]">正在读取…</div>}
           {load.state === 'error' && <ErrorBox message={load.message} onRetry={doRefresh} />}
-          {/* 结构不随宽窄变（只换 class），宽窄切换时正文不重挂；窄时 contents 不产生盒子，PDF 的 h-full 照旧 */}
-          <div className={rail ? 'flex min-w-0 items-start' : 'contents'}>
-            <div className={rail ? 'min-w-0 flex-1' : 'contents'}>{body}</div>
+          {/*
+            DOM 结构只随「有没有目录」变（模式 / 内容决定），**不随宽窄变**：跨过侧栏断点时只换 class、
+            加减侧栏，正文与滚动容器都不重挂。没有目录时 contents 不产生盒子，PDF 的 h-full 照旧。
+            窄屏有浮动按钮时正文右侧留出按钮的位置，不压住标题。
+          */}
+          <div data-testid="file-doc-row" className={showToc ? 'flex min-w-0 items-start' : 'contents'}>
+            <div className={showToc ? cn('min-w-0 flex-1', !rail && 'pr-11') : 'contents'}>{body}</div>
             {rail && <TocRail items={toc.items} active={toc.active} onJump={onTocJump} maxHeight={scrollEl?.clientHeight ?? 0} />}
           </div>
         </div>
         {showToc && !rail && <TocPopover items={toc.items} active={toc.active} onJump={onTocJump} />}
+        {/* 锚点失效提示：浮在预览视口底部（不在滚动内容里，滚到哪都看得见；也不与右上角目录按钮重叠） */}
+        {missing !== null && (
+          <div
+            data-testid="file-anchor-missing"
+            data-reason={missing.reason}
+            role="status"
+            className="text-text-2 border-border bg-surface-2 absolute inset-x-3 bottom-[max(0.75rem,env(safe-area-inset-bottom))] z-20 mx-auto flex max-w-xl items-center gap-2 rounded-lg border px-3 py-2 text-[12px] shadow-md"
+          >
+            <span className="min-w-0 flex-1">{MISSING_TEXT[missing.reason](missing.fragment)}</span>
+            <button type="button" data-testid="file-anchor-missing-dismiss" className="text-text-3 hover:text-text shrink-0 pointer-coarse:min-h-10" onClick={() => setMissing(null)}>
+              知道了
+            </button>
+          </div>
+        )}
       </div>
     </>
   );

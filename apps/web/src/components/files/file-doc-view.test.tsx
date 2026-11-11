@@ -16,7 +16,7 @@ const { MemoryRouter } = await import('react-router');
 const { runtimeState } = await import('@/app/runtime.ts');
 const { FileLinksContext } = await import('./file-links.ts');
 const { FileDocView } = await import('./FileDocView.tsx');
-const { FilePanel } = await import('./FilePanel.tsx');
+const { FilePanel, resetDrawerState } = await import('./FilePanel.tsx');
 const { DEFAULT_DOC_MODEL } = await import('./view-model.ts');
 
 type Root = ReturnType<typeof createRoot>;
@@ -28,6 +28,7 @@ afterEach(() => {
   root = null;
   host = null;
   act(() => runtimeState.setState({ client: null }));
+  resetDrawerState();
 });
 
 const DOC = ['# 总览', '', '正文', '', '## 安装步骤', '', '跳到 [用法](#%E7%94%A8%E6%B3%95) 或 [不存在](#nope)', '', '## 用法', '', '### 用法', ''].join('\n');

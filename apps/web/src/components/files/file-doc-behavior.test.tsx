@@ -18,7 +18,7 @@ const { MemoryRouter } = await import('react-router');
 const { runtimeState } = await import('@/app/runtime.ts');
 const { FileLinksContext } = await import('./file-links.ts');
 const { FileDocView } = await import('./FileDocView.tsx');
-const { FilePanel } = await import('./FilePanel.tsx');
+const { FilePanel, resetDrawerState } = await import('./FilePanel.tsx');
 const { DEFAULT_DOC_MODEL, useScrollMemory } = await import('./view-model.ts');
 
 const STEP = 300;
@@ -49,8 +49,10 @@ function installLayout(): () => void {
   Object.defineProperty(proto, 'getBoundingClientRect', {
     configurable: true,
     value(this: HTMLElement) {
+      // 容器自己在 0；容器里的元素随滚动上移（可定位元素按文档顺序排开，其余在内容顶部）
+      const s = scroller(this);
       const doc = anchorTop(this);
-      const top = doc === undefined ? 0 : doc - (scroller(this)?.scrollTop ?? 0);
+      const top = s === null || s === this ? 0 : (doc ?? 0) - s.scrollTop;
       return { top, bottom: top + 20, left: 0, right: 0, width: 0, height: 20, x: 0, y: top, toJSON: () => ({}) };
     },
   });
@@ -85,6 +87,7 @@ afterEach(() => {
   root = null;
   host = null;
   restoreLayout?.();
+  resetDrawerState();
   act(() => runtimeState.setState({ client: null }));
 });
 
@@ -489,6 +492,174 @@ describe('2 · 滚动恢复：用户输入立即取消，只过滤程序滚动',
       expect(added).toContain(t);
       expect(removed).toContain(t);
     }
+  });
+});
+
+describe('宽度跨过目录侧栏断点', () => {
+  test('侧栏 ↔ 浮动按钮来回切：正文与滚动容器不重挂，滚动位置不丢', async () => {
+    const callbacks: (() => void)[] = [];
+    const Original = (globalThis as { ResizeObserver?: unknown }).ResizeObserver;
+    (globalThis as { ResizeObserver?: unknown }).ResizeObserver = class {
+      constructor(cb: () => void) {
+        callbacks.push(cb);
+      }
+      observe(): void {}
+      disconnect(): void {}
+    };
+    try {
+      setup({ '/w/a.md': DOC });
+      await mount(<Doc path="/w/a.md" />);
+      const preview = document.querySelector('[data-file-preview]');
+      const el = scroller();
+      expect($('file-toc-rail')).not.toBeNull();
+      userScroll(el, 650);
+      await settle();
+      for (const width of [400, 1200, 400]) {
+        viewWidth = width;
+        act(() => callbacks.forEach((cb) => cb()));
+        await settle();
+        expect(scroller()).toBe(el);
+        expect(document.querySelector('[data-file-preview]')).toBe(preview);
+        expect(el.scrollTop).toBe(650);
+        expect(activeSlug() ?? $('file-toc-button')?.dataset['testid']).toBeDefined();
+      }
+      expect($('file-toc-button')).not.toBeNull();
+    } finally {
+      (globalThis as { ResizeObserver?: unknown }).ResizeObserver = Original;
+    }
+  });
+});
+
+describe('真实浏览器复测的问题', () => {
+  test('锚点失效提示浮在预览视口里（不在滚动内容中）：滚到很深也看得见，不与目录按钮同角', async () => {
+    viewWidth = 400;
+    setup({ '/w/a.md': `${DOC}\n[坏](#nope)` });
+    await mount(<Doc path="/w/a.md" />);
+    const el = scroller();
+    userScroll(el, 3000);
+    act(() => $$('file-anchor-link').find((l) => l.dataset['fragment'] === 'nope')!.click());
+    const notice = $('file-anchor-missing')!;
+    expect(notice).not.toBeNull();
+    expect(el.contains(notice)).toBe(false);
+    expect(notice.parentElement).toBe(el.parentElement);
+    expect(el.scrollTop).toBe(3000);
+    // 目录按钮在右上角，提示在底部
+    expect($('file-toc-button')!.className).toContain('top-2');
+    expect(notice.className).toMatch(/\bbottom-/);
+    act(() => $('file-anchor-missing-dismiss')!.click());
+    expect($('file-anchor-missing')).toBeNull();
+  });
+
+  test('源码 / 渲染切换按「读到第几个标题」换算位置，而不是沿用像素', async () => {
+    const filler = (n: number): string => Array.from({ length: n }, (_, i) => `正文 ${i}`).join('\n\n');
+    const md = ['# 总览', filler(10), '## 安装', filler(10), '## 用法', filler(10), '## API Reference', filler(10)].join('\n\n');
+    const lines = md.split('\n');
+    const lineOf = (h: string): number => lines.indexOf(h);
+    const sourceTop = (h: string): number => (lineOf(h) / lines.length) * contentHeight - 8;
+    setup({ '/w/a.md': md });
+    await mount(<Doc path="/w/a.md" />);
+    const el = scroller();
+    // 渲染：跳到 API Reference（第 4 个标题，假布局里在 900）
+    act(() => $$('toc-item').find((i) => i.dataset['slug'] === 'api-reference')!.click());
+    expect(el.scrollTop).toBe(900 - 8);
+    act(() => $('file-toggle-source')!.click());
+    await settle();
+    expect($('file-text')).not.toBeNull();
+    expect(el.scrollTop).toBeCloseTo(sourceTop('## API Reference'), 0);
+    // 源码里往回滚到「安装」那一行附近，再切回渲染：落到「安装」标题
+    userScroll(el, sourceTop('## 安装') + 8 + 5);
+    act(() => $('file-toggle-source')!.click());
+    await settle();
+    expect($('file-text')).toBeNull();
+    expect(el.scrollTop).toBe(300 - 8);
+    // 第一个标题之前：按比例
+    userScroll(el, 0);
+    act(() => $('file-toggle-source')!.click());
+    await settle();
+    expect(el.scrollTop).toBe(0);
+  });
+
+  test('跨断点时浏览器把滚动重置为 0：按当前节标题找回原位置', async () => {
+    const callbacks: (() => void)[] = [];
+    const Original = (globalThis as { ResizeObserver?: unknown }).ResizeObserver;
+    (globalThis as { ResizeObserver?: unknown }).ResizeObserver = class {
+      constructor(cb: () => void) {
+        callbacks.push(cb);
+      }
+      observe(): void {}
+      disconnect(): void {}
+    };
+    try {
+      setup({ '/w/a.md': DOC });
+      await mount(<Doc path="/w/a.md" />);
+      const el = scroller();
+      userScroll(el, 650);
+      await settle();
+      for (const width of [400, 1200]) {
+        viewWidth = width;
+        // 模拟重排把滚动位置清零（不派发 scroll 事件，阅读位置记录仍是旧的）
+        el.scrollTop = 0;
+        act(() => callbacks.forEach((cb) => cb()));
+        await settle();
+        expect(el.scrollTop).toBe(650);
+      }
+    } finally {
+      (globalThis as { ResizeObserver?: unknown }).ResizeObserver = Original;
+    }
+  });
+
+  test('外壳在 900px 断点重挂整个抽屉：回到同一条历史时滚动位置不丢、不重新按锚点跳', async () => {
+    setup({ '/w/a.md': DOC });
+    const panel = (
+      <MemoryRouter>
+        <FilePanel machineId="m" sessionId="s1" view={{ kind: 'file', path: '/w/a.md', fragment: '用法' }} onNavigate={() => {}} onClose={() => {}} />
+      </MemoryRouter>
+    );
+    await mount(panel);
+    expect(scroller().scrollTop).toBe(600 - 8);
+    userScroll(scroller(), 40);
+    await wait(200);
+    // 重挂（相当于外壳从桌面布局切到手机布局）
+    act(() => root!.unmount());
+    root = createRoot(host!);
+    act(() => root!.render(<FileLinksContext.Provider value={{ open: () => {} }}>{panel}</FileLinksContext.Provider>));
+    await settle();
+    expect(scroller().scrollTop).toBe(40);
+  });
+
+  test('跨文件锚点打开后焦点落到目标标题（与同文件跳转一致）', async () => {
+    setup({ '/w/a.md': DOC });
+    await mount(<Doc path="/w/a.md" fragment="用法" />);
+    expect(document.activeElement).toBe(heading('用法'));
+  });
+
+  test('窄屏浮动按钮：正文右侧留出按钮位置；宽屏侧栏不留', async () => {
+    viewWidth = 400;
+    setup({ '/w/a.md': DOC });
+    await mount(<Doc path="/w/a.md" />);
+    expect(($('file-doc-row')!.firstElementChild as HTMLElement).className).toContain('pr-11');
+    act(() => root!.unmount());
+    root = null;
+    viewWidth = 1200;
+    await mount(<Doc path="/w/a.md" />);
+    expect(($('file-doc-row')!.firstElementChild as HTMLElement).className).not.toContain('pr-11');
+  });
+
+  test('抽屉自动聚焦：指针打开落在容器上（无焦点框），键盘打开落在第一个按钮', async () => {
+    setup({ '/w/a.md': DOC });
+    const panel = (
+      <MemoryRouter>
+        <FilePanel machineId="m" sessionId="s1" view={{ kind: 'file', path: '/w/a.md' }} onNavigate={() => {}} onClose={() => {}} />
+      </MemoryRouter>
+    );
+    act(() => void document.body.dispatchEvent(new window.Event('pointerdown', { bubbles: true })));
+    await mount(panel);
+    expect(document.activeElement).toBe($('file-panel'));
+    act(() => root!.unmount());
+    root = null;
+    act(() => void document.body.dispatchEvent(new window.KeyboardEvent('keydown', { bubbles: true, key: 'Enter' })));
+    await mount(panel);
+    expect(document.activeElement).toBe($('file-panel-up'));
   });
 });
 

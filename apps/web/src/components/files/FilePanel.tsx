@@ -7,6 +7,8 @@
  * 同一文件第二次打开用缓存，「刷新」重新向 agent 要。
  */
 import { useState } from 'react';
+import { useLocation } from 'react-router';
+import { lastInputWasPointer } from '@/lib/input-modality.ts';
 import { cn } from '@/lib/utils.ts';
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from '@/components/ui/sheet.tsx';
 import { useIsDesktop } from '@/components/shell/use-media-query.ts';
@@ -49,6 +51,7 @@ export function FilePanel({
   onClose: () => void;
 }): React.JSX.Element {
   const desktop = useIsDesktop();
+  const location = useLocation();
   const chrome: FileViewChrome = { Title: DrawerTitle, Description: DrawerDescription, onClose };
   const links = useFileLinks();
   // 抽屉内普通点击就地导航（push 历史）；显式 side（Alt+点击）走完整打开 intent，由路由决定去处
@@ -66,9 +69,15 @@ export function FilePanel({
         side="right"
         showCloseButton={false}
         data-testid="file-panel"
+        // 指针打开：焦点落在抽屉容器上（不给第一个按钮套焦点框）；键盘打开：沿用默认（第一个可聚焦元素）
+        onOpenAutoFocus={(e) => {
+          if (!lastInputWasPointer()) return;
+          e.preventDefault();
+          (e.currentTarget as HTMLElement | null)?.focus({ preventScroll: true });
+        }}
         // Sheet 自带 data-[side=right]:w-3/4 / sm:max-w-sm，要用同样的 data 变体才压得住
         className={cn(
-          'gap-0',
+          'gap-0 outline-none',
           desktop
             ? 'data-[side=right]:w-[min(56rem,92vw)] data-[side=right]:sm:max-w-none'
             : 'data-[side=right]:w-full data-[side=right]:max-w-none data-[side=right]:border-l-0 data-[side=right]:sm:max-w-none',
@@ -78,6 +87,7 @@ export function FilePanel({
           <DrawerDoc
             // 换文件或换锚点都重挂：每次打开从头定位（内容走缓存，不会重新下载）
             key={`${view.path}#${view.fragment ?? ''}`}
+            cacheKey={`${machineId}|${sessionId}|${location.key}|file|${view.path}`}
             machineId={machineId}
             sessionId={sessionId}
             path={view.path}
@@ -89,6 +99,7 @@ export function FilePanel({
         {view?.kind === 'dir' && (
           <DrawerDir
             key={view.path ?? ''}
+            cacheKey={`${machineId}|${sessionId}|${location.key}|dir|${view.path ?? ''}`}
             machineId={machineId}
             sessionId={sessionId}
             path={view.path}
@@ -102,23 +113,49 @@ export function FilePanel({
   );
 }
 
-/** 抽屉里的内容状态只活在组件里：关掉 / 换文件就丢（工作区 tab 才持久化） */
-function DrawerDoc({
-  fragment,
-  ...props
-}: Omit<React.ComponentProps<typeof FileDocView>, 'model' | 'onModelChange' | 'fragment'> & { fragment: string | undefined }): React.JSX.Element {
-  const [model, setModel] = useState<FileDocModel>(DEFAULT_DOC_MODEL);
-  return (
-    <FileDocView
-      {...props}
-      {...(fragment === undefined ? {} : { fragment })}
-      model={model}
-      onModelChange={(patch) => setModel((m) => ({ ...m, ...patch }))}
-    />
-  );
+/**
+ * 抽屉的内容状态（模式、换行、滚动）按「历史条目 + 视图」记在内存里：
+ * 外壳在 900px 断点切换桌面 / 手机布局时整个聊天页（连同抽屉）会重挂，没有这层记忆滚动位置就归零；
+ * 返回到某条历史时也回到当时的位置。只存小字段，不存内容；不持久化（刷新页面即清空）。
+ */
+const DRAWER_STATE_MAX = 40;
+const drawerState = new Map<string, FileDocModel | FileDirModel>();
+
+function rememberDrawer(key: string, model: FileDocModel | FileDirModel): void {
+  drawerState.delete(key);
+  drawerState.set(key, model);
+  while (drawerState.size > DRAWER_STATE_MAX) drawerState.delete(drawerState.keys().next().value!);
 }
 
-function DrawerDir(props: Omit<React.ComponentProps<typeof FileDirView>, 'model' | 'onModelChange'>): React.JSX.Element {
-  const [model, setModel] = useState<FileDirModel>(DEFAULT_DIR_MODEL);
-  return <FileDirView {...props} model={model} onModelChange={(patch) => setModel((m) => ({ ...m, ...patch }))} />;
+/** 测试用：清空抽屉的内容状态记忆 */
+export function resetDrawerState(): void {
+  drawerState.clear();
+}
+
+function useDrawerModel<T extends FileDocModel | FileDirModel>(cacheKey: string, initial: T): [T, (patch: Partial<T>) => void, boolean] {
+  const [restored] = useState(() => drawerState.has(cacheKey));
+  const [model, setModel] = useState<T>(() => (drawerState.get(cacheKey) as T | undefined) ?? initial);
+  const update = (patch: Partial<T>): void => {
+    // 卸载时视图还会补报最后的滚动位置：直接写进记忆，不依赖 setState
+    const next = { ...((drawerState.get(cacheKey) as T | undefined) ?? model), ...patch };
+    rememberDrawer(cacheKey, next);
+    setModel(next);
+  };
+  return [model, update, restored];
+}
+
+function DrawerDoc({
+  fragment,
+  cacheKey,
+  ...props
+}: Omit<React.ComponentProps<typeof FileDocView>, 'model' | 'onModelChange' | 'fragment'> & { fragment: string | undefined; cacheKey: string }): React.JSX.Element {
+  const [model, update, restored] = useDrawerModel<FileDocModel>(cacheKey, DEFAULT_DOC_MODEL);
+  // 重挂回来的（同一条历史）：回到当时的位置，不再按锚点重新跳
+  const effectiveFragment = restored ? undefined : fragment;
+  return <FileDocView {...props} {...(effectiveFragment === undefined ? {} : { fragment: effectiveFragment })} model={model} onModelChange={update} />;
+}
+
+function DrawerDir({ cacheKey, ...props }: Omit<React.ComponentProps<typeof FileDirView>, 'model' | 'onModelChange'> & { cacheKey: string }): React.JSX.Element {
+  const [model, update] = useDrawerModel<FileDirModel>(cacheKey, DEFAULT_DIR_MODEL);
+  return <FileDirView {...props} model={model} onModelChange={update} />;
 }
