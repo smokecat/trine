@@ -36,7 +36,7 @@
  * 按需请求、不轮询（方案 §0 行 i：这类请求占 agent 的并发名额）。结果不进
  * 时间线（它不是会话内容），只活在本地 state 里，刷新即消失。
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router';
 import { toast } from 'sonner';
 import type { McpServerStatus, PermissionMode, RewindMode } from '@trine/core';
@@ -97,7 +97,12 @@ import { EngineIcon } from '@/components/shell/EngineIcon.tsx';
 import { formatCost } from '@/lib/format.ts';
 import { waitingForOfTool } from '@/lib/waiting.ts';
 import { ExtHeadEntry, ExtPanelSheet } from '@/components/ext/ExtPanel.tsx';
-import { FilePanel } from '@/components/files/FilePanel.tsx';
+import { FilePanel, type DrawerHandoff } from '@/components/files/FilePanel.tsx';
+import { prefetchWorkspace } from '@/components/workspace/LazyWorkspace.tsx';
+import { useWorkspace } from '@/components/workspace/use-workspace.ts';
+import { intentForView, useDrawerHandoff, type HandoffIntent } from '@/components/workspace/use-drawer-handoff.ts';
+import { WorkspacePane } from '@/components/workspace/WorkspacePane.tsx';
+import { useWorkspacePeekRoute, WorkspacePeek } from '@/components/workspace/WorkspacePeek.tsx';
 import { createFileLinks, FileLinksContext, type FileLinks } from '@/components/files/file-links.ts';
 import { useFilePanelRoute, viewForIntent } from '@/components/files/use-file-panel.ts';
 import { composerPickerLabel, ExtComposerPicker, useComposerExtensions } from '@/components/ext/ExtComposerPicker.tsx';
@@ -159,11 +164,64 @@ export function ChatView(): React.JSX.Element {
   const filesSupported = machine?.info?.files != null;
   const filePanel = useFilePanelRoute();
   const openFilePanel = filePanel.open;
-  // 打开 intent 的路由：目前只有抽屉（auto / side 都落到抽屉）；工作区（C2）在这里传 workspace 处理器
+  // 文件工作区（桌面）：按「机器 + 会话 cwd」一份，手机宽度不加载 dockview、只有抽屉
+  const ws = useWorkspace({ machineId, sessionId, cwd: meta?.cwd, enabled: isDesktop && filesSupported });
+  const workspaceRoute = ws.route;
+  // 打开 intent 的路由：auto 在工作区展开时进工作区，否则抽屉；side 进工作区；窄屏 / 手机全落到抽屉
   const fileLinks = useMemo<FileLinks | null>(
-    () => (filesSupported ? createFileLinks({ drawer: (intent) => openFilePanel(viewForIntent(intent)) }) : null),
-    [filesSupported, openFilePanel],
+    () => (filesSupported ? createFileLinks({ drawer: (intent) => openFilePanel(viewForIntent(intent)), workspace: workspaceRoute }) : null),
+    [filesSupported, openFilePanel, workspaceRoute],
   );
+  const openWithState = ws.openWithState;
+  const handoff = useDrawerHandoff(useCallback((h: HandoffIntent) => openWithState(h.intent, h.state), [openWithState]));
+  const onDrawerHandoff = useCallback(
+    (h: DrawerHandoff) => handoff({ intent: intentForView(h.view), state: h.state }),
+    [handoff],
+  );
+  // 工作区展开时的 `?file=` / `?dir=` 深链（不是本页从关着打开的抽屉）：转成 tab，参数就地 replace 掉
+  const fileState = useLocation().state as { fileFromClosed?: unknown } | null;
+  const deepLinkView = filePanel.view !== null && fileState?.fileFromClosed !== true ? filePanel.view : null;
+  const wsShown = ws.shown;
+  useEffect(() => {
+    if (!wsShown || deepLinkView === null) return;
+    handoff({ intent: intentForView(deepLinkView), state: {} });
+  }, [wsShown, deepLinkView, handoff]);
+  // 桌面窄窗口：「文件（N）」以抽屉形式看当前活动 tab（一条可退回的历史）
+  const peek = useWorkspacePeekRoute();
+  const closePeek = peek.close;
+  const peekOpen = peek.open;
+  useEffect(() => {
+    // 宽度恢复（或工作区没了）：抽屉退掉，回到工作区布局
+    if (peekOpen && (!ws.narrow || ws.status === 'absent')) closePeek();
+  }, [peekOpen, ws.narrow, ws.status, closePeek]);
+  // 主区（聊天 + 工作区）实测宽度：放不下两栏时工作区自动收起
+  const rowRef = useRef<HTMLDivElement | null>(null);
+  const [mainWidth, setMainWidth] = useState(0);
+  const setWsMainWidth = ws.setMainWidth;
+  useLayoutEffect(() => {
+    const el = rowRef.current;
+    if (el === null || typeof ResizeObserver === 'undefined') return;
+    const measure = (): void => {
+      const w = Math.round(el.getBoundingClientRect().width);
+      setMainWidth(w);
+      setWsMainWidth(w);
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [setWsMainWidth]);
+  // 桌面空闲时预取 dockview chunk（首次展开不必等下载）
+  useEffect(() => {
+    if (!isDesktop || !filesSupported) return;
+    const idle = (globalThis as { requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => number }).requestIdleCallback;
+    if (idle !== undefined) {
+      const id = idle(() => prefetchWorkspace(), { timeout: 10_000 });
+      return () => (globalThis as { cancelIdleCallback?: (id: number) => void }).cancelIdleCallback?.(id);
+    }
+    const t = setTimeout(() => prefetchWorkspace(), 5_000);
+    return () => clearTimeout(t);
+  }, [isDesktop, filesSupported]);
   const extRecords = useExtRecords(machineId, sessionId);
   const [renameBusy, setRenameBusy] = useState(false);
   const [now, setNow] = useState(() => Date.now());
@@ -677,6 +735,9 @@ export function ChatView(): React.JSX.Element {
     <FileLinksContext.Provider value={fileLinks}>
       {/* display:contents 不改布局，只把内容宽度变量传给时间线与输入框（PC 上生效） */}
       <div className="contents" style={{ '--chat-max': contentMaxWidth(contentWidth) } as React.CSSProperties}>
+      {/* 主区：聊天 | 工作区（桌面）。最大化时工作区盖住聊天栏，聊天不卸载、只是不可交互 */}
+      <div ref={rowRef} data-testid="chat-row" className="relative flex min-h-0 flex-1">
+      <div data-testid="chat-column" className="flex min-h-0 min-w-0 flex-1 flex-col" inert={ws.maximized ? true : undefined}>
       <AppHead
         back={backTo}
         title={meta?.title !== undefined && meta.title !== '' ? meta.title : sessionId.slice(0, 8)}
@@ -856,6 +917,28 @@ export function ChatView(): React.JSX.Element {
           }}
         />
       )}
+      </div>
+      <WorkspacePane
+        ws={ws}
+        mainWidth={mainWidth}
+        storedWidth={prefs.workspaceWidth}
+        onWidthCommit={(width) => client?.updatePrefs({ workspaceWidth: width })}
+        onWidthReset={() => client?.updatePrefs({ workspaceWidth: null })}
+        onPeek={peek.show}
+      />
+      </div>
+
+      {ws.enabled && ws.count > 0 && (
+        <WorkspacePeek
+          open={peek.open && ws.narrow}
+          onClose={peek.close}
+          machineId={machineId}
+          sessionId={sessionId}
+          tabs={ws.tabs}
+          active={ws.active}
+          view={ws.view}
+        />
+      )}
 
       {dragging && (
         <div
@@ -875,6 +958,7 @@ export function ChatView(): React.JSX.Element {
           view={filePanel.view}
           onNavigate={filePanel.open}
           onClose={filePanel.close}
+          onHandoff={workspaceRoute === null ? undefined : onDrawerHandoff}
         />
       )}
 

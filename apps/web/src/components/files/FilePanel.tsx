@@ -8,6 +8,8 @@
  */
 import { useState } from 'react';
 import { useLocation } from 'react-router';
+import { PanelRightOpenIcon } from 'lucide-react';
+import { Button } from '@/components/ui/button.tsx';
 import { lastInputWasPointer } from '@/lib/input-modality.ts';
 import { cn } from '@/lib/utils.ts';
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from '@/components/ui/sheet.tsx';
@@ -36,12 +38,19 @@ function DrawerDescription({ className, children }: { className?: string; childr
   );
 }
 
+/** 抽屉交给工作区的内容：当前视图 + 内容状态（模式、换行、滚动） */
+export interface DrawerHandoff {
+  view: FileView;
+  state: Partial<FileDocModel> & Partial<FileDirModel>;
+}
+
 export function FilePanel({
   machineId,
   sessionId,
   view,
   onNavigate,
   onClose,
+  onHandoff,
 }: {
   machineId: string;
   sessionId: string;
@@ -49,10 +58,34 @@ export function FilePanel({
   view: FileView | null;
   onNavigate: (view: FileView) => void;
   onClose: () => void;
+  /** 「在工作区打开」（桌面且工作区可用时给） */
+  onHandoff?: ((handoff: DrawerHandoff) => void) | undefined;
 }): React.JSX.Element {
   const desktop = useIsDesktop();
   const location = useLocation();
-  const chrome: FileViewChrome = { Title: DrawerTitle, Description: DrawerDescription, onClose };
+  const stateKey = view === null ? '' : `${machineId}|${sessionId}|${location.key}|${view.kind}|${view.path ?? ''}`;
+  const chrome: FileViewChrome = {
+    Title: DrawerTitle,
+    Description: DrawerDescription,
+    onClose,
+    ...(onHandoff === undefined || view === null
+      ? {}
+      : {
+          actions: (
+            <Button
+              size="icon-sm"
+              variant="ghost"
+              data-testid="file-to-workspace"
+              aria-label="在工作区打开"
+              title="在工作区打开（保留为 tab，可与聊天并排）"
+              // 点的这一刻抓内容状态：滚动停下才上报，这里直接读抽屉的记忆
+              onClick={() => onHandoff({ view, state: { ...(drawerState.get(stateKey) ?? {}) } })}
+            >
+              <PanelRightOpenIcon />
+            </Button>
+          ),
+        }),
+  };
   const links = useFileLinks();
   // 抽屉内普通点击就地导航（push 历史）；显式 side（Alt+点击）走完整打开 intent，由路由决定去处
   const browse = (dir?: string, target?: FileOpenTarget): void => {

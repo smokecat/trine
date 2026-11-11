@@ -13,6 +13,8 @@ export interface FileViewChrome {
   Description?: Slot;
   /** 给了才显示关闭按钮 */
   onClose?: () => void;
+  /** 外壳自己的操作（如抽屉的「在工作区打开」），放在视图按钮之后、关闭之前 */
+  actions?: React.ReactNode;
 }
 
 export function ViewHeader({
@@ -45,6 +47,7 @@ export function ViewHeader({
       </div>
       <div className="flex shrink-0 items-center gap-0.5">
         {children}
+        {chrome?.actions}
         {onClose !== undefined && (
           <Button size="icon-sm" variant="ghost" aria-label="关闭" title="关闭" onClick={onClose} data-testid="file-panel-close">
             <XIcon />
