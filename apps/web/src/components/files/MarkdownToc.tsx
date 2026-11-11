@@ -107,9 +107,8 @@ export function useDocHeadings(container: HTMLElement | null): { headings: TocIt
 export function useActiveHeading(
   container: HTMLElement | null,
   items: readonly TocItem[],
-): [string | undefined, (slug: string) => void, React.RefObject<ReadingMark | null>] {
+): [string | undefined, (slug: string) => void] {
   const [active, setActive] = useState<string | undefined>(undefined);
-  const reading = useRef<ReadingMark | null>(null);
   const key = items.map((i) => i.slug).join('\n');
   useEffect(() => {
     if (container === null || key === '') return;
@@ -119,9 +118,7 @@ export function useActiveHeading(
       const top = container.getBoundingClientRect().top;
       const tops = els.map((el) => el.getBoundingClientRect().top - top);
       const i = activeIndex(tops, Math.min(READING_LINE, container.clientHeight * 0.3));
-      const slug = els[i]?.dataset['headingSlug'];
-      if (slug !== undefined) reading.current = { slug, offset: tops[i]! };
-      setActive(slug);
+      setActive(els[i]?.dataset['headingSlug']);
     };
     let frame: number | null = null;
     const schedule = (): void => {
@@ -144,22 +141,7 @@ export function useActiveHeading(
       if (frame !== null) cancelAnimationFrame(frame);
     };
   }, [container, key]);
-  return [active, setActive, reading];
-}
-
-/** 最近一次算出的阅读位置：当前节标题与它相对容器顶部的偏移（布局变化后据此找回位置） */
-export interface ReadingMark {
-  slug: string;
-  offset: number;
-}
-
-/** 让 slug 对应的标题回到 mark 记下的偏移（布局变化 / 浏览器重置滚动后找回阅读位置） */
-export function restoreReading(container: HTMLElement, mark: ReadingMark): void {
-  const el = headingElements(previewRoot(container)).find((h) => h.dataset['headingSlug'] === mark.slug);
-  if (el === undefined) return;
-  const now = el.getBoundingClientRect().top - container.getBoundingClientRect().top;
-  const delta = now - mark.offset;
-  if (Math.abs(delta) >= 1) container.scrollTop = Math.max(0, container.scrollTop + delta);
+  return [active, setActive];
 }
 
 /** 容器宽度（ResizeObserver；没有时读一次） */
@@ -299,11 +281,10 @@ export function useDocToc(container: HTMLElement | null): {
   hasPreview: boolean;
   /** 定位锚点（原文 / 编码都行）；找不到返回 false */
   jump: (fragment: string, options?: JumpOptions) => boolean;
-  reading: React.RefObject<ReadingMark | null>;
 } {
   const { headings, version, hasPreview } = useDocHeadings(container);
   const items = tocItems(headings);
-  const [active, setActive, reading] = useActiveHeading(container, items);
+  const [active, setActive] = useActiveHeading(container, items);
   const jump = useCallback(
     (fragment: string, { smooth = true, focus = false }: JumpOptions = {}): boolean => {
       const target = findAnchor(container, fragment);
@@ -320,10 +301,5 @@ export function useDocToc(container: HTMLElement | null): {
     },
     [container, setActive],
   );
-  return { items, active, version, hasPreview, jump, reading };
-}
-
-/** 预览里的全部标题（各级，文档顺序）：与源码标题行按序号对应 */
-export function previewHeadings(container: HTMLElement | null): HTMLElement[] {
-  return headingElements(previewRoot(container));
+  return { items, active, version, hasPreview, jump };
 }

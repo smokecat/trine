@@ -17,10 +17,10 @@ import { Button } from '@/components/ui/button.tsx';
 import { Breadcrumbs } from './FileBrowser.tsx';
 import { FileDocAnchorContext, useFileLinks, type FileDocAnchors, type FileOpenTarget } from './file-links.ts';
 import { HIGHLIGHT_MAX_BYTES, parentDir } from './file-model.ts';
-import { FileBody, useText } from './FileViewer.tsx';
-import { restoreReading, TOC_RAIL_MIN_WIDTH, TocPopover, TocRail, useContainerWidth, useDocToc } from './MarkdownToc.tsx';
-import { applyRendered, applySource, captureRendered, captureSource, type ModeMark } from './mode-scroll.ts';
+import { FileBody } from './FileViewer.tsx';
+import { TOC_RAIL_MIN_WIDTH, TocPopover, TocRail, useContainerWidth, useDocToc } from './MarkdownToc.tsx';
 import { useLoad } from './use-file-load.ts';
+import { useScrollAnchor } from './use-scroll-anchor.ts';
 import { ErrorBox, ViewHeader, type FileViewChrome } from './ViewHeader.tsx';
 import { useScrollMemory, type FileDocModel } from './view-model.ts';
 
@@ -94,8 +94,19 @@ export function FileDocView({
     scrollRef.current = el;
     setScrollEl(el);
   }, []);
-  // 带锚点打开时不恢复旧滚动位置，以锚点为准
-  const onScroll = useScrollMemory(scrollRef, fragment === undefined ? model.scrollTop : 0, opened !== undefined, (top) => onModelChange({ scrollTop: top }));
+  // 滚动锚点（见 scroll-anchor.ts）：有记下的锚点就按它恢复（宽度、模式变了也准），
+  // 只有像素位置（旧数据）才走 useScrollMemory 的像素恢复；带 fragment 打开以 fragment 为准
+  const initialAnchor = fragment === undefined ? model.anchor : undefined;
+  const memoryRestoring = useRef(false);
+  const scrollAnchor = useScrollAnchor(scrollEl, { initial: initialAnchor, busy: () => memoryRestoring.current });
+  const captureAnchorNow = scrollAnchor.capture;
+  const onScroll = useScrollMemory(
+    scrollRef,
+    fragment === undefined && initialAnchor === undefined ? model.scrollTop : 0,
+    opened !== undefined,
+    (top) => onModelChange({ scrollTop: top, anchor: scrollAnchor.anchor.current ?? undefined }),
+    { restoring: memoryRestoring },
+  );
 
   const toc = useDocToc(scrollEl);
   const rawId = useId();
@@ -106,12 +117,14 @@ export function FileDocView({
       ns,
       jump: (f, options) => {
         const ok = jump(f, { focus: options?.focus === true });
+        // 主动定位后以新位置为锚点（否则紧接着的重排校正会按旧锚点拉回去）
+        if (ok) captureAnchorNow();
         if (ok) landed.current = f;
         setMissing(ok ? null : { fragment: f, reason: 'jump' });
         return ok;
       },
     }),
-    [ns, jump],
+    [ns, jump, captureAnchorNow],
   );
   const links = useFileLinks();
   // 目录项：普通点击就地定位并移焦点；Alt（side）交给打开 intent（工作区里另开一份）
@@ -134,42 +147,27 @@ export function FileDocView({
     setPending(undefined);
     // 打开带来的定位与同文件跳转一致：焦点落到目标标题；刷新后的复核不抢焦点
     const ok = jump(pending.fragment, { smooth: false, focus: pending.reason === 'open' });
+    if (ok) captureAnchorNow();
     landed.current = ok ? pending.fragment : undefined;
     setMissing(ok ? null : { fragment: pending.fragment, reason: pending.reason });
-  }, [pending, load.state, opened, mode, toc.hasPreview, toc.version, jump]);
+  }, [pending, load.state, opened, mode, toc.hasPreview, toc.version, jump, captureAnchorNow]);
 
-  // 源码 / 渲染切换：像素位置在两种模式下不可比，按「读到第几个标题」换算（见 mode-scroll.ts）
-  const isMarkdown = opened?.file.kind === 'markdown';
-  const sourceText = useText(isMarkdown ? opened.blob : undefined);
-  const modeMark = useRef<ModeMark | null>(null);
+  // 源码 / 渲染切换：像素位置在两种模式下不可比——切换前按滚动锚点（块的源码行号 + 偏移）记下，
+  // 新模式提交后立即按它恢复；之后的重排（代码高亮、宽度变化）由 ResizeObserver 再按锚点校正
   const toggleMode = (): void => {
-    const el = scrollRef.current;
-    if (el !== null) modeMark.current = mode === 'rendered' ? captureRendered(el) : captureSource(el, sourceText ?? '');
+    scrollAnchor.capture();
     onModelChange({ mode: mode === 'rendered' ? 'source' : 'rendered' });
   };
+  const prevMode = useRef(mode);
   useLayoutEffect(() => {
-    const el = scrollRef.current;
-    const mark = modeMark.current;
-    if (el === null || mark === null) return;
-    modeMark.current = null;
-    if (mode === 'rendered') applyRendered(el, mark);
-    else applySource(el, sourceText ?? '', mark);
-  }, [mode, sourceText]);
+    if (prevMode.current === mode) return;
+    prevMode.current = mode;
+    scrollAnchor.restore();
+  }, [mode, scrollAnchor]);
 
   const showToc = mode === 'rendered' && toc.items.length > 0;
   const width = useContainerWidth(scrollEl);
   const rail = showToc && width >= TOC_RAIL_MIN_WIDTH;
-  // 跨过侧栏断点：正文宽度变了会重排，浏览器也可能重置滚动——让当前节标题回到原来的偏移
-  // （只管纯宽度变化：目录出现 / 消失是模式切换或内容变化，那边自己定位）
-  const prevLayout = useRef({ rail, showToc });
-  useLayoutEffect(() => {
-    const prev = prevLayout.current;
-    prevLayout.current = { rail, showToc };
-    if (prev.rail === rail || !prev.showToc || !showToc) return;
-    const el = scrollRef.current;
-    const mark = toc.reading.current;
-    if (el !== null && mark !== null) restoreReading(el, mark);
-  }, [rail, showToc, toc.reading]);
   const body =
     opened === undefined ? null : (
       <FileDocAnchorContext.Provider value={anchors}>
@@ -226,7 +224,13 @@ export function FileDocView({
         )}
       </ViewHeader>
       <div className="relative flex min-h-0 flex-1 flex-col">
-        <div ref={setScrollRefs} onScroll={onScroll} data-testid="file-scroll" className="min-h-0 flex-1 overflow-auto pb-[env(safe-area-inset-bottom)]">
+        <div
+          ref={setScrollRefs}
+          onScroll={onScroll}
+          data-testid="file-scroll"
+          // overflow-anchor: none —— 浏览器自带的滚动锚定与我们按块恢复的逻辑会互相拉扯，以后者为准
+          className="min-h-0 flex-1 overflow-auto pb-[env(safe-area-inset-bottom)] [overflow-anchor:none]"
+        >
           {load.state === 'loading' && <div className="text-text-3 p-6 text-[13px]">正在读取…</div>}
           {load.state === 'error' && <ErrorBox message={load.message} onRetry={doRefresh} />}
           {/*

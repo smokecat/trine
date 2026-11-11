@@ -251,6 +251,7 @@ interface HastNode {
   value?: string;
   properties?: Record<string, unknown>;
   children?: HastNode[];
+  position?: { start?: { line?: number } };
 }
 
 function hastText(node: HastNode): string {
@@ -280,7 +281,25 @@ function addHeadingSlugs(tree: HastNode, slugger: (text: string) => string): voi
 
 // 名字与其他插件都不同（streamdown 按插件函数名缓存处理器）
 function rehypeFileDocHeadingSlugs() {
-  return (tree: HastNode): void => addHeadingSlugs(tree, createSlugger());
+  return (tree: HastNode): void => {
+    addHeadingSlugs(tree, createSlugger());
+    addSourceLines(tree);
+  };
+}
+
+/** 记源码行号的块级元素（滚动锚点：渲染 ↔ 源码切换、宽度变化后按块找回位置） */
+const SOURCE_LINE_BLOCKS = new Set(['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'li', 'pre', 'blockquote', 'table', 'tr', 'hr', 'dt', 'dd', 'div', 'details', 'img']);
+
+/**
+ * 块级元素写上 `data-src-line`（mdast 的 position，1 起）。文件预览是静态模式，整份文档一次转换，
+ * 行号就是文件里的行号。没有 position 的（插件生成的节点）跳过。
+ */
+function addSourceLines(tree: HastNode): void {
+  const line = tree.position?.start?.line;
+  if (tree.type === 'element' && tree.properties !== undefined && typeof line === 'number' && SOURCE_LINE_BLOCKS.has(tree.tagName ?? '')) {
+    tree.properties['dataSrcLine'] = line;
+  }
+  for (const child of tree.children ?? []) addSourceLines(child);
 }
 
 /**

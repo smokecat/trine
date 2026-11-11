@@ -211,6 +211,18 @@ describe('Markdown 文件预览：标题 slug 与锚点（§6）', () => {
     expect(slugs(renderDoc('## 用法\n\n## 用法'))).toEqual(['用法', '用法-1']);
   });
 
+  test('块级元素带文件里的源码行号（data-src-line）；聊天里没有', () => {
+    const md = ['# 标题', '', '第一段', '跨两行', '', '- 项一', '- 项二', '', '> 引用', '', '```ts', 'const x = 1;', '```', '', '## 尾'].join('\n');
+    const html = renderDoc(md, 'p1');
+    const lines = (tag: string): string[] => [...html.matchAll(new RegExp(`<${tag}[^>]*data-src-line="(\\d+)"`, 'g'))].map((m) => m[1]!);
+    expect(lines('h1')).toEqual(['1']);
+    expect(lines('p')).toContain('3');
+    expect(lines('li')).toEqual(['6', '7']);
+    expect(lines('blockquote')).toEqual(['9']);
+    expect(lines('h2')).toEqual(['15']);
+    expect(renderChat(md)).not.toContain('data-src-line');
+  });
+
   test('raw HTML 标题照样有 slug；sanitize 不放宽（脚本仍被剥掉）', () => {
     const html = renderDoc('<h2 id="x" onclick="alert(1)">原始 <b>标题</b></h2>\n\n<script>alert(1)</script>', 'p1');
     expect(slugs(html)).toEqual(['原始-标题']);

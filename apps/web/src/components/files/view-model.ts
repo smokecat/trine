@@ -4,14 +4,17 @@
  * 只放可序列化的小字段，不放内容与 Blob URL。
  */
 import { useEffect, useLayoutEffect, useRef } from 'react';
+import type { ScrollAnchor } from './scroll-anchor.ts';
 
 export interface FileDocModel {
   /** markdown 的显示方式 */
   mode: 'rendered' | 'source';
   /** 文本自动换行 */
   wrap: boolean;
-  /** 预览滚动容器的 scrollTop（打开时恢复一次） */
+  /** 预览滚动容器的 scrollTop（打开时恢复一次；有 anchor 时以 anchor 为准） */
   scrollTop: number;
+  /** 滚动锚点（源码行号 + 偏移，见 scroll-anchor.ts）：宽度 / 模式不同也能回到同一块 */
+  anchor?: ScrollAnchor | undefined;
 }
 
 export interface FileDirModel {
@@ -43,8 +46,13 @@ export function useScrollMemory(
   initialTop: number,
   ready: boolean,
   report: (top: number) => void,
-  options: { restoreTimeoutMs?: number } = {},
+  options: {
+    restoreTimeoutMs?: number;
+    /** 正在恢复时为 true（别的定位逻辑据此让路） */
+    restoring?: { current: boolean };
+  } = {},
 ): (event: React.UIEvent<HTMLElement>) => void {
+  const restoringOut = options.restoring;
   const restored = useRef(false);
   /** 正在恢复时的收尾函数（save=true 记下实际位置）；不在恢复中为 null */
   const finishRef = useRef<((save: boolean) => void) | null>(null);
@@ -91,6 +99,7 @@ export function useScrollMemory(
     function finish(save: boolean): void {
       if (finishRef.current === null) return;
       finishRef.current = null;
+      if (restoringOut !== undefined) restoringOut.current = false;
       expected.current = null;
       observer.disconnect();
       clearTimeout(timeout);
@@ -98,10 +107,11 @@ export function useScrollMemory(
       if (save) record(el!.scrollTop);
     }
     finishRef.current = finish;
+    if (restoringOut !== undefined) restoringOut.current = true;
     for (const type of USER_SCROLL_EVENTS) el.addEventListener(type, onUserInput, { passive: true });
     observer.observe(el, { childList: true, subtree: true });
     return () => finish(false);
-  }, [ready, ref, record, timeoutMs]);
+  }, [ready, ref, record, timeoutMs, restoringOut]);
 
   useEffect(
     () => () => {

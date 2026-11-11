@@ -30,14 +30,27 @@ let host: HTMLDivElement | null = null;
 let restoreLayout: (() => void) | null = null;
 /** 每个测试可调：容器内容高度（滚动恢复用） */
 let contentHeight = 10_000;
+/** 每个测试可调：内容整体下移多少（模拟重排） */
+let layoutShift = 0;
 /** 每个测试可调：容器宽度（宽 = 目录侧栏） */
 let viewWidth = 1200;
 
 function anchorTop(el: HTMLElement): number | undefined {
   const preview = el.closest('[data-file-preview]');
-  if (preview === null || !el.matches('[data-heading-slug], [id]')) return undefined;
+  if (preview === null) return undefined;
   const all = [...preview.querySelectorAll('[data-heading-slug], [id]')];
-  return all.indexOf(el) * STEP;
+  if (el.matches('[data-heading-slug], [id]')) return all.indexOf(el) * STEP;
+  if (!el.matches('[data-src-line]')) return undefined;
+  // 其他块（段落、列表项…）：排在前一个标题之后，每块 25px（一节最多 11 块，不越过下一个标题）
+  const blocks = [...preview.querySelectorAll('[data-heading-slug], [id], [data-src-line]')];
+  const i = blocks.indexOf(el);
+  let k = 0;
+  for (let j = i - 1; j >= 0; j -= 1) {
+    const b = blocks[j]!;
+    if (b.matches('[data-heading-slug], [id]')) return all.indexOf(b) * STEP + 25 * (k + 1);
+    k += 1;
+  }
+  return 25 * (k + 1);
 }
 
 function installLayout(): () => void {
@@ -52,8 +65,10 @@ function installLayout(): () => void {
       // 容器自己在 0；容器里的元素随滚动上移（可定位元素按文档顺序排开，其余在内容顶部）
       const s = scroller(this);
       const doc = anchorTop(this);
-      const top = s === null || s === this ? 0 : (doc ?? 0) - s.scrollTop;
-      return { top, bottom: top + 20, left: 0, right: 0, width: 0, height: 20, x: 0, y: top, toJSON: () => ({}) };
+      // layoutShift：模拟内容上方被撑高（异步高亮、图片），所有块整体下移
+      const top = s === null || s === this ? 0 : (doc === undefined ? 0 : doc + layoutShift) - s.scrollTop;
+      const height = this.matches('[data-file-preview], [data-testid="file-text"]') ? contentHeight : 20;
+      return { top, bottom: top + height, left: 0, right: 0, width: 0, height, x: 0, y: top, toJSON: () => ({}) };
     },
   });
   Object.defineProperty(proto, 'scrollTo', {
@@ -77,6 +92,7 @@ function installLayout(): () => void {
 beforeEach(() => {
   VIEW_H = 400;
   contentHeight = 10_000;
+  layoutShift = 0;
   viewWidth = 1200;
   restoreLayout = installLayout();
 });
@@ -231,6 +247,13 @@ describe('1 · 当前节高亮以阅读线为准', () => {
         return (orig.value as () => DOMRect).call(this);
       },
     });
+    // 一帧内一次 scroll 的读数作基准；四次 scroll 的读数应当一样（每个监听每帧只算一次）
+    userScroll(el, 50);
+    expect(reads).toBe(0);
+    await settle();
+    const single = reads;
+    expect(single).toBeGreaterThan(0);
+    reads = 0;
     act(() => {
       for (const top of [100, 200, 300, 610]) {
         el.scrollTop = top;
@@ -239,7 +262,7 @@ describe('1 · 当前节高亮以阅读线为准', () => {
     });
     expect(reads).toBe(0);
     await settle();
-    expect(reads).toBe(1);
+    expect(reads).toBe(single);
     expect(activeSlug()).toBe('用法');
   });
 });
@@ -550,7 +573,7 @@ describe('真实浏览器复测的问题', () => {
     expect($('file-anchor-missing')).toBeNull();
   });
 
-  test('源码 / 渲染切换按「读到第几个标题」换算位置，而不是沿用像素', async () => {
+  test('源码 / 渲染切换按滚动锚点（块的源码行号 + 偏移）换算：来回切换不漂移', async () => {
     const filler = (n: number): string => Array.from({ length: n }, (_, i) => `正文 ${i}`).join('\n\n');
     const md = ['# 总览', filler(10), '## 安装', filler(10), '## 用法', filler(10), '## API Reference', filler(10)].join('\n\n');
     const lines = md.split('\n');
@@ -565,21 +588,54 @@ describe('真实浏览器复测的问题', () => {
     act(() => $('file-toggle-source')!.click());
     await settle();
     expect($('file-text')).not.toBeNull();
-    expect(el.scrollTop).toBeCloseTo(sourceTop('## API Reference'), 0);
-    // 源码里往回滚到「安装」那一行附近，再切回渲染：落到「安装」标题
-    userScroll(el, sourceTop('## 安装') + 8 + 5);
+    expect(el.scrollTop).toBeCloseTo(sourceTop('## API Reference'), -1);
+    // 来回切 5 次：每次都回到同一位置，不累积
+    for (let i = 0; i < 5; i += 1) {
+      act(() => $('file-toggle-source')!.click());
+      await settle();
+      expect($('file-text')).toBeNull();
+      expect(el.scrollTop).toBe(900 - 8);
+      act(() => $('file-toggle-source')!.click());
+      await settle();
+      expect(el.scrollTop).toBeCloseTo(sourceTop('## API Reference'), -1);
+    }
     act(() => $('file-toggle-source')!.click());
     await settle();
-    expect($('file-text')).toBeNull();
-    expect(el.scrollTop).toBe(300 - 8);
-    // 第一个标题之前：按比例
-    userScroll(el, 0);
-    act(() => $('file-toggle-source')!.click());
+    // 停在一节中间（第 4 个段落开始于视口下 10px）：同一块、同一偏移回来
+    userScroll(el, 300 + 25 * 4 - 10);
     await settle();
-    expect(el.scrollTop).toBe(0);
+    for (let i = 0; i < 3; i += 1) {
+      act(() => $('file-toggle-source')!.click());
+      await settle();
+      expect($('file-text')).not.toBeNull();
+      act(() => $('file-toggle-source')!.click());
+      await settle();
+      expect(el.scrollTop).toBe(300 + 25 * 4 - 10);
+    }
   });
 
-  test('跨断点时浏览器把滚动重置为 0：按当前节标题找回原位置', async () => {
+  test('重排（内容上方被撑高）后的第一次 scroll 不把错位的块记成锚点，而是按原锚点校正', async () => {
+    setup({ '/w/a.md': DOC });
+    await mount(<Doc path="/w/a.md" />);
+    const el = scroller();
+    // 锚点：「用法」标题（600）在视口下 8px
+    act(() => $$('toc-item').find((i) => i.dataset['slug'] === '用法')!.click());
+    await settle();
+    expect(el.scrollTop).toBe(592);
+    // 上方被撑高 137px，随后来了一次 scroll（例如我们自己的恢复引起的），RO 回调还没到
+    layoutShift = 137;
+    contentHeight = 10_137;
+    userScroll(el, 592);
+    await settle();
+    expect(el.scrollTop).toBe(592 + 137);
+    expect(heading('用法').getBoundingClientRect().top).toBe(8);
+    // 之后真正的用户滚动照常记录
+    userScroll(el, 700);
+    await settle();
+    expect(el.scrollTop).toBe(700);
+  });
+
+  test('跨断点时浏览器把滚动重置为 0：ResizeObserver 回调里按锚点找回原位置', async () => {
     const callbacks: (() => void)[] = [];
     const Original = (globalThis as { ResizeObserver?: unknown }).ResizeObserver;
     (globalThis as { ResizeObserver?: unknown }).ResizeObserver = class {
