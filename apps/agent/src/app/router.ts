@@ -147,6 +147,7 @@ import type { ExtensionService, ExtHost } from '../ext/service.ts';
 import type { Recipient } from '../net/recipients.ts';
 import type { MachineStatsWatcher } from './machine-stats.ts';
 import { CwdPinMoveError, type CwdStore } from './cwd-store.ts';
+import { CwdPrepareError, type CwdPreparer } from './cwd-prepare.ts';
 import type { ClaudeUpdateOutcome } from './claude-cli.ts';
 import type { EngineCheckOutcome } from '../engine/codex/update.ts';
 import type { ClaudeCheckOutcome } from './claude-latest.ts';
@@ -193,6 +194,7 @@ const MACHINE_LEVEL_TYPES = new Set<ClientToAgentEvent['type']>([
   'cwd.setDefault',
   'cwd.pin',
   'cwd.pin.move',
+  'cwd.prepare.request',
   'files.trust.add',
   'files.trust.remove',
   'ext.catalog.request',
@@ -281,6 +283,8 @@ export interface RouterDeps {
   emitter: EventEmitter;
   state: AgentState;
   cwdStore: CwdStore;
+  /** 新会话工作目录的检查与创建（cwd.prepare.request）；不给 = 应答 failed（测试） */
+  cwdPreparer?: CwdPreparer;
   /** 会话标记（归档 / 墓碑 / 未落盘标题），与 manager 的 flags 是同一个实例 */
   flags: SessionFlagsStore;
   capabilities: CapabilitiesCache;
@@ -1031,6 +1035,33 @@ export class Router {
     if (body.ok) this.#emitMachine({ type: 'cwd.updated', ...cwdStore.snapshot() });
   }
 
+  /**
+   * 新会话工作目录的检查 / 创建（cwd-create）。应答只给请求方，不广播：目录不是收藏，
+   * 其他设备不需要知道；建好的目录由随后的 session.create 带出去。
+   */
+  async #prepareCwd(event: Extract<ClientToAgentEvent, { type: 'cwd.prepare.request' }>, sender: Recipient): Promise<void> {
+    let body: EventBody;
+    try {
+      const preparer = this.#deps.cwdPreparer;
+      if (preparer === undefined) throw new CwdPrepareError('failed', '这台 agent 不支持新建工作目录');
+      const result = await preparer.prepare(event.path, event.create);
+      body = {
+        type: 'cwd.prepare.response',
+        reqId: event.reqId,
+        ok: true,
+        path: result.path,
+        status: result.status,
+        ...(result.missing.length === 0 ? {} : { missing: result.missing }),
+      };
+    } catch (err) {
+      const code = err instanceof CwdPrepareError ? err.code : 'failed';
+      const message = (err instanceof Error ? err.message : String(err)).slice(0, 300);
+      if (!(err instanceof CwdPrepareError)) this.#log(`[router] 准备工作目录失败：${message}`);
+      body = { type: 'cwd.prepare.response', reqId: event.reqId, ok: false, error: { code, message } };
+    }
+    this.#deps.emitter.emit(body, null, { to: sender.deviceId });
+  }
+
   /** 信任目录增删（机器级链上串行：都写 files.json）。成功后重发 machine.info，应答只给请求方 */
   async #filesTrust(event: Extract<ClientToAgentEvent, { type: 'files.trust.add' | 'files.trust.remove' }>, sender: Recipient): Promise<void> {
     const files = this.#deps.files;
@@ -1563,6 +1594,9 @@ export class Router {
         return;
       case 'cwd.pin.move':
         await this.#movePin(event, sender);
+        return;
+      case 'cwd.prepare.request':
+        await this.#prepareCwd(event, sender);
         return;
       case 'files.trust.add':
       case 'files.trust.remove':

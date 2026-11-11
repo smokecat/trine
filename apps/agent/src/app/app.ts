@@ -32,6 +32,7 @@ import type {
 import { BlobClient, httpBase } from '@trine/core/net';
 import { AttachmentStore } from '../bridge/attachments.ts';
 import { FileAccess } from '../files/access.ts';
+import { CwdPreparer } from './cwd-prepare.ts';
 import { FileService } from '../files/service.ts';
 import { TrustStore } from '../files/trust-store.ts';
 import { EventEmitter } from '../bridge/emitter.ts';
@@ -400,6 +401,7 @@ export class AgentApp {
       emitter,
       state,
       cwdStore,
+      cwdPreparer: new CwdPreparer({ osHome: homedir(), trineHome: config.home, log }),
       flags,
       capabilities,
       defaultModel: config.defaultModel,

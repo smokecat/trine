@@ -5,7 +5,7 @@
  * 假 ClaudeSession 工厂注入 SessionManager，不起真子进程。
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { chmod, mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, rm, stat } from 'node:fs/promises';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -33,6 +33,7 @@ import type { PlanUsageRefreshOutcome } from './plan-usage.ts';
 import type { ClaudeUpdateOutcome } from './claude-cli.ts';
 import type { ClaudeCheckOutcome } from './claude-latest.ts';
 import { CwdStore } from './cwd-store.ts';
+import { CwdPreparer } from './cwd-prepare.ts';
 import {
   CapabilitiesCache,
   COMMAND_DESCRIPTION_MAX,
@@ -245,6 +246,8 @@ async function makeHarness(options: {
   attachments?: AttachmentStore;
   /** 文件查看；省略 = 关闭 */
   files?: FileService;
+  /** 工作目录检查 / 创建；省略 = 不支持 */
+  cwdPreparer?: CwdPreparer;
   /** 会话关联（扩展）；省略 = 不支持 */
   links?: SessionLinksStore;
   /** 时间线记录卡（扩展）；省略 = 不支持 */
@@ -354,6 +357,7 @@ async function makeHarness(options: {
     ...(options.readTranscriptOriginsFn === undefined ? {} : { readTranscriptOriginsFn: options.readTranscriptOriginsFn }),
     ...(options.attachments === undefined ? {} : { attachments: options.attachments }),
     ...(options.files === undefined ? {} : { files: options.files }),
+    ...(options.cwdPreparer === undefined ? {} : { cwdPreparer: options.cwdPreparer }),
     ...(options.links === undefined ? {} : { links: options.links, machineId: 'mbp-id' }),
     ...(options.records === undefined ? {} : { records: options.records }),
     ...(options.probeCommands === undefined
@@ -994,6 +998,33 @@ describe('Router · 路由表（机器级）', () => {
     expect(updates).toHaveLength(before + 2);
     expect(updates.at(-1)).toMatchObject({ pinOrder: ['/repo/a', '/repo/c', '/repo/b'] });
     expect((await CwdStore.load(join(dir, 'cwd.json'))).snapshot().pinOrder).toEqual(['/repo/a', '/repo/c', '/repo/b']);
+  });
+
+  test('cwd.prepare.request：检查 / 创建只回请求方，不广播；不支持时回 failed', async () => {
+    const home = join(dir, 'home');
+    await mkdir(home);
+    const h = await makeHarness({ cwdPreparer: new CwdPreparer({ osHome: home, trineHome: join(home, '.trine') }) });
+    const prepare = (reqId: string, path: string, create: boolean) =>
+      h.router.handle({ type: 'cwd.prepare.request', ...c2a(), reqId, path, create }, phone);
+    await prepare('p1', '~/work/new', false);
+    await prepare('p2', '~/work/new', true);
+    await prepare('p3', '~/work/new', false);
+    await prepare('p4', 'relative', false);
+    await h.router.idle();
+    const resp = (reqId: string) => h.events.find((e) => e.event.type === 'cwd.prepare.response' && 'reqId' in e.event && e.event.reqId === reqId)!;
+    const target = join(home, 'work', 'new');
+    expect(resp('p1').to).toBe('phone');
+    expect(resp('p1').event).toMatchObject({ ok: true, path: target, status: 'missing', missing: [join(home, 'work'), target] });
+    expect(resp('p2').event).toMatchObject({ ok: true, path: target, status: 'created' });
+    expect(resp('p3').event).toMatchObject({ ok: true, status: 'exists' });
+    expect(resp('p4').event).toMatchObject({ ok: false, error: { code: 'invalid' } });
+    expect((await stat(target)).isDirectory()).toBe(true);
+    expect(h.byType('cwd.updated')).toHaveLength(0);
+
+    const bare = await makeHarness();
+    await bare.router.handle({ type: 'cwd.prepare.request', ...c2a(), reqId: 'x', path: '/tmp', create: false }, phone);
+    await bare.router.idle();
+    expect(bare.byType('cwd.prepare.response')[0]).toMatchObject({ ok: false, error: { code: 'failed' } });
   });
 
   test('machine.rename → 落盘回调 + 广播 machine.info；machine.unpair 忽略', async () => {

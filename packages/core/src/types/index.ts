@@ -632,9 +632,10 @@ export const MachineInfoSchema = z.object({
   engines: z.array(EngineSummarySchema).max(16).optional(),
   /**
    * 工作目录能力（pin-order 新增，可选）。`pinOrder: true` = 认识 `cwd.pin.move`、cwd 快照带
-   * `pinOrder`；缺失 = 旧 agent，client 只按置顶时间排、不显示重排入口
+   * `pinOrder`；缺失 = 旧 agent，client 只按置顶时间排、不显示重排入口。`create: true`（cwd-create，
+   * agent ≥ 0.27.0）= 认识 `cwd.prepare.request`；缺失 = client 不预检 cwd，新建会话照旧
    */
-  cwd: z.object({ pinOrder: z.boolean().optional() }).optional(),
+  cwd: z.object({ pinOrder: z.boolean().optional(), create: z.boolean().optional() }).optional(),
 });
 export type MachineInfo = z.infer<typeof MachineInfoSchema>;
 

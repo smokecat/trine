@@ -74,7 +74,8 @@ import type {
 //   tool.start / tool.end / history tool 条目带 subagent（子 agent 类型、前后台、状态），permission.request
 //   可带 subagentId，Codex 子 agent 的审批路由到父会话；扩展特性协商（ext.read / ext.action.prepare 的
 //   features、client，MachineInfo.extensions.features）与本地效果 files.open。web 都按字段 / 能力位判断
-export const AGENT_VERSION = '0.26.0';
+// - 0.27.0 起支持新建会话前检查 / 创建工作目录（cwd.prepare.request，MachineInfo.cwd.create 能力位）
+export const AGENT_VERSION = '0.27.0';
 
 export function buildMachineInfo(input: {
   name: string;
@@ -103,6 +104,7 @@ export function buildMachineInfo(input: {
     ...(input.files === undefined ? {} : { files: input.files }),
     ...(input.engines === undefined ? {} : { engines: input.engines }),
     // 置顶工作区的手动顺序（cwd.pin.move、cwd 快照带 pinOrder）；web 按这一位判断，不按版本号
-    cwd: { pinOrder: true },
+    // create：认识 cwd.prepare.request（新建会话前检查 / 创建工作目录）
+    cwd: { pinOrder: true, create: true },
   };
 }

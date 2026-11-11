@@ -1795,6 +1795,53 @@ export const CwdPinMoveResponseSchema = z.object({
   error: z.object({ code: CwdPinMoveErrorCodeSchema, message: z.string().max(500) }).optional(),
 });
 
+/**
+ * client → agent：检查（`create: false`）或创建（`create: true`）新会话要用的工作目录（cwd-create，只发给
+ * `machine.info.cwd.create` 为真的 agent；旧 agent 会判 schema_invalid）。
+ *
+ * `path` 须为绝对路径或 `~` 开头。创建 = `mkdir -p`，已存在算成功（`status: 'exists'`）。拒绝 `/`、密钥类路径
+ * （`.ssh`、`.git` 等目录段）、trine 自己的 home 与系统伪文件系统（`/proc` 等），按字面路径和最深已存在祖先的
+ * 真实路径各判一次。不改 session.create：新建会话仍按原样发，cwd 不存在时由 client 先走这里。
+ * 应答只回请求方，不广播。
+ */
+export const CwdPrepareRequestSchema = z.object({
+  type: z.literal('cwd.prepare.request'),
+  ...c2aBase,
+  reqId: ReqIdSchema,
+  path: z.string().min(1).max(FS_PATH_MAX),
+  create: z.boolean(),
+});
+
+/**
+ * 失败原因：
+ * - `invalid`  路径格式不对（相对路径、含 NUL）
+ * - `denied`   `/`、密钥类路径、trine home 之内、系统伪文件系统
+ * - `not_dir`  路径本身或某级祖先是文件
+ * - `failed`   其他错误（没有权限、只读文件系统、磁盘满……message 说明）
+ */
+export const CwdPrepareErrorCodeSchema = z.enum(['invalid', 'denied', 'not_dir', 'failed']);
+export type CwdPrepareErrorCode = z.infer<typeof CwdPrepareErrorCodeSchema>;
+
+/** 一次最多新建的目录层数（`missing` 的上限），防止手误的长路径一口气建出一串目录 */
+export const CWD_CREATE_MAX_DEPTH = 16;
+
+export const CwdPrepareStatusSchema = z.enum(['exists', 'missing', 'created']);
+export type CwdPrepareStatus = z.infer<typeof CwdPrepareStatusSchema>;
+
+export const CwdPrepareResponseSchema = z.object({
+  type: z.literal('cwd.prepare.response'),
+  ...a2cBase,
+  reqId: ReqIdSchema,
+  ok: z.boolean(),
+  /** 成功时：解析后的绝对路径（`~` 已展开）；新建会话用它 */
+  path: z.string().max(FS_PATH_MAX).optional(),
+  /** exists = 已是目录；missing = 不存在（只在 create: false 时）；created = 本次新建 */
+  status: CwdPrepareStatusSchema.optional(),
+  /** missing / created 时：要新建（已新建）的各级目录，从浅到深 */
+  missing: z.array(z.string().max(FS_PATH_MAX)).max(CWD_CREATE_MAX_DEPTH).optional(),
+  error: z.object({ code: CwdPrepareErrorCodeSchema, message: z.string().max(500) }).optional(),
+});
+
 /** agent → client：目录变更广播，多客户端设备保持一致 */
 export const CwdUpdatedSchema = z.object({
   type: z.literal('cwd.updated'),
@@ -1887,6 +1934,7 @@ export const AgentToClientEventSchema = z.discriminatedUnion('type', [
   CwdListResponseSchema,
   CwdUpdatedSchema,
   CwdPinMoveResponseSchema,
+  CwdPrepareResponseSchema,
   ErrorTransientSchema,
   ErrorFatalSchema,
 ]);
@@ -1947,6 +1995,7 @@ export const ClientToAgentEventSchema = z.discriminatedUnion('type', [
   CwdSetDefaultSchema,
   CwdPinSchema,
   CwdPinMoveSchema,
+  CwdPrepareRequestSchema,
 ]);
 export type ClientToAgentEvent = z.infer<typeof ClientToAgentEventSchema>;
 
