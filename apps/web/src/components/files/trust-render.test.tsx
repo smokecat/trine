@@ -169,17 +169,35 @@ describe('文件面板 · 往上浏览', () => {
     expect(calls.trusted).toEqual([]);
   });
 
-  test('密钥类文件、相对路径：只报错，没有「浏览所在目录」', async () => {
+  test('密钥类文件：只报错，没有「浏览所在目录」', async () => {
     setup();
     await mountPanel(undefined, '/home/u/.ssh/id_rsa');
     expect($('file-error')?.textContent).toContain('密钥类');
     expect($('file-browse-parent')).toBeNull();
-    act(() => root?.unmount());
-    host?.remove();
-    root = null;
-    await mountPanel(undefined, 'docs/a.md');
+  });
+
+  test('相对路径按会话 cwd、`~/` 按 agent home 解析后浏览所在目录；不知道 cwd 时不给', async () => {
+    setup();
+    const remount = async (file: string): Promise<(string | undefined)[]> => {
+      act(() => root?.unmount());
+      host?.remove();
+      root = null;
+      return (await mountPanel(undefined, file)).nav;
+    };
+    // 会话还不在本地列表里：相对路径无从解析
+    let nav = await remount('../notes/README.md');
     expect($('file-error')).not.toBeNull();
     expect($('file-browse-parent')).toBeNull();
+    act(() => store.setState({ sessions: { [MACHINE]: { s1: { sessionId: 's1', cwd: CWD } } } as never }));
+    nav = await remount('../notes/README.md');
+    act(() => $('file-browse-parent')!.click());
+    await tick();
+    expect(nav).toEqual(['/home/u/w/notes']);
+    expect($('file-out-of-scope')).not.toBeNull();
+    nav = await remount('~/notes/README.md');
+    act(() => $('file-browse-parent')!.click());
+    await tick();
+    expect(nav).toEqual(['/home/u/notes']);
   });
 
   test('旧 agent（没有 roots）：范围外照样说明，但没有信任入口和位置菜单', async () => {

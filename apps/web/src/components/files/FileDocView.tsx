@@ -9,15 +9,16 @@
  */
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { DownloadIcon, EyeIcon, EyeOffIcon, RefreshCwIcon, WrapTextIcon } from 'lucide-react';
-import { useClient } from '@/app/runtime.ts';
+import { useClient, useTrine } from '@/app/runtime.ts';
 import type { OpenedFile } from '@/lib/client.ts';
 import { formatBytes, formatDateTime } from '@/lib/format.ts';
 import { cn } from '@/lib/utils.ts';
 import { Button } from '@/components/ui/button.tsx';
 import { Breadcrumbs } from './FileBrowser.tsx';
 import { FileDocAnchorContext, useFileLinks, type FileDocAnchors, type FileOpenTarget } from './file-links.ts';
-import { HIGHLIGHT_MAX_BYTES, parentDir } from './file-model.ts';
+import { absoluteFilePath, HIGHLIGHT_MAX_BYTES, parentDir } from './file-model.ts';
 import { FileBody } from './FileViewer.tsx';
+import { useFilesInfo } from './TrustDir.tsx';
 import { TOC_RAIL_MIN_WIDTH, TocPopover, TocRail, useContainerWidth, useDocToc } from './MarkdownToc.tsx';
 import { isOutOfScope, useLoad } from './use-file-load.ts';
 import { useScrollAnchor } from './use-scroll-anchor.ts';
@@ -69,6 +70,9 @@ export function FileDocView({
   );
   const opened = load.state === 'ok' ? load.value : undefined;
   const file = opened?.file;
+  const sessionCwd = useTrine((s) => s.sessions[machineId]?.[sessionId]?.cwd);
+  const home = useFilesInfo(machineId)?.home;
+  const absPath = absoluteFilePath(path, sessionCwd, home);
   // 锚点：intent 带来的先挂起，等渲染好的预览出现再定位；找不到给一条提示。
   // 视图记着「当前定位目标」（intent 带来的或用户点过的同文件锚点）：刷新后对**新内容**复核一次——
   // 还在就重新定位（刷新会重建正文、滚动归零），没了就提示失效。复核只在刷新后跑一次，
@@ -236,8 +240,8 @@ export function FileDocView({
             <ErrorBox
               message={load.message}
               onRetry={doRefresh}
-              // 范围外的文件（只认绝对路径，同目录视图）：给「浏览所在目录」，信任与否由用户在那里决定
-              {...(isOutOfScope(load.error) && path.startsWith('/') ? { onBrowseParent: () => onBrowse(parentDir(path)) } : {})}
+              // 范围外的文件：给「浏览所在目录」（相对 / `~` 路径按会话 cwd、agent home 解析），信任与否由用户在那里决定
+              {...(isOutOfScope(load.error) && absPath !== undefined ? { onBrowseParent: () => onBrowse(parentDir(absPath)) } : {})}
             />
           )}
           {/*

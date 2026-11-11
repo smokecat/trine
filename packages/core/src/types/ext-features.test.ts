@@ -4,7 +4,15 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { ClientToAgentEventSchema } from '../protocol/events.ts';
-import { effectsAllowedBy, EXT_FEATURES, EXT_LIMITS, ExtLocalEffectSchema, negotiateExtFeatures } from './ext.ts';
+import {
+  actionAllowedBy,
+  effectsAllowedBy,
+  EXT_FEATURES,
+  EXT_LIMITS,
+  ExtLocalEffectSchema,
+  ExtRawActionSchema,
+  negotiateExtFeatures,
+} from './ext.ts';
 
 describe('negotiateExtFeatures', () => {
   test('矩阵：旧 web / 旧 agent / 贡献点', () => {
@@ -27,6 +35,14 @@ describe('negotiateExtFeatures', () => {
     expect(effectsAllowedBy([{ type: 'prompt.insert' }, { type: 'copy' }], [])).toBe(true);
     expect(effectsAllowedBy([{ type: 'prompt.insert' }, { type: 'files.open' }], [])).toBe(false);
     expect(effectsAllowedBy([{ type: 'files.open' }], ['files.open'])).toBe(true);
+  });
+
+  test('actionAllowedBy：invoke.requires 事先声明的特性也要在有效集里', () => {
+    expect(actionAllowedBy({ invoke: {} }, [])).toBe(true);
+    expect(actionAllowedBy({ invoke: { requires: ['files.open'] } }, [])).toBe(false);
+    expect(actionAllowedBy({ invoke: { requires: ['files.open'] } }, ['files.open'])).toBe(true);
+    expect(actionAllowedBy({ effects: [{ type: 'files.open' }] }, [])).toBe(false);
+    expect(ExtRawActionSchema.safeParse({ id: 'a', label: 'A', invoke: { requires: ['files.open'] } }).success).toBe(true);
   });
 });
 
@@ -55,6 +71,12 @@ describe('请求里的 features', () => {
     const prepare = { ...base, type: 'ext.action.prepare', invocationId: 'i', token: 't' };
     expect(ClientToAgentEventSchema.safeParse(prepare).success).toBe(true);
     expect(ClientToAgentEventSchema.safeParse({ ...prepare, features: ['files.open'] }).success).toBe(true);
+  });
+
+  test('client（页面实例）可选、限长', () => {
+    const read = { ...base, type: 'ext.read', ext: 'tasks', op: 'view', point: 'sessionPanel' };
+    expect(ClientToAgentEventSchema.safeParse({ ...read, client: 'tab-1' }).success).toBe(true);
+    expect(ClientToAgentEventSchema.safeParse({ ...read, client: 'x'.repeat(65) }).success).toBe(false);
   });
 
   test('声明有上限', () => {

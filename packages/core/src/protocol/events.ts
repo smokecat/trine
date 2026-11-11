@@ -1467,6 +1467,9 @@ export const MachineStatsEventSchema = z.object({
 //
 // 互操作：machine.info.extensions 缺失 = agent 不支持，client 不发这些帧。
 
+/** 页面实例 id（ext.read / ext.action.prepare 的 client） */
+const ExtClientInstanceSchema = z.string().min(1).max(64);
+
 /** 读取订阅（租约）上限 */
 export const EXT_WATCH_MAX_TTL_MS = 10 * 60_000;
 
@@ -1513,6 +1516,11 @@ export const ExtReadSchema = z.object({
    * 作为 context.features 给扩展，并过滤输出；缺省 = 空（旧 web）。旧 agent 忽略此字段。
    */
   features: ExtFeatureListSchema.optional(),
+  /**
+   * 发起页面实例（每次加载页面生成）。同一设备换了实例（另一个标签页接管、旧版页面接管）时，
+   * agent 废弃旧实例的订阅，带特性的在途结果也不再投递。旧 web 不带 = 空实例。
+   */
+  client: ExtClientInstanceSchema.optional(),
 });
 
 /** agent → 请求设备：读取结果（带 reqId = 应答；订阅期间的推送不带） */
@@ -1532,6 +1540,8 @@ export const ExtReadResponseSchema = z.object({
   badge: ExtBadgeSchema.nullable().optional(),
   items: z.array(ExtWirePickItemSchema).max(EXT_LIMITS.pickItems).optional(),
   error: ExtErrorSchema.optional(),
+  /** 这份结果的有效特性集（空时省略）：client 按它区分缓存，不同特性集的结果互不顶替 */
+  features: ExtFeatureListSchema.optional(),
 });
 
 /** 新会话默认值：session.create 效果用发起设备的设置，扩展不能指定 */
@@ -1548,6 +1558,8 @@ export const ExtActionPrepareSchema = z.object({
   newSession: NewSessionDefaultsSchema.optional(),
   /** 发起设备此刻能执行的特性：与 token 签发时的有效集再取交集（见 ext.read.features） */
   features: ExtFeatureListSchema.optional(),
+  /** 发起页面实例（见 ext.read.client） */
+  client: ExtClientInstanceSchema.optional(),
 });
 
 /** agent → 请求设备：需要用户确认的执行计划（确认的就是这里的内容，commit 不会重新计算） */
@@ -1612,6 +1624,11 @@ export const ExtActionResultSchema = z.object({
   /** ext.action.status 的应答：还在执行 / 等待确认（此时带 plan）时 ok 为 false 且无 error */
   state: z.enum(['running', 'awaiting_confirmation', 'done']).optional(),
   pending: z.object({ planId: z.string().min(1), plan: ExtPlanSchema, expiresAt: TimestampSchema }).optional(),
+  /**
+   * invoke 已经执行（扩展的副作用已发生），但它返回的效果用到了发起设备执行不了的特性，
+   * 全部丢弃（ok 仍为 true，message 说明原因）。client 应提示「请勿直接重试」。
+   */
+  effectsDropped: z.boolean().optional(),
 });
 
 /** client → agent：启用 / 停用扩展、改权限（本机器、全部设备生效） */

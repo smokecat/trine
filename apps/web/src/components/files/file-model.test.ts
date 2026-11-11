@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import {
+  absoluteFilePath,
   isUnder,
   normalizeDirInput,
   pathCrumbs,
@@ -97,6 +98,15 @@ describe('链接与路径', () => {
     expect(pathCrumbs('/', '/')).toEqual([{ label: '/', path: '/', inScope: true }]);
     expect(parentDir('/w/repo/a.md')).toBe('/w/repo');
     expect(parentDir('/a')).toBe('/');
+  });
+
+  test('absoluteFilePath：相对按会话 cwd、~ 按 home、绝对规范化；缺信息返回 undefined', () => {
+    expect(absoluteFilePath('../notes/a.md', '/w/repo', '/home/u')).toBe('/w/notes/a.md');
+    expect(absoluteFilePath('./a.md', '/w/repo', undefined)).toBe('/w/repo/a.md');
+    expect(absoluteFilePath('~/n/a.md', '/w/repo', '/home/u')).toBe('/home/u/n/a.md');
+    expect(absoluteFilePath('/x/../y/a.md', undefined, undefined)).toBe('/y/a.md');
+    expect(absoluteFilePath('a.md', undefined, '/home/u')).toBeUndefined();
+    expect(absoluteFilePath('~/a.md', '/w', undefined)).toBeUndefined();
   });
 
   test('normalizeDirInput', () => {

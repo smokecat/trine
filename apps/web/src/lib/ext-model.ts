@@ -8,6 +8,7 @@
  *   web 不会把扩展给的效果转成普通的 input.send / session.create。
  */
 import {
+  negotiateExtFeatures,
   parseExtCatalog,
   type AgentToClientEvent,
   type ExtCatalogItem,
@@ -105,12 +106,20 @@ export interface ReadTarget {
   point: ExtPoint;
   targetSessionId?: string;
   cwd?: string;
-  /** 本设备声明的特性（webExtFeatures）；不进 readKey：同一目标只有一个读者（会话面板） */
+  /**
+   * 本设备声明的特性（webExtFeatures，已按 agent 支持与贡献点协商过，等于 agent 会回的有效集）。
+   * 进 readKey：特性集变了就是另一份结果，切换期间不会拿旧特性集下的动作来显示。
+   */
   features?: readonly ExtFeature[];
 }
 
+/** 特性集的规范形式：去重、排序、逗号连接 */
+export function featureKey(features: readonly string[] | undefined): string {
+  return [...new Set(features ?? [])].sort().join(',');
+}
+
 export function readKey(t: ReadTarget): string {
-  return [t.machineId, t.ext, t.op, t.point, t.targetSessionId ?? '', t.cwd ?? ''].join('\n');
+  return [t.machineId, t.ext, t.op, t.point, t.targetSessionId ?? '', t.cwd ?? '', featureKey(t.features)].join('\n');
 }
 
 /** 推送 / 应答对应哪个读取目标 */
@@ -122,6 +131,8 @@ export function responseKey(machineId: string, res: ExtReadResponse): string {
     point: res.point,
     ...(res.targetSessionId === undefined ? {} : { targetSessionId: res.targetSessionId }),
     ...(res.targetSessionId === undefined && res.cwd !== undefined ? { cwd: res.cwd } : {}),
+    // agent 回的有效特性集（旧 agent 不带 = 空，与 web 不声明时一致）
+    ...(res.features === undefined ? {} : { features: res.features as ExtFeature[] }),
   });
 }
 
@@ -197,11 +208,28 @@ export async function applyLocalEffects(effects: readonly ExtLocalEffect[], hand
 }
 
 /**
- * 本设备在某个贡献点声明的特性：会话面板且有 files.open 处理器时声明 files.open；
- * 其他位置（工作区面板、输入框、新建会话）一律不声明。agent 那边还会再取交集。
+ * 本页面实例 id（每次加载页面生成），随 ext.read / ext.action.prepare 发给 agent：同一设备换了
+ * 页面（别的标签页接管、旧版页面接管）时，agent 据此作废旧实例的订阅与带特性的在途结果。
  */
-export function webExtFeatures(point: ExtPoint, handlers: { filesOpen?: unknown }): ExtFeature[] {
-  return point === 'sessionPanel' && handlers.filesOpen !== undefined ? ['files.open'] : [];
+export const EXT_CLIENT_INSTANCE: string =
+  typeof globalThis.crypto?.randomUUID === 'function' ? globalThis.crypto.randomUUID() : Math.random().toString(36).slice(2, 14);
+
+/**
+ * 本设备在某个贡献点声明的特性 =本页有处理器的 ∩ agent 在 machine.info.extensions.features 里
+ * 列出的 ∩ 贡献点能执行的（与 agent 同一个 negotiateExtFeatures）。所以声明的就是 agent 会回的
+ * 有效集，请求与应答的缓存键一致；旧 agent 不列 features，就什么都不声明。
+ */
+export function webExtFeatures(point: ExtPoint, handlers: { filesOpen?: unknown }, agentFeatures: readonly string[] | undefined): ExtFeature[] {
+  const mine: ExtFeature[] = handlers.filesOpen !== undefined ? ['files.open'] : [];
+  return negotiateExtFeatures(mine, agentFeatures ?? [], point);
+}
+
+/**
+ * 本地动作能不能整条执行：用到的特性本页都有处理器。不能就整条不执行（不只执行其中一部分）。
+ * 返回缺的特性；undefined = 可以执行。
+ */
+export function missingLocalHandler(effects: readonly ExtLocalEffect[], handlers: { filesOpen?: unknown }): string | undefined {
+  return effects.some((e) => e.type === 'files.open') && handlers.filesOpen === undefined ? 'files.open' : undefined;
 }
 
 /**

@@ -774,17 +774,116 @@ describe('特性协商（files.open）', () => {
     expect(h.last('ext.action.result')).toMatchObject({ ok: true, local: [{ type: 'files.open', path: '/work/repo/b.md' }] });
   });
 
-  test('invoke：旧 web 的 token（或点击时不再声明）→ 返回 files.open 的整个结果拒掉，不下发', async () => {
+  test('invoke 执行后才发现不兼容：返回的效果全部丢弃，但结果是「已执行、勿重试」而不是失败', async () => {
     const h = await harness({}, { trust: 'full' });
     h.outputs.set('view', { view: FILES_VIEW });
-    h.outputs.set('action', { ok: true, effects: [{ type: 'prompt.insert', text: 'x' }, { type: 'files.open', path: '/work/repo/b.md' }] });
+    let sideEffects = 0;
+    h.outputs.set('action', () => {
+      sideEffects++;
+      return { ok: true, message: '已归档', effects: [{ type: 'prompt.insert', text: 'x' }, { type: 'files.open', path: '/work/repo/b.md' }] };
+    });
     await read(h, 'd1', { features: ['files.open'] });
-    // 读取时声明了，点击时没声明（例如面板换成了不支持的入口）：取交集后为空
+    // 读取时声明了，点击时没声明：取交集后为空
     await prepare(h, tokenOf(h, 'archive'));
     expect(inputFeatures(h)).toEqual([]);
+    expect(sideEffects).toBe(1);
     const res = h.last('ext.action.result');
-    expect(res).toMatchObject({ ok: false, error: { code: 'unsupported' } });
+    expect(res.ok).toBe(true);
+    expect(res.effectsDropped).toBe(true);
     expect(res.local).toBeUndefined();
+    expect(res.message).toContain('已归档');
+    expect(res.message).toContain('请勿直接重试');
+    expect(res.message).toContain('没有回滚');
+  });
+
+  test('invoke.requires：缺特性时视图不给、prepare 在启动扩展进程之前拒绝', async () => {
+    const h = await harness({}, { trust: 'full' });
+    const view: ExtRawView = {
+      sections: [{ id: 's', items: [{ id: 'i', title: 'I', actions: [{ id: 'go', label: '打开', invoke: { requires: ['files.open'] } }] }] }],
+    };
+    h.outputs.set('view', { view });
+    h.outputs.set('action', { ok: true, effects: [{ type: 'files.open', path: '/work/repo/b.md' }] });
+    await read(h);
+    expect(actions(h)).toEqual([]);
+    await read(h, 'd1', { features: ['files.open'], force: true });
+    const token = tokenOf(h, 'go');
+    // 点击时不再声明：不跑扩展，直接 unsupported
+    await prepare(h, token);
+    expect(h.runs.filter((r) => r.op === 'action')).toHaveLength(0);
+    expect(h.last('ext.action.result')).toMatchObject({ ok: false, error: { code: 'unsupported' } });
+  });
+
+  test('同一设备被不带特性的旧页面接管：旧实例的订阅作废，推送不再带 files.open', async () => {
+    const h = await harness();
+    h.outputs.set('view', { view: FILES_VIEW });
+    await read(h, 'd1', { features: ['files.open'], client: 'new-tab', watch: { ttlMs: 60_000 } });
+    expect(h.service.watchCount).toBe(1);
+    // 旧版页面（不带 client / features）接管同一 deviceId
+    await read(h, 'd1', { watch: { ttlMs: 60_000 } });
+    expect(h.service.watchCount).toBe(1);
+    h.service.onRunEnd('s1');
+    const before = h.sent.length;
+    h.timers.shift()!();
+    await Bun.sleep(0);
+    await Bun.sleep(0);
+    const pushed = h.sent.slice(before);
+    expect(pushed).toHaveLength(1);
+    expect(JSON.stringify(pushed[0]!.body)).not.toContain('files.open');
+    // 新页面卸载时迟到的退订不会把实例切回去
+    await read(h, 'd1', { features: ['files.open'], client: 'new-tab', watch: { ttlMs: 0 } });
+    expect(h.service.watchCount).toBe(1);
+  });
+
+  test('接管：在途的带特性读取结果不再投递；旧实例的 token 作废', async () => {
+    const h = await harness();
+    let release!: () => void;
+    h.outputs.set('view', () => new Promise((r) => (release = () => r({ view: FILES_VIEW }))));
+    const slow = read(h, 'd1', { features: ['files.open'], client: 'new-tab', reqId: 'slow' });
+    await Bun.sleep(0);
+    h.outputs.set('view', { view: FILES_VIEW });
+    await read(h, 'd1', { reqId: 'old', force: true });
+    release();
+    await slow;
+    const bodies = h.sent.map((s) => s.body as { reqId?: string });
+    expect(bodies.map((b) => b.reqId)).toEqual(['old']);
+    expect(JSON.stringify(h.sent)).not.toContain('files.open');
+  });
+
+  test('接管：带特性的动作结果迟到时去掉本地效果与新视图', async () => {
+    const h = await harness({}, { trust: 'full' });
+    h.outputs.set('view', { view: FILES_VIEW });
+    let release!: () => void;
+    h.outputs.set('action', () => new Promise((r) => (release = () => r({ ok: true, effects: [{ type: 'files.open', path: '/work/repo/b.md' }], view: FILES_VIEW }))));
+    await read(h, 'd1', { features: ['files.open'], client: 'new-tab' });
+    const pending = h.service.prepare('d1', {
+      type: 'ext.action.prepare',
+      ts: 1,
+      seq: 1,
+      dir: 'c2a',
+      reqId: 'p',
+      invocationId: 'inv-t',
+      token: tokenOf(h, 'archive'),
+      features: ['files.open'],
+      client: 'new-tab',
+    } as never);
+    await Bun.sleep(0);
+    h.outputs.set('view', { view: VIEW });
+    await read(h, 'd1', { reqId: 'old', force: true });
+    release();
+    await pending;
+    const res = h.last('ext.action.result');
+    expect(res.ok).toBe(true);
+    expect(res.local).toBeUndefined();
+    expect(res.view).toBeUndefined();
+  });
+
+  test('应答带有效特性集（结果身份的一部分）；空集时省略', async () => {
+    const h = await harness();
+    h.outputs.set('view', { view: FILES_VIEW });
+    await read(h, 'd1', { features: ['files.open'] });
+    expect(h.last('ext.read.response').features).toEqual(['files.open']);
+    await read(h);
+    expect(h.last('ext.read.response').features).toBeUndefined();
   });
 
   test('旧扩展（不看 features、也不给 files.open）在新 web 下照常工作', async () => {

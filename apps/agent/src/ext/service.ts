@@ -25,6 +25,7 @@ import {
   ExtPickOutputSchema,
   ExtViewOutputSchema,
   EXT_FEATURES,
+  actionAllowedBy,
   effectFeature,
   effectsAllowedBy,
   isLocalEffect,
@@ -166,9 +167,11 @@ interface TokenRecord {
   itemTitle: string | undefined;
   action: { id: string; label: string; destructive: boolean; confirm: string | undefined };
   effects: ExtEffect[] | undefined;
-  invoke: { params?: Record<string, unknown> } | undefined;
+  invoke: ExtRawAction['invoke'];
   /** 签发时的有效特性集（prepare 时再与发起请求的声明取交集） */
   features: readonly ExtFeature[];
+  /** 签发给的页面实例（'' = 旧 web） */
+  instance: string;
   expiresAt: number;
 }
 
@@ -180,6 +183,7 @@ interface WireTarget {
   targetSessionId: string | undefined;
   cwd: string;
   features: readonly ExtFeature[];
+  instance: string;
 }
 
 /** 已固定的执行步骤：plan 里给人看的 + 执行时要用的 */
@@ -210,6 +214,9 @@ type ResultBody = EventBodyOf<'ext.action.result'>;
 
 interface InvocationRecord {
   deviceId: string;
+  /** 发起页面实例与它的有效特性集：重放结果时按当前实例决定能不能带特性相关的内容 */
+  instance: string;
+  features: readonly ExtFeature[];
   state: 'running' | 'awaiting_confirmation' | 'done';
   planId?: string;
   result?: Omit<ResultBody, 'reqId' | 'type' | 'invocationId'>;
@@ -218,6 +225,8 @@ interface InvocationRecord {
 
 interface Lease {
   deviceId: string;
+  /** 建立订阅的页面实例（'' = 旧 web） */
+  instance: string;
   read: ReadEvent;
   expiresAt: number;
 }
@@ -257,6 +266,8 @@ export class ExtensionService {
   readonly #epoch = new Map<string, number>();
   readonly #leases = new Map<string, Lease>();
   readonly #dirty = new Set<string>();
+  /** 每台设备当前在用的页面实例（最近一次读取 / 动作带的 client；'' = 旧 web） */
+  readonly #instances = new Map<string, string>();
   #disposed = false;
   #refreshTimer: unknown = undefined;
   /** 读取结果的 rev：从启动时刻起算，agent 重启后也不会比旧进程发出的小 */
@@ -335,6 +346,34 @@ export class ExtensionService {
   forgetDevice(deviceId: string): void {
     for (const [key, lease] of this.#leases) if (lease.deviceId === deviceId) this.#leases.delete(key);
     for (const [token, record] of this.#tokens) if (record.deviceId === deviceId) this.#tokens.delete(token);
+    this.#instances.delete(deviceId);
+  }
+
+  /**
+   * 记下设备当前的页面实例。换了实例（另一个标签页 / 旧版页面接管）就废弃旧实例的订阅与 token：
+   * 推送都发往同一个 deviceId，旧实例的租约若还在，带特性的推送会落到不认识它的新页面上。
+   */
+  #touchInstance(deviceId: string, client: string | undefined): string {
+    const instance = client ?? '';
+    const prev = this.#instances.get(deviceId);
+    if (prev !== undefined && prev !== instance) {
+      for (const [key, lease] of this.#leases) if (lease.deviceId === deviceId && lease.instance !== instance) this.#leases.delete(key);
+      for (const [token, record] of this.#tokens) if (record.deviceId === deviceId && record.instance !== instance) this.#tokens.delete(token);
+    }
+    this.#instances.set(deviceId, instance);
+    return instance;
+  }
+
+  /** 带特性的内容只投给签发时的实例：设备已换实例（接管）就不再投递 */
+  #stillCurrent(deviceId: string, instance: string, features: readonly string[]): boolean {
+    return features.length === 0 || (this.#instances.get(deviceId) ?? '') === instance;
+  }
+
+  /** 动作结果：实例已换时去掉与特性有关的部分（本地效果、新视图），结论照常给 */
+  #scopeResult<T extends Omit<ResultBody, 'reqId' | 'type' | 'invocationId'>>(deviceId: string, instance: string, features: readonly ExtFeature[], body: T): T {
+    if (this.#stillCurrent(deviceId, instance, features)) return body;
+    const { local: _l, view: _v, viewRev: _r, ...rest } = body;
+    return rest as T;
   }
 
   /** 会话一轮结束：目标是该会话或其 cwd 的订阅标脏 */
@@ -368,21 +407,26 @@ export class ExtensionService {
 
   async read(deviceId: string, event: ReadEvent): Promise<void> {
     const leaseKey = this.#leaseKey(deviceId, event);
-    if (event.watch !== undefined) {
-      if (event.watch.ttlMs === 0) {
-        this.#leases.delete(leaseKey);
-      } else {
+    if (event.watch?.ttlMs === 0) {
+      // 退订不算「接管」：页面卸载时发出的退订可能晚于新实例的请求到达
+      this.#leases.delete(leaseKey);
+    } else {
+      const instance = this.#touchInstance(deviceId, event.client);
+      if (event.watch !== undefined) {
         const own = [...this.#leases.values()].filter((l) => l.deviceId === deviceId).length;
         if (this.#leases.has(leaseKey) || own < MAX_WATCHES_PER_DEVICE) {
-          this.#leases.set(leaseKey, { deviceId, read: { ...event, force: false }, expiresAt: this.#now() + event.watch.ttlMs });
+          this.#leases.set(leaseKey, { deviceId, instance, read: { ...event, force: false }, expiresAt: this.#now() + event.watch.ttlMs });
         }
       }
     }
     const body = await this.#readOnce(deviceId, event, event.force === true);
+    // 在途期间设备换了实例：带特性的结果不再投（新实例会自己重读）
+    if (!this.#stillCurrent(deviceId, event.client ?? '', body.features ?? [])) return;
     this.#host.emitTo(deviceId, { ...body, reqId: event.reqId });
   }
 
   async #readOnce(deviceId: string, event: ReadEvent, force: boolean): Promise<EventBodyOf<'ext.read.response'>> {
+    const features = negotiateExtFeatures(event.features, AGENT_EXT_FEATURES, event.point);
     const base = {
       type: 'ext.read.response' as const,
       ext: event.ext,
@@ -390,13 +434,14 @@ export class ExtensionService {
       point: event.point,
       ...(event.targetSessionId === undefined ? {} : { targetSessionId: event.targetSessionId }),
       ...(event.cwd === undefined ? {} : { cwd: event.cwd }),
+      // 有效特性集是结果身份的一部分（成功、失败都带）：client 按它分缓存
+      ...(features.length === 0 ? {} : { features }),
     };
     // rev 在开始时分配：动作前启动、动作后才完成的旧读取拿到的是更小的 rev，client 会丢掉它
     const rev = ++this.#rev;
     try {
       const ext = this.#usable(event.ext);
       checkPoint(ext, event.op, event.point);
-      const features = negotiateExtFeatures(event.features, AGENT_EXT_FEATURES, event.point);
       const { cwd, context } = await this.#context(ext, event.targetSessionId, event.cwd, features);
       const input = {
         apiVersion: EXT_API_VERSION,
@@ -418,7 +463,15 @@ export class ExtensionService {
         if (this.#epochOf(ext.id) === epoch) this.#cache.set(key, { at: this.#now(), output });
         this.#pruneCache();
       }
-      const target: WireTarget = { ext, deviceId, point: event.point, targetSessionId: event.targetSessionId, cwd, features };
+      const target: WireTarget = {
+        ext,
+        deviceId,
+        point: event.point,
+        targetSessionId: event.targetSessionId,
+        cwd,
+        features,
+        instance: event.client ?? '',
+      };
       switch (event.op) {
         case 'view': {
           const view = ExtViewOutputSchema.parse(output).view;
@@ -549,8 +602,8 @@ export class ExtensionService {
       ...(action.destructive === undefined ? {} : { destructive: action.destructive }),
       ...(action.confirm === undefined ? {} : { confirm: action.confirm }),
     };
+    if (!actionAllowedBy(action, target.features)) return undefined;
     if (action.effects !== undefined) {
-      if (!effectsAllowedBy(action.effects, target.features)) return undefined;
       const allowed = pointEffects(point);
       for (const effect of action.effects) {
         if (allowed !== undefined && !allowed.has(effect.type)) return undefined;
@@ -581,6 +634,7 @@ export class ExtensionService {
       effects: action.effects,
       invoke: action.invoke,
       features: target.features,
+      instance: target.instance,
       expiresAt: this.#now() + TOKEN_TTL_MS,
     });
     return { ...common, token };
@@ -606,9 +660,17 @@ export class ExtensionService {
   // -------------------------------------------------------------------------
 
   async prepare(deviceId: string, event: Extract<ClientToAgentEvent, { type: 'ext.action.prepare' }>): Promise<void> {
+    let scope: { instance: string; features: readonly ExtFeature[] } = { instance: '', features: [] };
     const reply = (body: Omit<ResultBody, 'reqId' | 'type' | 'invocationId'>): void =>
-      this.#host.emitTo(deviceId, { type: 'ext.action.result', reqId: event.reqId, invocationId: event.invocationId, ...body });
+      this.#host.emitTo(deviceId, {
+        type: 'ext.action.result',
+        reqId: event.reqId,
+        invocationId: event.invocationId,
+        ...this.#scopeResult(deviceId, scope.instance, scope.features, body),
+      });
     this.#pruneInvocations();
+    // 换了页面实例：旧实例的 token 已作废，下面会按过期处理
+    const instance = this.#touchInstance(deviceId, event.client);
     const existing = this.#invocations.get(event.invocationId);
     if (existing !== undefined) {
       if (existing.deviceId !== deviceId) {
@@ -627,12 +689,19 @@ export class ExtensionService {
     }
     // 有效特性集只会收窄：签发时的 ∩ 发起这次点击的设备此刻声明的
     const declared = negotiateExtFeatures(event.features, AGENT_EXT_FEATURES, issued.point);
-    const token: TokenRecord = { ...issued, features: issued.features.filter((f) => declared.includes(f)) };
-    this.#invocations.set(event.invocationId, { deviceId, state: 'running', at: this.#now() });
+    const token: TokenRecord = { ...issued, features: issued.features.filter((f) => declared.includes(f)), instance };
+    scope = { instance, features: token.features };
+    this.#invocations.set(event.invocationId, { deviceId, instance, features: token.features, state: 'running', at: this.#now() });
     try {
       const ext = this.#usable(token.ext);
       if (ext.generation !== token.generation) throw new ExtFailure('stale', '扩展已变更，请刷新后重试');
       if (token.invoke !== undefined) {
+        // 事先声明了要用的特性（invoke.requires）：在启动扩展进程之前拒绝，不会先执行副作用
+        if (!actionAllowedBy({ invoke: token.invoke }, token.features)) {
+          const have: readonly string[] = token.features;
+          const missing = (token.invoke.requires ?? []).find((f) => !have.includes(f));
+          throw new ExtFailure('unsupported', `这个操作需要 ${missing ?? '新特性'}，当前页面不支持（请升级 web，或在会话面板里使用）`);
+        }
         await this.#prepareInvoke(deviceId, event.reqId, event.invocationId, token, ext, event.newSession);
         return;
       }
@@ -658,7 +727,12 @@ export class ExtensionService {
   async commit(deviceId: string, event: Extract<ClientToAgentEvent, { type: 'ext.action.commit' }>): Promise<void> {
     const plan = this.#plans.get(event.planId);
     const reply = (body: Omit<ResultBody, 'reqId' | 'type' | 'invocationId'>): void =>
-      this.#host.emitTo(deviceId, { type: 'ext.action.result', reqId: event.reqId, invocationId: event.invocationId, ...body });
+      this.#host.emitTo(deviceId, {
+        type: 'ext.action.result',
+        reqId: event.reqId,
+        invocationId: event.invocationId,
+        ...(plan === undefined ? body : this.#scopeResult(deviceId, plan.token.instance, plan.token.features, body)),
+      });
     if (plan === undefined || plan.deviceId !== deviceId || plan.invocationId !== event.invocationId) {
       // 已执行过的重复 commit：返回已有结果
       const inv = this.#invocations.get(event.invocationId);
@@ -714,8 +788,8 @@ export class ExtensionService {
       return;
     }
     if (inv.state === 'done' && inv.result !== undefined) {
-      // 重放结果时不带本地效果：那只该在第一次收到时执行一次
-      const { local: _local, ...rest } = inv.result;
+      // 重放结果时不带本地效果：那只该在第一次收到时执行一次；设备换了实例时新视图也不带
+      const { local: _local, ...rest } = this.#scopeResult(deviceId, inv.instance, inv.features, inv.result);
       this.#host.emitTo(deviceId, { ...base, ...rest, state: 'done' });
       return;
     }
@@ -803,9 +877,10 @@ export class ExtensionService {
     this.#markDirty((lease) => lease.read.ext === ext.id);
     const parsed = ExtActionOutputSchema.parse(output);
     if (!parsed.ok) throw new ExtFailure('extension_error', parsed.message ?? '扩展报告操作失败');
-    const effects = parsed.effects ?? [];
-    // 整个动作的效果里有发起设备执行不了的：一个都不执行（不拆开只做一部分）
-    if (!effectsAllowedBy(effects, token.features)) throw unsupportedFeature(effects, token.features);
+    // 返回的效果里有发起设备执行不了的：一个都不执行（不拆开只做一部分）。但扩展的副作用已经发生了，
+    // 不能报成「失败」让用户重试，结果 ok，明确说明效果被丢弃、没有回滚
+    const dropped = !effectsAllowedBy(parsed.effects ?? [], token.features);
+    const effects = dropped ? [] : (parsed.effects ?? []);
     const allowed = pointEffects(token.point);
     for (const effect of effects) {
       if (allowed !== undefined && !allowed.has(effect.type)) {
@@ -822,6 +897,7 @@ export class ExtensionService {
         targetSessionId: token.targetSessionId,
         cwd,
         features: token.features,
+        instance: token.instance,
       });
       viewRev = ++this.#rev;
     }
@@ -833,13 +909,15 @@ export class ExtensionService {
       }
     }
     const steps = await this.#resolveSteps(token, effects.filter((e): e is ExtRemoteEffect => !isLocalEffect(e)), newSession);
+    const droppedNote = `「${token.action.label}」已执行，但扩展返回的后续效果当前页面不支持，已全部丢弃（扩展的操作没有回滚），请勿直接重试`;
     await this.#planOrRun(deviceId, reqId, invocationId, token, ext, steps, {
       local,
       view,
       viewRev,
-      message: parsed.message,
+      message: dropped ? [parsed.message, droppedNote].filter((m) => m !== undefined && m !== '').join('；').slice(0, 500) : parsed.message,
       newSession,
       extraConfirm: false,
+      ...(dropped ? { effectsDropped: true } : {}),
     });
   }
 
@@ -850,7 +928,7 @@ export class ExtensionService {
     token: TokenRecord,
     ext: LoadedExtension,
     steps: ResolvedStep[],
-    extra: Pick<PlanRecord, 'local' | 'view' | 'viewRev' | 'message' | 'newSession'> & { extraConfirm: boolean },
+    extra: Pick<PlanRecord, 'local' | 'view' | 'viewRev' | 'message' | 'newSession'> & { extraConfirm: boolean; effectsDropped?: boolean },
   ): Promise<void> {
     let needsConfirm = extra.extraConfirm && steps.length > 0;
     for (const step of steps) {
@@ -870,8 +948,14 @@ export class ExtensionService {
       return;
     }
     const result = await this.#execute(token, steps, extra);
+    if (extra.effectsDropped === true) result.effectsDropped = true;
     this.#finish(invocationId, result);
-    this.#host.emitTo(deviceId, { type: 'ext.action.result', reqId, invocationId, ...result });
+    this.#host.emitTo(deviceId, {
+      type: 'ext.action.result',
+      reqId,
+      invocationId,
+      ...this.#scopeResult(deviceId, token.instance, token.features, result),
+    });
   }
 
   #issuePlan(
@@ -1154,14 +1238,17 @@ export class ExtensionService {
     for (const key of keys) {
       const lease = this.#leases.get(key);
       if (lease === undefined) continue;
-      if (lease.expiresAt <= now) {
+      if (lease.expiresAt <= now || (this.#instances.get(lease.deviceId) ?? '') !== lease.instance) {
         this.#leases.delete(key);
         continue;
       }
       try {
         // 同一轮里相同的读取命中缓存（键相同），不会重复起进程
         const body = await this.#readOnce(lease.deviceId, lease.read, false);
-        if (this.#leases.get(key) === lease) this.#host.emitTo(lease.deviceId, body);
+        // 读取期间被接管（租约已删 / 实例变了）：不推
+        if (this.#leases.get(key) === lease && this.#stillCurrent(lease.deviceId, lease.instance, body.features ?? [])) {
+          this.#host.emitTo(lease.deviceId, body);
+        }
       } catch (err) {
         this.#log(`[ext] 推送刷新失败：${err instanceof Error ? err.message : String(err)}`);
       }

@@ -7,6 +7,7 @@ import {
   filesOpenTarget,
   isNewer,
   mergeRecords,
+  missingLocalHandler,
   placeRecords,
   readKey,
   recordText,
@@ -131,13 +132,34 @@ describe('applyLocalEffects', () => {
 });
 
 describe('特性声明与会话绑定', () => {
-  test('只有会话面板且有 filesOpen 处理器时声明 files.open', () => {
+  test('只有会话面板、有 filesOpen 处理器、agent 列出 files.open 时声明', () => {
     const fn = (): void => {};
-    expect(webExtFeatures('sessionPanel', { filesOpen: fn })).toEqual(['files.open']);
-    expect(webExtFeatures('sessionPanel', {})).toEqual([]);
+    const agent = ['files.open'];
+    expect(webExtFeatures('sessionPanel', { filesOpen: fn }, agent)).toEqual(['files.open']);
+    expect(webExtFeatures('sessionPanel', {}, agent)).toEqual([]);
+    // 旧 agent：machine.info.extensions 没有 features
+    expect(webExtFeatures('sessionPanel', { filesOpen: fn }, undefined)).toEqual([]);
     for (const point of ['workspacePanel', 'composerAction', 'newSession', 'linkPicker'] as const) {
-      expect(webExtFeatures(point, { filesOpen: fn })).toEqual([]);
+      expect(webExtFeatures(point, { filesOpen: fn }, agent)).toEqual([]);
     }
+  });
+
+  test('readKey 按特性集区分；应答按它带回的 features 落到同一个键', () => {
+    const t = { machineId: 'm', ext: 'tasks', op: 'view' as const, point: 'sessionPanel' as const, targetSessionId: 's1' };
+    expect(readKey({ ...t, features: ['files.open'] })).not.toBe(readKey(t));
+    expect(readKey({ ...t, features: [] })).toBe(readKey(t));
+    const res = (features?: string[]): ExtReadResponse =>
+      ({ type: 'ext.read.response', ...base, ext: 'tasks', op: 'view', point: 'sessionPanel', targetSessionId: 's1', rev: 1, ok: true, ...(features === undefined ? {} : { features }) }) as ExtReadResponse;
+    expect(responseKey('m', res(['files.open']))).toBe(readKey({ ...t, features: ['files.open'] }));
+    // 旧 agent 不回 features：与不声明时的键一致
+    expect(responseKey('m', res())).toBe(readKey(t));
+  });
+
+  test('整条动作检查：带 files.open 但本页没有处理器 → 整条不执行', () => {
+    const effects = [{ type: 'prompt.insert' as const, text: 'x' }, { type: 'files.open' as const, path: '/w/a.md' }];
+    expect(missingLocalHandler(effects, {})).toBe('files.open');
+    expect(missingLocalHandler(effects, { filesOpen: () => {} })).toBeUndefined();
+    expect(missingLocalHandler([{ type: 'copy', text: 'x' }], {})).toBeUndefined();
   });
 
   test('迟到的 files.open：浏览器已换到别的会话就丢掉', () => {

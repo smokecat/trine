@@ -138,7 +138,8 @@ Item     = { id, title, subtitle?, badges?: Badge[], meta?: string,
 Badge    = { text, tone?: 'neutral' | 'info' | 'success' | 'warning' | 'danger', title? }
 Action   = { id, label, primary?, destructive?, confirm?: string,
              effects?: Effect[]               // 与 invoke 二选一
-             invoke?: { params?: object } }   // 回调扩展的 action op
+             invoke?: { params?: object,      // 回调扩展的 action op
+                        requires?: string[] } } // 回调返回的效果会用到的特性（见特性协商）
 PickItem = { id, title, subtitle?, badges?, link?: { ref, label }, effects?: Effect[] }
 Effect   = { type: 'prompt.insert', text }                        // 插入输入框（本设备执行）
          | { type: 'copy', text }                                 // 复制（本设备执行）
@@ -163,7 +164,8 @@ Effect   = { type: 'prompt.insert', text }                        // 插入输�
   - 不新增权限能力、不用在 manifest 里声明：能不能看仍由 agent 的文件查看决定（会话目录、信任目录、
     密钥类文件始终不可见）。路径在范围外时，目录会显示「不在可浏览范围内」与信任入口，文件会给
     「浏览所在目录」，**是否信任由用户决定，扩展不能让 trine 自动信任任何目录**。
-  - 结果回来时用户已经换到别的会话，就不打开（不会打开到另一个会话里）。
+  - 结果回来时用户已经换到别的会话，这个动作的本地效果整条不执行（不打开到另一个会话里，同一动作里的插入也不做）。
+  - 范围外的文件给的是**所在目录**：相对路径按会话目录、`~/` 按 agent 的 home 解析成绝对路径。
   - 一个动作里有多个 `files.open` 时只执行最后一个。
 
 ## 特性协商
@@ -171,16 +173,29 @@ Effect   = { type: 'prompt.insert', text }                        // 插入输�
 有些效果只有新版本的 web 会执行（目前只有 `files.open`）。为了不让旧 web 收到它不认识的内容
 （旧 web 会把整份视图判为无效），这类效果要经过协商：
 
-1. web 在 `ext.read`（读取、订阅与每次续租）和 `ext.action.prepare` 里声明自己能执行的特性。
+1. agent 在 `machine.info.extensions.features` 里列出自己支持的特性。web 在 `ext.read`（读取、订阅与
+   每次续租）和 `ext.action.prepare` 里声明自己能执行、且 agent 列出了的特性，并带上页面实例 id。
 2. agent 取 **web 声明 ∩ agent 支持 ∩ 贡献点能执行** 作为有效特性集，缺省为空。
    `files.open` 只在会话内的 `sessionPanel` 能执行；`workspacePanel`（没有会话）、`composerAction`、
    `newSession`、`linkPicker` 一律不含。web 不在会话页、或 agent 不支持文件查看时也不声明。
 3. 有效特性集随读取、订阅、动作令牌保存（点击时再与发起设备此刻的声明取交集，只会收窄），
    并作为输入里的 `context.features` 传给扩展；`invoke` 的 `action` op 拿到的是令牌里的那一份。
-   读取缓存的键包含输入，所以不同特性集的结果互不复用。
-4. agent 在输出边界检查：视图 / 候选项里**用到有效集之外特性的整个动作**不下发（不会拆开只留一部分）；
-   `invoke` 返回的效果里有这种效果时，整个结果按 `unsupported` 失败，其中的效果一个都不执行。
-   这不依赖扩展自觉。
+   读取缓存的键包含输入，所以不同特性集的结果互不复用；应答也带回有效集，web 按它分开缓存，
+   特性集变化时不会拿旧特性集下的动作来显示。
+4. agent 在输出边界检查：视图 / 候选项里**用到有效集之外特性的整个动作**不下发（不会拆开只留一部分）。
+   这不依赖扩展自觉。web 执行本地动作前再按本页的处理器检查一遍整个动作，缺了就整条不执行并提示。
+5. 同一台设备换了页面实例（另一个标签页、或旧版页面接管）时，agent 作废旧实例的订阅和令牌，
+   带特性的在途结果也不再投递给它（动作结果去掉本地效果和新视图）。
+
+`invoke` 型动作的效果要等扩展跑完才知道，所以分两种情况：
+
+- **事先声明**：在动作的 `invoke.requires` 里列出这次回调会用到的特性（如 `["files.open"]`）。
+  有效集里缺任何一项，动作在视图里就不给，prepare 也会在**启动扩展进程之前**拒绝，不会产生副作用。
+  推荐这样写。
+- **执行之后才发现**：扩展返回的效果用到了有效集之外的特性时，这些效果**全部丢弃**（一个都不执行），
+  但扩展自己的操作已经发生了。结果按成功返回并带 `effectsDropped: true`，提示写明「已执行，后续效果
+  当前页面不支持、已丢弃，没有回滚，请勿直接重试」。扩展的 action 本来就应当按 `invocationId` 幂等，
+  但用户再点一次是新的 `invocationId`，所以不要让需要 `files.open` 的回调依赖这条兜底。
 
 兼容：
 
@@ -188,7 +203,7 @@ Effect   = { type: 'prompt.insert', text }                        // 插入输�
 |---|---|
 | 新 web + 新 agent，会话面板 | `context.features` 含 `files.open`，动作可用 |
 | 旧 web（不声明） | 空集，带 `files.open` 的动作被过滤，旧 web 永远收不到 |
-| 旧 agent | 忽略 web 的声明、不传 `features`；它也不认识 `files.open`，扩展若照样输出会被判为无效 |
+| 旧 agent | `machine.info` 不列 `features`，web 不声明；它也不认识 `files.open`，扩展若照样输出会被判为无效 |
 | 旧扩展（不看 `features`） | 照常工作；它本来就不会输出 `files.open` |
 
 扩展的写法：只在 `context.features` 含 `files.open` 时才输出这类动作，旧 agent / 旧 web 下保持原样。

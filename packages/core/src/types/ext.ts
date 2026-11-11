@@ -194,6 +194,12 @@ export function negotiateExtFeatures(requested: readonly string[] | undefined, s
   return EXT_FEATURES.filter((f) => want.has(f) && have.has(f) && at.has(f));
 }
 
+/** 动作（effects 或 invoke.requires）事先看得出的特性是否都在有效集里 */
+export function actionAllowedBy(action: { effects?: readonly { type: string }[] | undefined; invoke?: { requires?: readonly string[] | undefined } | undefined }, features: readonly string[]): boolean {
+  if (action.effects !== undefined && !effectsAllowedBy(action.effects, features)) return false;
+  return (action.invoke?.requires ?? []).every((f) => features.includes(f));
+}
+
 /** 效果是否都在有效特性集里 */
 export function effectsAllowedBy(effects: readonly { type: string }[], features: readonly string[]): boolean {
   return effects.every((e) => {
@@ -216,7 +222,16 @@ export const ExtRawActionSchema = z
   .object({
     ...ActionCommon,
     effects: z.array(ExtEffectSchema).min(1).max(EXT_LIMITS.effectsPerAction).optional(),
-    invoke: z.object({ params: z.record(z.string(), z.unknown()).optional() }).optional(),
+    invoke: z
+      .object({
+        params: z.record(z.string(), z.unknown()).optional(),
+        /**
+         * 这次回调返回的效果会用到的特性（如 `files.open`）。有效特性集里缺任何一项，动作在视图里
+         * 就不给、prepare 也拒绝——在启动扩展进程之前，不会先执行副作用。
+         */
+        requires: z.array(z.string().min(1).max(64)).max(16).optional(),
+      })
+      .optional(),
   })
   .refine((a) => (a.effects === undefined) !== (a.invoke === undefined), { message: 'effects 与 invoke 必须二选一' });
 export type ExtRawAction = z.infer<typeof ExtRawActionSchema>;
@@ -363,6 +378,11 @@ export const MachineExtensionsSummarySchema = z.object({
   count: z.number().int().nonnegative(),
   /** 支持时间线记录卡（ext.records.request，agent ≥ 0.17.0） */
   records: z.boolean().optional(),
+  /**
+   * agent 支持的宿主特性（见 EXT_FEATURES）。web 只声明这里列出的：旧 agent 没有这个字段，
+   * web 就什么都不声明，请求、应答和本地缓存的特性集两边一致（都是空）。
+   */
+  features: z.array(z.string().min(1).max(64)).max(16).optional(),
 });
 export type MachineExtensionsSummary = z.infer<typeof MachineExtensionsSummarySchema>;
 

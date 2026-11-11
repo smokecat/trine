@@ -144,6 +144,17 @@ export function trustRisk(path: string, home: string | undefined): 'home' | 'abo
   return isUnder(home, path) ? 'above-home' : undefined;
 }
 
+/**
+ * 打开文件时用的路径 → 规范化的绝对路径：`~` 按 agent 的 home 展开，相对路径按发起会话的 cwd
+ * 解析（与 agent 的解析一致）。缺 home / cwd 时返回 undefined。只用于给出「浏览所在目录」这类入口，
+ * 能不能读仍由 agent 判断。
+ */
+export function absoluteFilePath(path: string, cwd: string | undefined, home: string | undefined): string | undefined {
+  if (path.startsWith('/') || path === '~' || path.startsWith('~/')) return normalizeDirInput(path, home);
+  if (cwd === undefined || !cwd.startsWith('/')) return undefined;
+  return normalizeDirInput(`${cwd}/${path}`, home);
+}
+
 export function parentDir(path: string): string {
   const i = path.lastIndexOf('/');
   return i <= 0 ? '/' : path.slice(0, i);

@@ -179,7 +179,11 @@ function PanelBody({
 }): React.JSX.Element {
   const client = useClient();
   const point = sessionId !== undefined ? 'sessionPanel' : 'workspacePanel';
-  const features = webExtFeatures(point, { ...(onFilesOpen === undefined ? {} : { filesOpen: onFilesOpen }) });
+  const agentFeatures = useTrine((s) => s.machines[machineId]?.info?.extensions?.features);
+  const features = useMemo(
+    () => webExtFeatures(point, onFilesOpen === undefined ? {} : { filesOpen: true }, agentFeatures),
+    [point, onFilesOpen === undefined, agentFeatures],
+  );
   const read = useExtRead(
     sessionId !== undefined
       ? { machineId, ext: ext.id, op: 'view', point: 'sessionPanel', targetSessionId: sessionId, features }
@@ -204,8 +208,8 @@ function PanelBody({
         ...(sessionId === undefined ? {} : { sessionId }),
         ...(onInsert === undefined ? {} : { insert: onInsert }),
         refresh: read.refresh,
-        point,
-        ...(onFilesOpen === undefined || point !== 'sessionPanel' ? {} : { filesOpen: onFilesOpen }),
+        features,
+        ...(onFilesOpen === undefined || !features.includes('files.open') ? {} : { filesOpen: onFilesOpen }),
       },
     ).finally(() => setBusy(null));
   };

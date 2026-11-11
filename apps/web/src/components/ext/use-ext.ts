@@ -5,14 +5,16 @@
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import { useNavigate } from 'react-router';
 import { toast } from 'sonner';
-import type { ExtCatalogItem, ExtFilesOpenEffect, ExtLocalEffect, ExtPlan, ExtPoint, ExtRecord } from '@trine/core';
+import type { ExtCatalogItem, ExtFeature, ExtFilesOpenEffect, ExtLocalEffect, ExtPlan, ExtPoint, ExtRecord } from '@trine/core';
 import { useClient, useTrine } from '@/app/runtime.ts';
 import { copyText } from '@/lib/clipboard.ts';
 import type { TrineClient } from '@/lib/client.ts';
 import {
   applyLocalEffects,
+  EXT_CLIENT_INSTANCE,
   ExtCatalogCache,
   filesOpenTarget,
+  missingLocalHandler,
   isNewer,
   mergeRecords,
   readKey,
@@ -20,7 +22,6 @@ import {
   runTokenAction,
   supportsExtensions,
   supportsExtRecords,
-  webExtFeatures,
   type ExtActionPlanEvent,
   type ExtActionResult,
   type ExtReadResponse,
@@ -147,9 +148,10 @@ export function useExtRead(target: ReadTarget | null, options: { watch?: boolean
   const visible = usePageVisible();
   const watch = options.watch === true && visible;
   const query = options.query;
-  // 特性随读取与每次续租发出（agent 的订阅键也按它分）；变了就重读、重建订阅
-  const featureKey = target?.features?.join(',') ?? '';
-  const featureField = featureKey === '' ? {} : { features: featureKey.split(',') };
+  // 特性随读取与每次续租发出（agent 的订阅键也按它分，readKey 里也有它）；变了就是另一份结果，
+  // 重读、重建订阅。页面实例一并带上：同一设备换了页面时 agent 作废旧实例的订阅
+  const features = target?.features ?? [];
+  const featureField = { client: EXT_CLIENT_INSTANCE, ...(features.length === 0 ? {} : { features: [...features] }) };
   // agent 重启 / 扩展变更时 rev 会变：重新读取、重建订阅（旧进程的订阅随进程没了）
   const catalogRev = useTrine((s) => (target === null ? undefined : s.machines[target.machineId]?.info?.extensions?.rev));
 
@@ -180,7 +182,7 @@ export function useExtRead(target: ReadTarget | null, options: { watch?: boolean
         .finally(() => setLoading(false));
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [rt, key, query, featureKey],
+    [rt, key, query],
   );
 
   useEffect(() => {
@@ -338,8 +340,8 @@ export interface ActionContext {
   /** 本地插入到输入框；不在会话页时为 undefined（插入类动作退化为复制） */
   insert?: (text: string) => void;
   refresh: () => void;
-  /** 动作所在贡献点（决定本设备声明哪些特性）；缺省按不声明处理 */
-  point?: ExtPoint;
+  /** 本设备在这个位置声明的特性（webExtFeatures）；缺省 = 不声明 */
+  features?: readonly ExtFeature[];
   /** files.open 的执行器：只有会话面板、agent 支持文件查看时给 */
   filesOpen?: (effect: ExtFilesOpenEffect) => void;
 }
@@ -360,8 +362,19 @@ export function useExtAction(): (action: { local?: readonly ExtLocalEffect[]; to
       // 迟到的跳转 / 插入不作用到别的页面
       const origin = window.location.pathname;
       const stillHere = (): boolean => window.location.pathname === origin;
-      const features = ctx.point === undefined ? [] : webExtFeatures(ctx.point, ctx);
+      const features = ctx.features ?? [];
       const apply = async (effects: readonly ExtLocalEffect[]): Promise<void> => {
+        // 整个动作一起判断：有本页执行不了的效果（旧缓存、处理器没了）就一条都不执行，不只做一部分
+        const missing = missingLocalHandler(effects, ctx);
+        if (missing !== undefined) {
+          toast.error(`「${action.label}」需要 ${missing}，当前页面不支持，没有执行`);
+          return;
+        }
+        // 绑定发起会话：带 files.open 的动作回来时已在别的会话，整条不执行（不打开、也不插入到别处）
+        if (effects.some((e) => e.type === 'files.open') && filesOpenTarget(origin, window.location.pathname) === 'drop') {
+          toast.info(`已离开发起「${action.label}」的会话，没有打开`);
+          return;
+        }
         // 同一个动作的多段插入合成一次（逐段插入会被 React 合批成只剩最后一段）
         const inserts: string[] = [];
         // 多个 files.open 只打开最后一个：抽屉是单视图，逐个打开只会多留几条历史
@@ -372,10 +385,7 @@ export function useExtAction(): (action: { local?: readonly ExtLocalEffect[]; to
           refresh: ctx.refresh,
           ...(ctx.filesOpen === undefined ? {} : { filesOpen: (e: ExtFilesOpenEffect) => (open = e) }),
         });
-        if (open !== undefined && ctx.filesOpen !== undefined) {
-          // 绑定发起会话：用户已离开就不打开（不会打开到别的会话里）
-          if (filesOpenTarget(origin, window.location.pathname) === 'open') ctx.filesOpen(open);
-        }
+        if (open !== undefined && ctx.filesOpen !== undefined) ctx.filesOpen(open);
         if (inserts.length === 0) return;
         const text = inserts.join('\n');
         if (ctx.insert !== undefined && stillHere()) ctx.insert(text);
@@ -393,7 +403,14 @@ export function useExtAction(): (action: { local?: readonly ExtLocalEffect[]; to
         prepare: (token, invocationId, ns) =>
           client.extRequest(
             ctx.machineId,
-            { type: 'ext.action.prepare', token, invocationId, newSession: ns, ...(features.length === 0 ? {} : { features }) } as never,
+            {
+              type: 'ext.action.prepare',
+              token,
+              invocationId,
+              newSession: ns,
+              client: EXT_CLIENT_INSTANCE,
+              ...(features.length === 0 ? {} : { features: [...features] }),
+            } as never,
             ['ext.action.plan', 'ext.action.result'],
           ) as Promise<ExtActionPlanEvent | ExtActionResult>,
         commit: (planId, invocationId) =>
@@ -419,7 +436,9 @@ export function useExtAction(): (action: { local?: readonly ExtLocalEffect[]; to
         client.adoptAgentSentInput(ctx.machineId, result.sent.targetSessionId, result.sent.clientMsgId, result.sent.text);
       }
       if (result.local !== undefined) await apply(result.local);
-      if (result.message !== undefined) toast.success(result.message);
+      // 扩展已执行、返回的效果被丢弃：警示「勿直接重试」，不当作普通成功提示
+      if (result.effectsDropped === true) toast.warning(result.message ?? `「${action.label}」已执行，但后续效果当前页面不支持，已丢弃，请勿直接重试`);
+      else if (result.message !== undefined) toast.success(result.message);
       ctx.refresh();
       if (result.createdSessionId !== undefined) {
         const path = `/s/${encodeURIComponent(ctx.machineId)}/${encodeURIComponent(result.createdSessionId)}`;

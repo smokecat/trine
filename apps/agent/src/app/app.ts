@@ -43,7 +43,7 @@ import { SessionLinksStore } from '../ext/links-store.ts';
 import { recordLinkChanges, SessionRecordsStore } from '../ext/records-store.ts';
 import { ExtensionRegistry } from '../ext/registry.ts';
 import { ExtensionRunner } from '../ext/runner.ts';
-import { ExtensionService } from '../ext/service.ts';
+import { AGENT_EXT_FEATURES, ExtensionService } from '../ext/service.ts';
 import { writeIdentity } from '../net/identity.ts';
 import { AgentNode } from '../net/node.ts';
 import type { PairingSession, PeerIdentity } from '../net/pairing.ts';
@@ -705,7 +705,7 @@ export class AgentApp {
       activeSessionCount: this.manager.activeCount,
       maxSessions: this.manager.maxConcurrent,
       rateLimits: this.#planUsage.current,
-      extensions: this.#extRegistry === undefined ? undefined : { ...this.#extRegistry.summary(), records: true },
+      extensions: this.#extRegistry === undefined ? undefined : { ...this.#extRegistry.summary(), records: true, features: [...AGENT_EXT_FEATURES] },
       restart: this.#restart === undefined ? undefined : this.#restartInfo(),
       claudeLatest: this.#claudeLatest?.current,
       files: this.#files === undefined ? undefined : this.#filesInfo(this.#files),
