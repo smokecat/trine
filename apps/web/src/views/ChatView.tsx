@@ -742,7 +742,8 @@ export function ChatView(): React.JSX.Element {
               type="button"
               data-testid="session-meta"
               disabled={engineCaps.interactive !== true}
-              className="hover:text-text-2 disabled:hover:text-inherit min-w-0 truncate text-left transition-colors"
+              // 用量徽标不收缩，窄屏上会把这里挤成 0 宽、点不到：留个最小宽度（⋯ 菜单里也有入口）
+              className="hover:text-text-2 disabled:hover:text-inherit min-w-[10ch] truncate text-left transition-colors"
               onClick={() => openSettings(null)}
               title="会话设置：模型 / 权限模式 / 工作目录"
             >
@@ -791,6 +792,7 @@ export function ChatView(): React.JSX.Element {
               meta={meta}
               actions={sessionActions}
               onRequestRename={() => setRenameOpen(true)}
+              {...(engineCaps.interactive === true ? { onOpenSettings: () => openSettings(null) } : {})}
               {...(isDesktop && client !== null
                 ? {
                     contentWidth: {

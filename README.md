@@ -24,6 +24,10 @@ the agent runs on your own computer.
   with their reset times (subscription accounts only). Limits refresh while sessions run, or on demand.
 - Shows the output of local slash commands such as `/usage` and `/cost` as a card that keeps the
   terminal layout; `/usage` gets progress bars for each limit.
+- The "/" menu matches command names loosely: prefixes first, then word starts, substrings and
+  initials, so `/dep` finds `/local-deploy`. Session settings (model, permission mode, working
+  directory) open from the header line or from "会话设置…" in the session menu, which stays
+  reachable on narrow phone screens.
 - Attaches images and files to messages: pick them, paste them or drop them onto the page.
   Attachments are encrypted in the browser and relayed as ciphertext; small images go to
   Claude inline, other files are saved on the agent's machine and handed over by path.

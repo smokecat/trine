@@ -1,6 +1,9 @@
 /**
- * 聊天页头部的「⋯」会话菜单（session-list-v2 §4.4 末句）：浏览文件、复制工作目录、重命名、
- * 归档 / 取消归档。
+ * 聊天页头部的「⋯」会话菜单（session-list-v2 §4.4 末句）：会话设置、浏览文件、复制工作目录、
+ * 重命名、归档 / 取消归档。
+ *
+ * 「会话设置」与页头元信息行（`cwd · model · mode ▾`）打开的是同一个 sheet。手机上
+ * 元信息行会被用量徽标挤得只剩几个字，这里给一个总点得到的入口。
  *
  * 动作与列表行菜单同源（`useSessionActions(machineId)`），缺哪个回调隐藏哪项，
  * 一项都没有时整个按钮不渲染。永久删除刻意不放这里：它只在归档视图里给，
@@ -69,6 +72,7 @@ export function SessionHeadMenu({
   actions,
   onRequestRename,
   onBrowseFiles,
+  onOpenSettings,
   contentWidth,
 }: {
   machineId: string;
@@ -79,6 +83,8 @@ export function SessionHeadMenu({
   onRequestRename: () => void;
   /** 打开文件浏览器；agent 不支持文件查看时不给 */
   onBrowseFiles?: (() => void) | undefined;
+  /** 打开会话设置 sheet（模型 / 权限 / 工作目录）；会话不可交互时不给 */
+  onOpenSettings?: (() => void) | undefined;
   /** 本会话内容宽度（PC 才给；手机上内容本来就铺满） */
   contentWidth?: SessionContentWidthControl | undefined;
 }): React.JSX.Element | null {
@@ -88,7 +94,10 @@ export function SessionHeadMenu({
   const canCopyCwd = actions.onCopyCwd !== undefined && cwd !== '';
   const canLink = actions.onLink !== undefined && (actions.supportsLinks === undefined || actions.supportsLinks(machineId));
   const canBrowse = onBrowseFiles !== undefined;
-  if (!canRename && !canArchive && !canCopyCwd && !canLink && !canBrowse && contentWidth === undefined) return null;
+  const canSettings = onOpenSettings !== undefined;
+  if (!canSettings && !canRename && !canArchive && !canCopyCwd && !canLink && !canBrowse && contentWidth === undefined) {
+    return null;
+  }
   const archived = meta?.archived === true;
   const busy = meta !== undefined && archiveLikelyBusy(meta);
   const swallow = (r: void | Promise<unknown>): void => {
@@ -109,6 +118,16 @@ export function SessionHeadMenu({
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-auto min-w-36" data-testid="session-head-menu-content">
+        {canSettings && (
+          <>
+            <DropdownMenuItem data-testid="head-menu-settings" onSelect={onOpenSettings}>
+              会话设置…
+            </DropdownMenuItem>
+            {(canBrowse || canCopyCwd || canLink || canRename || canArchive || contentWidth !== undefined) && (
+              <DropdownMenuSeparator />
+            )}
+          </>
+        )}
         {canBrowse && (
           <DropdownMenuItem data-testid="head-menu-browse-files" onSelect={onBrowseFiles}>
             浏览文件

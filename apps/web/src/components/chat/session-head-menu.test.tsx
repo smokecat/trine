@@ -28,12 +28,17 @@ const meta = (over: Partial<SessionMeta> = {}): SessionMeta => ({
 let root: Root | null = null;
 let host: HTMLDivElement | null = null;
 
-function render(actions: Actions, m: SessionMeta | undefined, onRequestRename = () => {}): void {
+function render(
+  actions: Actions,
+  m: SessionMeta | undefined,
+  onRequestRename = () => {},
+  onOpenSettings?: () => void,
+): void {
   host = document.createElement('div');
   document.body.appendChild(host);
   root = createRoot(host);
   act(() =>
-    root!.render(<SessionHeadMenu machineId="m" sessionId="s" meta={m} actions={actions} onRequestRename={onRequestRename} />),
+    root!.render(<SessionHeadMenu machineId="m" sessionId="s" meta={m} actions={actions} onRequestRename={onRequestRename} onOpenSettings={onOpenSettings} />),
   );
 }
 const $ = (id: string): HTMLElement | null => document.body.querySelector(`[data-testid="${id}"]`);
@@ -57,6 +62,14 @@ describe('SessionHeadMenu', () => {
   test('一个回调都没有（旧 agent / 从标签页）→ 不渲染按钮', () => {
     render({}, meta());
     expect($('session-head-menu')).toBeNull();
+  });
+
+  test('会话设置：给了回调就有入口（手机上元信息行可能被挤没），只给它也渲染按钮', async () => {
+    const onOpenSettings = mock(() => {});
+    render({}, meta(), () => {}, onOpenSettings);
+    await open();
+    act(() => $('head-menu-settings')!.click());
+    expect(onOpenSettings).toHaveBeenCalledTimes(1);
   });
 
   test('未归档给「归档」，运行中灰显仍可点', async () => {
