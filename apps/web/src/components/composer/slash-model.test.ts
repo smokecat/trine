@@ -6,6 +6,7 @@ import type { SlashCommand } from '@trine/core';
 import {
   buildSlashMenu,
   flattenSlashGroups,
+  matchSlashName,
   moveSlashIndex,
   parseSlashInput,
   sessionCommandAction,
@@ -149,6 +150,55 @@ describe('buildSlashMenu', () => {
     expect(buildSlashMenu('/', { slashCommands: [] }).map((g) => g.title)).toEqual([
       '会话控制 · 协议级',
     ]);
+  });
+});
+
+describe('模糊匹配', () => {
+  test('matchSlashName 分档：前缀 < 词首 < 子串 < 词首起头的子序列', () => {
+    expect(matchSlashName('local-deploy', '')).toBe(0);
+    expect(matchSlashName('local-deploy', 'lo')).toBe(0);
+    expect(matchSlashName('local-deploy', 'dep')).toBe(1);
+    expect(matchSlashName('ws:task', 'task')).toBe(1);
+    expect(matchSlashName('local-deploy', 'ploy')).toBe(2);
+    expect(matchSlashName('local-deploy', 'lcd')).toBe(3);
+    expect(matchSlashName('code-review', 'crv')).toBe(3);
+    // 子序列首字符必须落在词首：`/cl` 是 l…c…l 里的散字符，不算命中
+    expect(matchSlashName('local-deploy', 'cl')).toBeNull();
+    expect(matchSlashName('local-deploy', 'xyz')).toBeNull();
+  });
+
+  test('/dep 提示 /local-deploy', () => {
+    const src = { slashCommands: [...commands, { name: 'local-deploy', source: 'project' }] as SlashCommand[] };
+    const labels = flattenSlashGroups(buildSlashMenu('/dep', src)).map((i) => i.label);
+    expect(labels).toEqual(['/local-deploy']);
+  });
+
+  test('同组内前缀命中排在模糊命中之前', () => {
+    const src = {
+      slashCommands: [
+        { name: 'local-deploy', source: 'project' },
+        { name: 'deploy', source: 'user' },
+        { name: 'redeploy', source: 'user' },
+      ] as SlashCommand[],
+    };
+    const labels = flattenSlashGroups(buildSlashMenu('/dep', src)).map((i) => i.label);
+    expect(labels).toEqual(['/deploy', '/local-deploy', '/redeploy']);
+  });
+
+  test('组按最佳档位排：项目命令前缀命中时排在会话控制的模糊命中之前', () => {
+    const src = { slashCommands: [{ name: 'pr-status', source: 'user' }, { name: 'tus', source: 'user' }] as SlashCommand[] };
+    const groups = buildSlashMenu('/tus', src);
+    expect(groups.map((g) => g.title)).toEqual(['项目命令 · agent 下发', '会话控制 · 协议级']);
+    expect(groups[0]?.items.map((i) => i.label)).toEqual(['/tus', '/pr-status']);
+    expect(groups[1]?.items.map((i) => i.label)).toEqual(['/status']);
+  });
+
+  test('模糊命中 + 参数：填入规范命令名与参数', () => {
+    const src = { slashCommands: [{ name: 'local-deploy', source: 'project' }] as SlashCommand[] };
+    expect(flattenSlashGroups(buildSlashMenu('/dep relay', src))[0]?.action).toEqual({
+      kind: 'fill',
+      text: '/local-deploy relay',
+    });
   });
 });
 

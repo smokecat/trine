@@ -12,8 +12,10 @@
  * 常用 prompt 片段早先是第 3 组，现在走输入区工具栏的 prompt 按钮
  * （SnippetPicker），「/」菜单只放命令。
  *
- * 过滤按**前缀**匹配：用户打 `/mo` 期望看到 `/model`，而不是所有描述里
- * 含「mo」的东西。
+ * 过滤只看**命令名**（不看描述），按匹配强弱分档排序（`matchSlashName`）：
+ * 前缀 > 词首（`-` `_` `:` 等分隔符之后，`/dep` → `/local-deploy`）> 子串 >
+ * 词首起头的子序列（`/lcd` → `/local-deploy`）。前缀仍排最前：用户打 `/mo`
+ * 第一个看到的是 `/model`。
  *
  * 纯数据 + 纯函数，零 React：菜单的分组/过滤/选中下标推进都能单测。
  */
@@ -61,6 +63,53 @@ const SESSION_COMMAND_DESC: Record<SessionCommand, string> = {
   mcp: 'MCP 服务器状态',
   rename: '重命名会话（与 CLI /rename 同一份标题）',
 };
+
+/** 命令名里的分隔符：其后的字符算「词首」 */
+const SEPARATOR = /[-_:./\s]/;
+
+/** 名字里每个词首的下标（含 0） */
+function wordStarts(name: string): number[] {
+  const starts = [0];
+  for (let i = 1; i < name.length; i++) {
+    if (SEPARATOR.test(name[i - 1] ?? '') && !SEPARATOR.test(name[i] ?? '')) starts.push(i);
+  }
+  return starts;
+}
+
+/** 从 `from` 起能否按顺序找齐 `query` 的每个字符 */
+function isSubsequenceFrom(name: string, query: string, from: number): boolean {
+  let at = from;
+  for (const ch of query) {
+    at = name.indexOf(ch, at);
+    if (at < 0) return false;
+    at++;
+  }
+  return true;
+}
+
+/**
+ * 命令名与输入的匹配档位，越小越靠前；不匹配返回 null。两边都应已小写。
+ *
+ * 0 前缀 · 1 词首前缀 · 2 子串 · 3 子序列（首字符须落在词首，免得 `/st` 这种
+ * 短输入把满屏不相干的命令都捞出来）。
+ */
+export function matchSlashName(name: string, query: string): number | null {
+  if (query === '' || name.startsWith(query)) return 0;
+  const starts = wordStarts(name);
+  if (starts.some((i) => name.startsWith(query, i))) return 1;
+  if (name.includes(query)) return 2;
+  if (starts.some((i) => name[i] === query[0] && isSubsequenceFrom(name, query, i))) return 3;
+  return null;
+}
+
+/** 按档位稳定排序（同档保持来源顺序），丢掉不匹配的 */
+function rankByMatch<T>(items: readonly T[], nameOf: (item: T) => string, query: string): { item: T; rank: number }[] {
+  return items
+    .map((item, index) => ({ item, index, rank: matchSlashName(nameOf(item).toLowerCase(), query) }))
+    .filter((r): r is { item: T; index: number; rank: number } => r.rank !== null)
+    .sort((a, b) => a.rank - b.rank || a.index - b.index)
+    .map(({ item, rank }) => ({ item, rank }));
+}
 
 function isSessionCommand(name: string): name is SessionCommand {
   return (SESSION_COMMANDS as readonly string[]).includes(name);
@@ -119,33 +168,45 @@ export function buildSlashMenu(text: string, sources: SlashSources): SlashGroup[
   const { name, arg } = parsed;
   const hasArg = arg !== '' || /\s/.test(text.slice(1));
 
-  const groups: SlashGroup[] = [];
-
   const unavailable = sources.unavailable ?? [];
-  const sessionItems: SlashItem[] = SESSION_COMMANDS.filter(
-    (c) => c.startsWith(name) && !unavailable.includes(c),
-  ).map((c) => ({
+  const sessionRanked = rankByMatch(
+    SESSION_COMMANDS.filter((c) => !unavailable.includes(c)),
+    (c) => c,
+    name,
+  );
+  const sessionItems: SlashItem[] = sessionRanked.map(({ item: c }) => ({
     label: `/${c}`,
     description: SESSION_COMMAND_DESC[c],
     action: sessionCommandAction(c, arg),
   }));
-  if (sessionItems.length > 0) groups.push({ title: '会话控制 · 协议级', items: sessionItems });
 
   // agent 下发的同名命令（如 claude 自带的 `/rename`）过滤掉：会话控制组已有
   // 协议级实现，两个同名项并列只会让人猜哪个是哪个（评审 S5）。
   // 即便该会话控制命令此刻不可用也照样过滤——SDK 下发的 `/rename` 当文本发给
   // Claude 并不会走 custom-title 通道。
-  const projectItems: SlashItem[] = sources.slashCommands
-    .filter((c) => c.name.toLowerCase().startsWith(name) && !isSessionCommand(c.name.toLowerCase()))
-    .map((c) => ({
-      label: `/${c.name}`,
-      ...(c.description === undefined ? {} : { description: c.description }),
-      source: c.source,
-      action: projectCommandAction(c.name, name, arg, hasArg),
-    }));
-  if (projectItems.length > 0) groups.push({ title: '项目命令 · agent 下发', items: projectItems });
+  const projectRanked = rankByMatch(
+    sources.slashCommands.filter((c) => !isSessionCommand(c.name.toLowerCase())),
+    (c) => c.name,
+    name,
+  );
+  const projectItems: SlashItem[] = projectRanked.map(({ item: c }) => ({
+    label: `/${c.name}`,
+    ...(c.description === undefined ? {} : { description: c.description }),
+    source: c.source,
+    action: projectCommandAction(c.name, name, arg, hasArg),
+  }));
 
-  return groups;
+  const groups: { group: SlashGroup; best: number }[] = [];
+  if (sessionItems.length > 0) {
+    groups.push({ group: { title: '会话控制 · 协议级', items: sessionItems }, best: sessionRanked[0]?.rank ?? 0 });
+  }
+  if (projectItems.length > 0) {
+    groups.push({ group: { title: '项目命令 · agent 下发', items: projectItems }, best: projectRanked[0]?.rank ?? 0 });
+  }
+  // 组按最佳档位排：`/dep` 时项目命令里的词首命中排在会话控制的模糊命中前面，
+  // 回车选中的是最像的那个。同档会话控制在前（sort 稳定）。
+  groups.sort((a, b) => a.best - b.best);
+  return groups.map((g) => g.group);
 }
 
 /** 键盘导航要的扁平序列（分组标题不可选中） */
