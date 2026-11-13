@@ -415,6 +415,7 @@ export function NewSessionSheet({
                 <CwdPicker
                   favorites={machine?.cwd?.favorites ?? []}
                   defaultCwd={machine?.cwd?.defaultCwd ?? ''}
+                  home={machine?.info?.files?.home}
                   value={cwd}
                   onChange={changeCwd}
                   disabled={offline}

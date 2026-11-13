@@ -8,12 +8,24 @@
  *
  * 「自由输入」与「加入常用」是两件事：输入框里的路径可以直接用来建会话
  * （不入收藏），点「+ 收藏」才写 agent 端列表。
+ *
+ * 显示：每行拆成目录名（主行）+ 上级路径（次行，放不下时截左边），home 显示成
+ * `~`（见 cwd-display.ts）；完整路径在列表下方「已选」里。组件宽度不够 32rem
+ * （手机）时，复制 / 设默认 / 移除收进每行的「⋯」菜单，默认目录改用目录名旁的星标表示。
  */
 import { useState } from 'react';
-import { CopyIcon, PlusIcon, StarIcon, XIcon } from 'lucide-react';
+import { CopyIcon, MoreHorizontalIcon, PlusIcon, StarIcon, XIcon } from 'lucide-react';
 import { Button } from '@/components/ui/button.tsx';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu.tsx';
 import { Input } from '@/components/ui/input.tsx';
 import { cn } from '@/lib/utils.ts';
+import { splitCwd } from './cwd-display.ts';
 
 export interface CwdPickerProps {
   favorites: string[];
@@ -31,6 +43,39 @@ export interface CwdPickerProps {
   onCopy?: (path: string) => void;
   /** 自定义目录那一行的标注，缺省「自定义」（目录不存在时传「将新建」） */
   customNote?: string;
+  /** agent 用户的 home，用来把路径显示成 `~/…`；不给就显示完整路径 */
+  home?: string;
+}
+
+/** 目录名 + 上级路径两行；上级路径放不下时截掉左边（rtl 容器 + ltr 隔离，标点不会乱序） */
+function CwdLabel({
+  path,
+  home,
+  marker,
+  note,
+}: {
+  path: string;
+  home: string | undefined;
+  marker?: React.ReactNode;
+  note?: React.ReactNode;
+}): React.JSX.Element {
+  const { name, parent } = splitCwd(path, home);
+  return (
+    <span className="flex min-w-0 flex-1 flex-col">
+      <span className="flex min-w-0 items-center gap-1">
+        <span data-testid="cwd-name" className="line-clamp-2 font-mono text-[13px] font-medium break-all">
+          {name}
+        </span>
+        {marker}
+        {note}
+      </span>
+      {parent !== '' && (
+        <span data-testid="cwd-parent" dir="rtl" className="text-text-3 truncate text-left font-mono text-[11px]">
+          <bdi dir="ltr">{parent}</bdi>
+        </span>
+      )}
+    </span>
+  );
 }
 
 function CopyButton({ path, onCopy }: { path: string; onCopy: (path: string) => void }): React.JSX.Element {
@@ -61,13 +106,14 @@ export function CwdPicker({
   loading = false,
   onCopy,
   customNote = '自定义',
+  home,
 }: CwdPickerProps): React.JSX.Element {
   const [draft, setDraft] = useState('');
   const trimmed = draft.trim();
   const custom = value !== '' && !favorites.includes(value);
 
   return (
-    <div className="flex flex-col gap-1.5" data-testid="cwd-picker">
+    <div className="@container/cwd flex flex-col gap-1.5" data-testid="cwd-picker">
       {loading && favorites.length === 0 && (
         <p className="text-text-3 text-xs">正在从机器拉取常用目录…</p>
       )}
@@ -87,39 +133,95 @@ export function CwdPicker({
               type="button"
               data-testid="cwd-pick"
               data-selected={selected}
+              title={path}
               onClick={() => onChange(path)}
               className={cn(
-                'min-w-0 flex-1 truncate rounded-[10px] border px-2.5 py-1.5 text-left font-mono text-xs transition-colors',
+                'flex min-w-0 flex-1 rounded-[10px] border px-2.5 py-1.5 text-left transition-colors',
                 selected
                   ? 'border-brand-border bg-brand-soft text-brand-ink'
                   : 'border-border bg-surface-2 text-text-2 hover:border-border-strong',
               )}
             >
-              {path}
+              <CwdLabel
+                path={path}
+                home={home}
+                marker={
+                  isDefault && (
+                    <StarIcon
+                      data-testid="cwd-default-mark"
+                      aria-label="默认目录"
+                      className="fill-amber text-amber size-3 shrink-0 @lg/cwd:hidden"
+                    />
+                  )
+                }
+              />
             </button>
-            {onCopy !== undefined && <CopyButton path={path} onCopy={onCopy} />}
-            <Button
-              size="icon-sm"
-              variant="ghost"
-              type="button"
-              disabled={disabled || isDefault}
-              title={isDefault ? '当前默认目录' : '设为默认目录'}
-              aria-label={`设为默认目录 ${path}`}
-              onClick={() => onSetDefault(path)}
-            >
-              <StarIcon className={cn(isDefault ? 'fill-amber text-amber' : 'text-text-3')} />
-            </Button>
-            <Button
-              size="icon-sm"
-              variant="ghost"
-              type="button"
-              disabled={disabled}
-              title="从常用目录移除"
-              aria-label={`移除常用目录 ${path}`}
-              onClick={() => onRemove(path)}
-            >
-              <XIcon className="text-text-3" />
-            </Button>
+            <div className="hidden items-center gap-1 @lg/cwd:flex">
+              {onCopy !== undefined && <CopyButton path={path} onCopy={onCopy} />}
+              <Button
+                size="icon-sm"
+                variant="ghost"
+                type="button"
+                disabled={disabled || isDefault}
+                title={isDefault ? '当前默认目录' : '设为默认目录'}
+                aria-label={`设为默认目录 ${path}`}
+                onClick={() => onSetDefault(path)}
+              >
+                <StarIcon className={cn(isDefault ? 'fill-amber text-amber' : 'text-text-3')} />
+              </Button>
+              <Button
+                size="icon-sm"
+                variant="ghost"
+                type="button"
+                disabled={disabled}
+                title="从常用目录移除"
+                aria-label={`移除常用目录 ${path}`}
+                onClick={() => onRemove(path)}
+              >
+                <XIcon className="text-text-3" />
+              </Button>
+            </div>
+            <div className="@lg/cwd:hidden">
+              <DropdownMenu modal={false}>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    size="icon-sm"
+                    variant="ghost"
+                    type="button"
+                    data-testid="cwd-row-menu"
+                    aria-label={`目录操作 ${path}`}
+                  >
+                    <MoreHorizontalIcon className="text-text-3" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-auto min-w-36" data-testid="cwd-row-menu-content">
+                  {onCopy !== undefined && (
+                    <DropdownMenuItem data-testid="cwd-menu-copy" onSelect={() => onCopy(path)}>
+                      <CopyIcon />
+                      复制目录
+                    </DropdownMenuItem>
+                  )}
+                  <DropdownMenuItem
+                    data-testid="cwd-menu-default"
+                    disabled={disabled || isDefault}
+                    onSelect={() => onSetDefault(path)}
+                  >
+                    <StarIcon />
+                    {isDefault ? '当前默认目录' : '设为默认目录'}
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem
+                    data-testid="cwd-menu-remove"
+                    variant="destructive"
+                    disabled={disabled}
+                    onSelect={() => onRemove(path)}
+                  >
+                    <XIcon />
+                    从常用目录移除
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
           </div>
         );
       })}
@@ -128,13 +230,28 @@ export function CwdPicker({
         <div className="flex items-center gap-1">
           <div
             data-testid="cwd-custom"
-            className="border-brand-border bg-brand-soft text-brand-ink min-w-0 flex-1 truncate rounded-[10px] border px-2.5 py-1.5 font-mono text-xs"
+            title={value}
+            className="border-brand-border bg-brand-soft text-brand-ink flex min-w-0 flex-1 rounded-[10px] border px-2.5 py-1.5"
           >
-            {value}
-            <span data-testid="cwd-custom-note" className="text-text-3 ml-1.5 font-sans text-[11px]">（{customNote}）</span>
+            <CwdLabel
+              path={value}
+              home={home}
+              note={
+                <span data-testid="cwd-custom-note" className="text-text-3 shrink-0 font-sans text-[11px]">
+                  （{customNote}）
+                </span>
+              }
+            />
           </div>
           {onCopy !== undefined && <CopyButton path={value} onCopy={onCopy} />}
         </div>
+      )}
+
+      {value !== '' && (
+        <p data-testid="cwd-selected-full" className="text-text-3 font-mono text-[11px] break-all">
+          <span className="font-sans">已选：</span>
+          {value}
+        </p>
       )}
 
       <div className="mt-1 flex gap-1.5">

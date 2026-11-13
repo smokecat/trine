@@ -69,7 +69,7 @@ const $ = (id: string) => document.querySelector<HTMLElement>(`[data-testid="${i
 const selectedMachine = () =>
   document.querySelector<HTMLElement>('[data-testid="ns-machine"][data-selected="true"]')?.dataset.machineId ?? null;
 const selectedCwd = () =>
-  document.querySelector<HTMLElement>('[data-testid="cwd-pick"][data-selected="true"]')?.textContent ?? null;
+  document.querySelector<HTMLElement>('[data-testid="cwd-pick"][data-selected="true"]')?.title ?? null;
 
 async function flush(): Promise<void> {
   for (let i = 0; i < 5; i++) await act(async () => await new Promise((r) => setTimeout(r, 0)));
@@ -121,7 +121,7 @@ describe('NewSessionSheet 消费 intent', () => {
     await act(async () => router!.navigate('/?new=1&nm=a&ncwd=/elsewhere'));
     await flush();
     expect(selectedMachine()).toBe('a');
-    expect($('cwd-custom')?.textContent).toContain('/elsewhere');
+    expect($('cwd-custom')?.title).toBe('/elsewhere');
   });
 
   test('指定的机器离线：照选它并提示离线，不换成在线的机器', async () => {
@@ -166,7 +166,7 @@ describe('NewSessionSheet 消费 intent', () => {
       }));
     });
     await flush();
-    expect($('cwd-custom')?.textContent).toContain('/repo/elsewhere');
+    expect($('cwd-custom')?.title).toBe('/repo/elsewhere');
     expect($('cwd-empty-hint')).toBeNull();
   });
 
