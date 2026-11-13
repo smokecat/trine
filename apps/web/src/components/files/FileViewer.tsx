@@ -99,8 +99,8 @@ function TextBody({ opened, mode, wrap }: { opened: OpenedFile; mode: 'rendered'
         data-testid="file-code"
         className={cn(
           '[&_[data-streamdown=code-block-header]]:hidden [&_div:has(>[data-streamdown=code-block-actions])]:hidden',
-          '[&_[data-streamdown=code-block]]:my-0 [&_[data-streamdown=code-block]]:rounded-none [&_[data-streamdown=code-block]]:border-0 [&_[data-streamdown=code-block]]:p-0',
-          '[&_[data-streamdown=code-block-body]]:rounded-none [&_[data-streamdown=code-block-body]]:border-0 [&_[data-streamdown=code-block-body]]:bg-transparent [&_[data-streamdown=code-block-body]]:p-0',
+          '[&_[data-streamdown=code-block]]:!my-0 [&_[data-streamdown=code-block]]:!rounded-none [&_[data-streamdown=code-block]]:border-0 [&_[data-streamdown=code-block]]:!bg-transparent [&_[data-streamdown=code-block]]:p-0',
+          '[&_[data-streamdown=code-block-body]]:rounded-none [&_[data-streamdown=code-block-body]]:border-0 [&_[data-streamdown=code-block-body]]:!bg-code-bg [&_[data-streamdown=code-block-body]]:!p-0',
           '[&_pre]:!m-0 [&_pre]:!rounded-none [&_pre]:!border-0 [&_pre]:px-4 [&_pre]:py-3',
         )}
       >

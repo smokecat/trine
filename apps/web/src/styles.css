@@ -13,6 +13,10 @@
 @import 'shadcn/tailwind.css';
 @import 'tw-animate-css';
 
+/* streamdown 的组件（代码块头、复制按钮等）在 dist 里带 Tailwind 类，Tailwind 默认不扫 node_modules，
+   不登记这里就缺 `pointer-events-auto`、`-mt-10` 这类类：复制按钮被 `pointer-events-none` 的外层挡住点不到 */
+@source '../node_modules/streamdown/dist/*.js';
+
 /* shadcn 的 dark: 变体按 class 走，我们同时挂 .dark 与 [data-theme=dark] */
 @custom-variant dark (&:where(.dark, [data-theme='dark'], .dark *, [data-theme='dark'] *));
 

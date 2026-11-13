@@ -413,7 +413,10 @@ export const Markdown = memo(function Markdown({
       className={cn(
         'max-w-full text-[14px] leading-[1.55] break-words',
         '[&_p]:my-0 [&_p+p]:mt-2',
-        '[&_pre]:bg-code-bg [&_pre]:border-border [&_pre]:rounded-lg [&_pre]:border',
+        // 代码块：streamdown 外框（语言 + 复制）里套一个带边框的 body，pre 本身不再加框（否则三层框）
+        '[&_[data-streamdown=code-block]]:bg-surface-2 [&_[data-streamdown=code-block]]:my-2 [&_[data-streamdown=code-block]]:rounded-lg',
+        '[&_[data-streamdown=code-block-actions]]:border-transparent [&_[data-streamdown=code-block-actions]]:bg-transparent',
+        '[&_[data-streamdown=code-block-body]]:bg-code-bg [&_[data-streamdown=code-block-body]]:p-3 [&_pre]:bg-transparent',
         '[&_code]:font-mono [&_code]:text-[12.5px]',
         '[&_:not(pre)>code]:bg-code-bg [&_:not(pre)>code]:rounded [&_:not(pre)>code]:px-1 [&_:not(pre)>code]:py-0.5',
         '[&_ul]:my-2 [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:my-2 [&_ol]:list-decimal [&_ol]:pl-5',
