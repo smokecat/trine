@@ -26,6 +26,7 @@
   `TRINE_ENGINES=claude` 可关闭 Codex，`TRINE_CODEX_BIN` 可指定可执行文件。需要 agent 0.21.0 或更高版本。
 - agent 0.23.0 起，更新和版本检查按引擎的安装方式走：Homebrew（cask 或 formula）和 apt 用包管理器，机器页显示实际执行的命令，最新版本也是该包管理器能装上的版本。apt 需要 agent 所在用户有免密 `sudo`，没有时错误信息会给出要在机器上运行的命令。
 - agent 0.22.0 起，Codex 会话还能回退对话（不还原文件，对话框会写明）、用 `/compact` 压缩、从 `/` 菜单运行 skill、选择推理强度；子 agent 的操作显示为工具卡（agent 0.26.0 起显示子 agent 的昵称、角色和状态；子 agent 发起的审批出现在父会话里，标注「来自子 agent」）。机器页每个引擎一张卡，可查看 Codex 版本并更新（`codex update`）。agent 启动后不久及每 6 小时向 GitHub 查询一次 Codex 最新版本。
+- agent 0.28.0 起，Codex 卡片上有「重启 Codex 进程」：换掉 agent 的 `codex app-server`，这台机器上 Codex 自己的常驻 daemon（`codex app-server daemon`，Codex 终端界面用的那个）在运行时一并重启。用 `codex login` 换了账号后，运行中的 Codex 进程不会重新加载登录，这时用它。有 Codex 会话在回复或有排队消息时不重启；空闲会话发下一条消息即可继续。
 - 默认隐藏临时会话（工作目录在系统临时目录下，或 `claude -p` 等非交互运行），列表筛选里可以重新显示。
 - 配对码/二维码与人工校验码确认，浏览器到 agent 的应用消息端到端加密。
 - 可选 Bark 通知，仅包含通用事件类型和机器标识/别名。

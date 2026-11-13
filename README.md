@@ -110,6 +110,11 @@ the agent runs on your own computer.
   "来自子 agent"). The machine page has a card per engine, with
   Codex's version and an update button (`codex update`). The agent checks GitHub for the latest Codex
   release shortly after start and every 6 hours.
+- With agent 0.28.0 or later, the Codex card also has "重启 Codex 进程": it replaces the agent's
+  `codex app-server` and, if the machine's own Codex daemon (`codex app-server daemon`, used by the
+  Codex terminal UI) is running, restarts that too. Codex does not reload a login for a different
+  account in a running process, so use this after switching accounts with `codex login`. It refuses
+  while a Codex session is replying or has queued messages; idle sessions resume on the next message.
 - Hides temporary sessions by default (working directory under a system temp directory, or
   non-interactive runs such as `claude -p`); a list filter shows them again.
 - Relays tool approval requests and interactive questions to your browser.

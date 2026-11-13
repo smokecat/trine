@@ -47,6 +47,11 @@ is not a substitute for those controls, backups or TLS.
 - With Codex enabled, the agent asks `api.github.com` for the latest Codex release shortly after start
   and every 6 hours, and any paired device can run `codex update` on the machine, the same exposure
   as `claude update`. The request carries no session data.
+- From agent 0.28.0, any paired device can restart Codex on the machine: the agent's own
+  `codex app-server` and, when it is running, the machine's Codex daemon
+  (`codex app-server daemon restart`). The agent refuses while a trine Codex session is busy, but it
+  cannot see work in Codex clients outside trine, which the daemon restart may interrupt. It never
+  starts a daemon that is not running.
 - The agent keeps plaintext copies of received attachments under `<home>/uploads`
   (deleted with the session) and lets Claude read that session's folder without an
   approval prompt. Any paired controller can place files there.

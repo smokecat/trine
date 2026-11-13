@@ -345,6 +345,7 @@ agent 侧所有产出 SessionMeta 的出口（list、session.created、session.u
 - `session.setEffort`、`session.create.effort`、`SessionMeta.effort`（agent ≥ 0.22.0，`capabilities.effort`）：推理强度，开放字符串，选项在 `EngineModel.efforts`；无模型目录的引擎可在 `EngineSummary.efforts` 提供统一选项（Claude），具体模型降档交给引擎处理。Codex 模型不支持的值不采用。`session.setEffort` 省略 `effort` = 回到模型默认值。
 - `MachineClaudeLatest.install`、`EngineSummary.install`（agent ≥ 0.23.0）：引擎由包管理器安装时才有，`manager` 是开放字符串，`command` 是实际执行的命令，只用于显示。这时最新版本来自包管理器；Claude 的 `channel` 优先取 cask 名或 apt 源地址。
 - `machine.engine.update.request`、`machine.engine.check.request` 及其应答（agent ≥ 0.22.0，`capabilities.update`）：语义同 `machine.claude.*`，多一个 `engine`。最新版本在 `EngineSummary.latest`，先随 `machine.info` 广播再回应答。
+- `machine.engine.restart.request { reqId, engine }`（agent ≥ 0.28.0，`capabilities.restart`）：重启引擎的后台进程。应答 `machine.engine.restart.response { reqId, engine, ok, daemon?: restarted | not_running | failed, daemonMessage?, error?: { code: busy | unavailable | failed, message } }`。Codex：该引擎有会话在回复、有排队消息时回 `busy`，不打断轮次；否则立即换掉 agent 的 `codex app-server`（加载着的 thread 按进程退出处理，下一条消息 resume），在新进程上刷新登录状态与限额（随 `machine.info` 广播）；机器上的常驻 daemon 在运行时执行 `codex app-server daemon restart`，没在运行不拉起。daemon 失败不影响 `ok`，原因在 `daemonMessage`。用途：Codex 换账号后运行中的进程不重新读 `auth.json`。
 - `EngineSummary.rateLimits.windows`：引擎的限额窗口，数量和时长因账号而异（实测有只给周窗口的账号），不能假设是 5 小时 + 7 天。Claude 的限额仍在 `MachineInfo.rateLimits`。
 
 ## 协议约定汇总
