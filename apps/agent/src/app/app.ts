@@ -85,7 +85,8 @@ import {
 } from './restart.ts';
 import { RESERVED_EXT_ID } from '../ext/registry.ts';
 import { Outbox, pushHintFor } from './outbox.ts';
-import { CapabilitiesCache, Router } from './router.ts';
+import { CapabilitiesCache, Router, type EngineRestartOutcome } from './router.ts';
+import { restartCodexDaemon, type CodexDaemonRestart } from '../engine/codex/daemon.ts';
 import { FLAGS_SWEEP_INTERVAL_MS, SessionFlagsStore } from './session-flags.ts';
 import { AgentState } from './state.ts';
 
@@ -179,6 +180,8 @@ export class AgentApp {
   #codex: CodexEngine | undefined;
   /** 能找到 codex 可执行文件时才有：测试注入的 app-server 不能更新 */
   #codexUpdate: { updater: ClaudeUpdater; latest: CodexLatestChecker } | undefined;
+  /** 重启 Codex 时顺带重启机器上的常驻 daemon；测试注入的 app-server 没有可执行文件，不碰 daemon */
+  #codexDaemon: (() => Promise<CodexDaemonRestart>) | undefined;
   #machineStats!: MachineStatsWatcher;
   #extRegistry!: ExtensionRegistry;
   #extLinks!: SessionLinksStore;
@@ -411,6 +414,7 @@ export class AgentApp {
       checkClaude: () => app.#claudeLatest.check(),
       updateEngine: async (engine) => (engine === CODEX_ENGINE_ID ? app.#codexUpdate?.updater.run() : undefined),
       checkEngine: async (engine) => (engine === CODEX_ENGINE_ID ? app.#codexUpdate?.latest.check() : undefined),
+      restartEngine: async (engine) => (engine === CODEX_ENGINE_ID ? app.#restartCodex() : undefined),
       refreshUsage: () => {
         void app.#codex?.refresh();
         return app.#planUsage.refresh();
@@ -531,6 +535,7 @@ export class AgentApp {
         latest: new CodexLatestChecker({ onChange: emitInfo, now, log, detectInstall: detectCodexInstall }),
       };
       void app.#codexUpdate.latest.loadInstall();
+      app.#codexDaemon = () => restartCodexDaemon(codexPath, spawn === undefined ? {} : { spawn });
     }
 
     // ---- 自重启（见 restart.ts）----
@@ -719,7 +724,8 @@ export class AgentApp {
   }
 
   #codexSummary(codex: CodexEngine): EngineSummary {
-    const summary = codex.summary();
+    const base = codex.summary();
+    const summary = { ...base, capabilities: { ...base.capabilities, restart: true } };
     if (this.#codexUpdate === undefined) return summary;
     const { install, ...latest } = this.#codexUpdate.latest.current;
     return {
@@ -727,6 +733,27 @@ export class AgentApp {
       capabilities: { ...summary.capabilities, update: true },
       latest,
       ...(install === undefined ? {} : { install }),
+    };
+  }
+
+  /**
+   * 机器页「重启 Codex」：有 Codex 会话在回复或排队就拒绝；否则换掉 trine 的 app-server，
+   * 机器上的常驻 daemon 在跑时一并重启（两者都在换账号后不重新读登录）
+   */
+  async #restartCodex(): Promise<EngineRestartOutcome> {
+    const codex = this.#codex;
+    if (codex === undefined) return { ok: false, error: { code: 'unavailable', message: '这台机器没有启用 Codex' } };
+    const busy = this.manager.busyCountOf(CODEX_ENGINE_ID);
+    if (busy > 0) {
+      return { ok: false, error: { code: 'busy', message: `${busy} 个 Codex 会话正在回复或有排队消息，等它们结束再重启` } };
+    }
+    const [, daemon] = await Promise.all([codex.restartProcess(), this.#codexDaemon?.()]);
+    if (daemon === undefined) return { ok: true };
+    if (daemon.status === 'failed') this.log(`[codex] ${daemon.message}`);
+    return {
+      ok: true,
+      daemon: daemon.status,
+      ...(daemon.status === 'failed' ? { daemonMessage: daemon.message } : {}),
     };
   }
 

@@ -531,6 +531,8 @@ export const EngineCapabilitiesSchema = z.object({
   effort: z.boolean().optional(),
   /** 能从机器页更新引擎（machine.engine.update.request、machine.engine.check.request） */
   update: z.boolean().optional(),
+  /** 能从机器页重启引擎的后台进程、重新加载登录（machine.engine.restart.request，agent ≥ 0.28.0） */
+  restart: z.boolean().optional(),
 });
 export type EngineCapabilities = z.infer<typeof EngineCapabilitiesSchema>;
 

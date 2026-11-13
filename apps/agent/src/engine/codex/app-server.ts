@@ -164,6 +164,19 @@ export class AppServerClient {
     if (this.#holds === 0 && this.#inFlight === 0) this.#stop(new AppServerError('app-server 更新后重启'));
   }
 
+  /**
+   * 立即换掉进程（机器页「重启 Codex」：换账号后旧进程不重新读登录）。加载着的 thread 会随之失效，
+   * 按进程退出处理（onExit），下一条消息 resume；有没有轮次在跑由调用方先查。没在运行 = 什么都不做
+   */
+  restart(): void {
+    if (this.#transport === undefined) return;
+    this.#clearIdle();
+    this.#startFailedAt = undefined;
+    this.#startError = undefined;
+    this.#stop(new AppServerError('app-server 已重启'));
+    this.#options.onExit?.();
+  }
+
   dispose(): void {
     this.#disposed = true;
     this.#stop(new AppServerError('app-server 客户端已关闭'));

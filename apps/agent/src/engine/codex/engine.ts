@@ -174,7 +174,7 @@ export function skillsFromList(response: unknown): CodexSkill[] {
 }
 
 export type CodexClient = Pick<AppServerClient, 'call' | 'userAgent' | 'dispose'> &
-  Partial<Pick<AppServerClient, 'hold' | 'release' | 'recycle'>>;
+  Partial<Pick<AppServerClient, 'hold' | 'release' | 'recycle' | 'restart'>>;
 
 export interface CodexEngineOptions {
   /** 给了 client 就用它（只测目录时）；否则按 spawn 建一个，并接上通知与审批 */
@@ -521,6 +521,18 @@ export class CodexEngine implements CodexSessionClient {
     if (/^\d/.test(version)) this.#installedVersion = version.slice(0, 64);
     this.#client.recycle?.();
     this.#onChange();
+  }
+
+  /**
+   * 机器页「重启 Codex」：立即换掉 app-server（加载着的 thread 按进程退出处理，下一条消息 resume），
+   * 再起新进程刷新登录状态、限额——换账号后旧进程不重新读 auth.json。轮次在跑与否由调用方先查。
+   */
+  async restartProcess(): Promise<void> {
+    this.#client.restart?.();
+    this.#log('[codex] app-server 已按请求重启');
+    // 旧进程上的刷新会被打断（记成不可用）：等它收尾，再在新进程上刷一次
+    await this.#refreshing;
+    await this.refresh();
   }
 
   createSession(args: CreateSessionArgs): CodexSession {

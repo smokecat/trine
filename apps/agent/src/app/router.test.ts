@@ -236,6 +236,7 @@ async function makeHarness(options: {
   checkClaude?: () => Promise<ClaudeCheckOutcome>;
   updateEngine?: RouterDeps['updateEngine'];
   checkEngine?: RouterDeps['checkEngine'];
+  restartEngine?: RouterDeps['restartEngine'];
   /** 注入限额用量刷新；省略 = router 回「不支持」 */
   refreshUsage?: () => Promise<PlanUsageRefreshOutcome>;
   /** 注入资源订阅；省略 = router 忽略 machine.stats.request */
@@ -333,6 +334,7 @@ async function makeHarness(options: {
     ...(options.checkClaude === undefined ? {} : { checkClaude: options.checkClaude }),
     ...(options.updateEngine === undefined ? {} : { updateEngine: options.updateEngine }),
     ...(options.checkEngine === undefined ? {} : { checkEngine: options.checkEngine }),
+    ...(options.restartEngine === undefined ? {} : { restartEngine: options.restartEngine }),
     ...(options.machineStats === undefined ? {} : { machineStats: options.machineStats }),
     now,
     log: (l) => logs.push(l),
@@ -2932,6 +2934,29 @@ describe('Router · Codex 引擎', () => {
     const checks = h.byType('machine.engine.check.response');
     expect(checks).toContainEqual(expect.objectContaining({ reqId: 'k1', ok: true, latest: { version: '1.1.0' } }));
     expect(checks).toContainEqual(expect.objectContaining({ reqId: 'k2', ok: false, error: expect.objectContaining({ code: 'failed' }) }));
+  });
+
+  test('machine.engine.restart.request：转交结果；不支持的引擎回 unavailable，出错回 failed', async () => {
+    const h = await makeHarness({
+      restartEngine: async (engine: string) => {
+        if (engine === 'boom') throw new Error('炸了');
+        if (engine === 'busy') return { ok: false as const, error: { code: 'busy' as const, message: '1 个会话在忙' } };
+        return engine === 'codex' ? { ok: true as const, daemon: 'failed' as const, daemonMessage: 'daemon 重启超时' } : undefined;
+      },
+    });
+    for (const engine of ['codex', 'other', 'boom', 'busy']) {
+      await h.router.handle({ type: 'machine.engine.restart.request', ...c2a(), reqId: `r-${engine}`, engine }, phone);
+    }
+    await h.router.idle();
+    const res = h.byType('machine.engine.restart.response');
+    expect(res).toContainEqual(
+      expect.objectContaining({ reqId: 'r-codex', ok: true, engine: 'codex', daemon: 'failed', daemonMessage: 'daemon 重启超时' }),
+    );
+    expect(res).toContainEqual(expect.objectContaining({ reqId: 'r-other', ok: false, error: expect.objectContaining({ code: 'unavailable' }) }));
+    expect(res).toContainEqual(
+      expect.objectContaining({ reqId: 'r-boom', ok: false, error: expect.objectContaining({ code: 'failed', message: expect.stringContaining('炸了') }) }),
+    );
+    expect(res).toContainEqual(expect.objectContaining({ reqId: 'r-busy', ok: false, error: { code: 'busy', message: '1 个会话在忙' } }));
   });
 
   test('历史走引擎，不读 Claude 转录', async () => {

@@ -75,7 +75,9 @@ import type {
 //   可带 subagentId，Codex 子 agent 的审批路由到父会话；扩展特性协商（ext.read / ext.action.prepare 的
 //   features、client，MachineInfo.extensions.features）与本地效果 files.open。web 都按字段 / 能力位判断
 // - 0.27.0 起支持新建会话前检查 / 创建工作目录（cwd.prepare.request，MachineInfo.cwd.create 能力位）
-export const AGENT_VERSION = '0.27.0';
+// - 0.28.0 起支持重启引擎的后台进程（machine.engine.restart.request，EngineCapabilities.restart；
+//   Codex：换掉 trine 的 app-server、常驻 daemon 在跑时一并重启，换账号后重新读登录）
+export const AGENT_VERSION = '0.28.0';
 
 export function buildMachineInfo(input: {
   name: string;

@@ -1295,6 +1295,50 @@ export const MachineEngineCheckResponseSchema = z.object({
   error: z.object({ code: z.enum(['failed']), message: z.string().max(300) }).optional(),
 });
 
+// --- §3.1c 重启引擎的后台进程（agent 0.28.0 起，capabilities.restart 为真才发） ---
+//
+// 语义：换掉 trine 自己的引擎进程（Codex 是 `codex app-server`），下次调用起新进程、重新读登录；
+// 机器上的 Codex 常驻 daemon（本机 Codex TUI 用的那个）在跑时一并重启。用途：换账号后旧进程
+// 不重新加载登录（Codex 认账号 id 不同就不热加载）。有会话在回复时拒绝（busy），不打断轮次；
+// 空闲的已加载会话下一条消息自动 resume。
+
+/** client → agent：重启引擎的后台进程（机器级帧） */
+export const MachineEngineRestartRequestSchema = z.object({
+  type: z.literal('machine.engine.restart.request'),
+  ...c2aBase,
+  reqId: ReqIdSchema,
+  engine: EngineIdSchema,
+});
+
+/**
+ * - `busy`         有会话在回复或有排队消息，没有重启
+ * - `unavailable`  这台机器不能重启这个引擎
+ * - `failed`       重启出错
+ */
+export const EngineRestartErrorCodeSchema = z.enum(['busy', 'unavailable', 'failed']);
+export type EngineRestartErrorCode = z.infer<typeof EngineRestartErrorCodeSchema>;
+
+/**
+ * 机器上的常驻 daemon：`restarted` 已重启；`not_running` 没在跑（不替用户拉起）；
+ * `failed` 重启失败（`daemonMessage` 带原因）。trine 自己的进程已经换掉，ok 仍为 true。
+ */
+export const EngineDaemonRestartSchema = z.enum(['restarted', 'not_running', 'failed']);
+export type EngineDaemonRestart = z.infer<typeof EngineDaemonRestartSchema>;
+
+/** agent → client：`machine.engine.restart.request` 的应答（机器级，reqId 关联） */
+export const MachineEngineRestartResponseSchema = z.object({
+  type: z.literal('machine.engine.restart.response'),
+  ...a2cBase,
+  reqId: ReqIdSchema,
+  engine: EngineIdSchema,
+  ok: z.boolean(),
+  /** ok 时：机器上常驻 daemon 的处理结果；引擎没有 daemon 时省略 */
+  daemon: EngineDaemonRestartSchema.optional(),
+  daemonMessage: z.string().max(300).optional(),
+  /** ok 为 false 时必带 */
+  error: z.object({ code: EngineRestartErrorCodeSchema, message: z.string().max(300) }).optional(),
+});
+
 // --- §3.1a 检查 claude 最新版本（claude-latest，agent 0.19.0 起） ---
 //
 // 语义：agent 立即向发布源查一次最新版本（不安装），先广播带新 `claudeLatest` 的
@@ -1920,6 +1964,7 @@ export const AgentToClientEventSchema = z.discriminatedUnion('type', [
   MachineClaudeCheckResponseSchema,
   MachineEngineUpdateResponseSchema,
   MachineEngineCheckResponseSchema,
+  MachineEngineRestartResponseSchema,
   MachineUsageResponseSchema,
   MachineAgentRestartResponseSchema,
   MachineStatsEventSchema,
@@ -1977,6 +2022,7 @@ export const ClientToAgentEventSchema = z.discriminatedUnion('type', [
   MachineClaudeCheckRequestSchema,
   MachineEngineUpdateRequestSchema,
   MachineEngineCheckRequestSchema,
+  MachineEngineRestartRequestSchema,
   MachineUsageRequestSchema,
   MachineAgentRestartRequestSchema,
   MachineStatsRequestSchema,

@@ -937,4 +937,55 @@ describe('AgentApp · Codex 引擎（假 app-server）', () => {
     expect(eventsOf(client).some((e) => e.type === 'user.message')).toBe(true);
     client.close();
   });
+
+  test('重启 Codex 进程：有轮次在跑时拒绝；空闲后换掉 app-server、重新读登录，下一条消息 resume', async () => {
+    const fake = new FakeAppServer({
+      'thread/list': () => ({ data: [fakeThread('codex-thread-1')], nextCursor: null }),
+      'thread/read': (p) => ({ thread: fakeThread((p as { threadId: string }).threadId) }),
+      'account/read': () => ({ account: { type: 'chatgpt' }, requiresOpenaiAuth: true }),
+      'thread/resume': () => ({ approvalPolicy: 'never', sandbox: { type: 'dangerFullAccess' } }),
+      'turn/start': () => ({ turn: { id: 'turn-1' } }),
+      'thread/unsubscribe': () => ({ status: 'unsubscribed' }),
+    });
+    await app.stop();
+    app = await createApp({ spawnCodexAppServer: fake.spawn });
+    const client = await pairAndConnect();
+    await waitFor(
+      () => eventsOf(client).some((e) => e.type === 'machine.info' && e.info.engines?.find((x) => x.id === 'codex')?.capabilities.restart === true),
+      'machine.info 带 Codex restart 能力',
+    );
+
+    send(client, { type: 'session.list.request', reqId: 'l1' });
+    await waitFor(() => eventsOf(client).some((e) => e.type === 'session.list.response'), '列表应答');
+    send(client, { type: 'input.send', sessionId: 'codex-thread-1', clientMsgId: 'c1', text: 'hi' });
+    await waitFor(() => fake.calls.some((c) => c.method === 'turn/start'), 'turn/start');
+
+    const responses = () => eventsOf(client).filter((e) => e.type === 'machine.engine.restart.response');
+    send(client, { type: 'machine.engine.restart.request', reqId: 'r1', engine: 'codex' });
+    await waitFor(() => responses().length === 1, '忙时的应答');
+    expect(responses()[0]).toMatchObject({ reqId: 'r1', ok: false, error: { code: 'busy' } });
+    expect(fake.killed).toBe(0);
+
+    fake.handlers!.onLine(
+      JSON.stringify({ method: 'turn/completed', params: { threadId: 'codex-thread-1', turn: { id: 'turn-1', status: 'completed' } } }),
+    );
+    await waitFor(() => eventsOf(client).some((e) => e.type === 'run.done'), 'run.done');
+    const spawnsBefore = fake.spawnCount;
+    const accountReadsBefore = fake.calls.filter((c) => c.method === 'account/read').length;
+    send(client, { type: 'machine.engine.restart.request', reqId: 'r2', engine: 'codex' });
+    await waitFor(() => responses().length === 2, '空闲时的应答');
+    const ok = responses()[1]!;
+    expect(ok).toMatchObject({ reqId: 'r2', ok: true, engine: 'codex' });
+    // 注入的 app-server 没有可执行文件：不碰机器上的 daemon
+    expect(ok.type === 'machine.engine.restart.response' && ok.daemon).toBeUndefined();
+    expect(fake.killed).toBe(1);
+    expect(fake.spawnCount).toBe(spawnsBefore + 1);
+    expect(fake.calls.filter((c) => c.method === 'account/read').length).toBe(accountReadsBefore + 1);
+
+    // 已加载的 thread 随旧进程失效：下一条消息重新 resume
+    const resumes = fake.calls.filter((c) => c.method === 'thread/resume').length;
+    send(client, { type: 'input.send', sessionId: 'codex-thread-1', clientMsgId: 'c2', text: 'again' });
+    await waitFor(() => fake.calls.filter((c) => c.method === 'thread/resume').length === resumes + 1, '再次 resume');
+    client.close();
+  });
 });

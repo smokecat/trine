@@ -856,7 +856,12 @@ describe('远程更新 claude（claude-update）', () => {
     expect(ClientToAgentEventSchema.safeParse({ ...c2a, type: 'session.setEffort' }).success).toBe(true);
     expect(ClientToAgentEventSchema.safeParse({ ...noSession, type: 'machine.engine.update.request', reqId: 'r', engine: 'codex' }).success).toBe(true);
     expect(ClientToAgentEventSchema.safeParse({ ...noSession, type: 'machine.engine.check.request', reqId: 'r' }).success).toBe(false);
+    expect(ClientToAgentEventSchema.safeParse({ ...noSession, type: 'machine.engine.restart.request', reqId: 'r', engine: 'codex' }).success).toBe(true);
     const machine = { ts, seq: 1, dir: 'a2c' } as const;
+    const restart = { ...machine, type: 'machine.engine.restart.response', reqId: 'r', engine: 'codex' } as const;
+    expect(AgentToClientEventSchema.safeParse({ ...restart, ok: true, daemon: 'failed', daemonMessage: 'x' }).success).toBe(true);
+    expect(AgentToClientEventSchema.safeParse({ ...restart, ok: false, error: { code: 'busy', message: 'x' } }).success).toBe(true);
+    expect(AgentToClientEventSchema.safeParse({ ...restart, ok: true, daemon: 'stopped' }).success).toBe(false);
     expect(
       AgentToClientEventSchema.safeParse({ ...machine, type: 'machine.engine.update.response', reqId: 'r', engine: 'codex', ok: true, fromVersion: '1', toVersion: '2', output: '' }).success,
     ).toBe(true);

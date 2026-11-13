@@ -285,6 +285,15 @@ export class SessionManager {
     return busy;
   }
 
+  /** 某个引擎在忙的会话数（重启引擎进程前查：不打断进行中的轮次） */
+  busyCountOf(engine: string): number {
+    let busy = 0;
+    for (const [id, session] of this.#sessions) {
+      if ((this.#meta.get(id) ?? this.#external?.metaOf(id))?.engine === engine && isBusy(session)) busy++;
+    }
+    return busy;
+  }
+
   /** 活跃会话上限 */
   get maxConcurrent(): number {
     return this.#maxConcurrent;

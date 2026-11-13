@@ -149,6 +149,7 @@ import type { MachineStatsWatcher } from './machine-stats.ts';
 import { CwdPinMoveError, type CwdStore } from './cwd-store.ts';
 import { CwdPrepareError, type CwdPreparer } from './cwd-prepare.ts';
 import type { ClaudeUpdateOutcome } from './claude-cli.ts';
+import type { EngineDaemonRestart, EngineRestartErrorCode } from '@trine/core';
 import type { EngineCheckOutcome } from '../engine/codex/update.ts';
 import type { ClaudeCheckOutcome } from './claude-latest.ts';
 import type { RestartOutcome } from './restart.ts';
@@ -157,6 +158,11 @@ import type { SessionFlagsStore } from './session-flags.ts';
 import { executeRewind, previewRewind, type RewindDeps } from './rewind.ts';
 import { SessionMutations, type MutationOutcome } from './session-mutations.ts';
 import type { AgentState, SessionParams } from './state.ts';
+
+/** 重启引擎后台进程的结果（machine.engine.restart.response 去掉帧头） */
+export type EngineRestartOutcome =
+  | { ok: true; daemon?: EngineDaemonRestart; daemonMessage?: string }
+  | { ok: false; error: { code: EngineRestartErrorCode; message: string } };
 
 /** resumeAt 最长等多久（协议里 retryAt 是额度重置时间，不该超过一天） */
 export const RESUME_AT_MAX_DELAY_MS = 24 * 60 * 60 * 1000;
@@ -185,6 +191,7 @@ const MACHINE_LEVEL_TYPES = new Set<ClientToAgentEvent['type']>([
   'machine.claude.check.request',
   'machine.engine.update.request',
   'machine.engine.check.request',
+  'machine.engine.restart.request',
   'machine.usage.request',
   'machine.agent.restart.request',
   'machine.stats.request',
@@ -306,6 +313,8 @@ export interface RouterDeps {
   updateEngine?: (engine: string) => Promise<ClaudeUpdateOutcome | undefined>;
   /** 查其他引擎的最新版本（查完先广播 machine.info）；不能查时回 undefined */
   checkEngine?: (engine: string) => Promise<EngineCheckOutcome | undefined>;
+  /** 重启引擎的后台进程（machine.engine.restart.request）；不能重启它时回 undefined。不抛 */
+  restartEngine?: (engine: string) => Promise<EngineRestartOutcome | undefined>;
   /**
    * 手动刷新订阅限额用量（app 的 PlanUsageTracker：单飞、超时；拿到后先广播
    * machine.info）。不抛——失败以 outcome 表达。不给 = 不支持（测试）。
@@ -1634,6 +1643,13 @@ export class Router {
         void task.finally(() => this.#background.delete(task));
         return;
       }
+      case 'machine.engine.restart.request': {
+        // 不 await：daemon 重启要等几秒
+        const task = this.#runEngineRestart(event.reqId, event.engine);
+        this.#background.add(task);
+        void task.finally(() => this.#background.delete(task));
+        return;
+      }
       case 'machine.usage.request': {
         // 不 await：同 machine.claude.update.request
         const task = this.#runUsageRefresh(event.reqId);
@@ -1993,6 +2009,31 @@ export class Router {
       output: outcome.output,
       ...(outcome.outputTruncated ? { outputTruncated: true } : {}),
       ...(outcome.error === undefined ? {} : { error: outcome.error }),
+    });
+  }
+
+  /** 重启引擎的后台进程并回机器级应答 */
+  async #runEngineRestart(reqId: string, engine: string): Promise<void> {
+    let outcome: EngineRestartOutcome;
+    try {
+      outcome = (await this.#deps.restartEngine?.(engine)) ?? {
+        ok: false,
+        error: { code: 'unavailable', message: `这台机器不能重启引擎 ${engine}`.slice(0, 300) },
+      };
+    } catch (err) {
+      outcome = { ok: false, error: { code: 'failed', message: `agent 重启 ${engine} 出错：${(err as Error).message}`.slice(0, 300) } };
+    }
+    this.#emitMachine({
+      type: 'machine.engine.restart.response',
+      reqId,
+      engine,
+      ok: outcome.ok,
+      ...(outcome.ok
+        ? {
+            ...(outcome.daemon === undefined ? {} : { daemon: outcome.daemon }),
+            ...(outcome.daemonMessage === undefined ? {} : { daemonMessage: outcome.daemonMessage.slice(0, 300) }),
+          }
+        : { error: { code: outcome.error.code, message: outcome.error.message.slice(0, 300) } }),
     });
   }
 
