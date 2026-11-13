@@ -246,6 +246,10 @@ export type ClaudeUpdateResult = Extract<AgentToClientEvent, { type: 'machine.cl
 /** 其他引擎的更新、检查应答；ok 为 false 也照常返回 */
 export type EngineUpdateResult = Extract<AgentToClientEvent, { type: 'machine.engine.update.response' }>;
 export type EngineCheckResult = Extract<AgentToClientEvent, { type: 'machine.engine.check.response' }>;
+export type EngineRestartResult = Extract<AgentToClientEvent, { type: 'machine.engine.restart.response' }>;
+
+/** 重启引擎后台进程要等新进程起来、daemon 重启（agent 侧 daemon 上限 60 秒） */
+export const ENGINE_RESTART_TIMEOUT_MS = 2 * 60_000;
 
 /** 配对流程（pairing.ts）成功后交给 client 的结果 */
 export interface PairingResult {
@@ -1897,6 +1901,23 @@ export class TrineClient {
       throw err;
     }
     if (res.type !== 'machine.engine.update.response') throw new Error(`意外的应答 ${res.type}`);
+    return res;
+  }
+
+  /** 重启引擎的后台进程（capabilities.restart 为真才支持）；ok 为 false 也照常返回 */
+  async restartEngine(machineId: string, engine: string): Promise<EngineRestartResult> {
+    let res: AgentToClientEvent;
+    try {
+      res = await this.request<Extract<OutboundBody, { type: 'machine.engine.restart.request' }>>(
+        machineId,
+        { type: 'machine.engine.restart.request', engine },
+        { timeoutMs: ENGINE_RESTART_TIMEOUT_MS },
+      );
+    } catch (err) {
+      if (err instanceof RequestTimeoutError) throw new RequestTimeoutError(err.requestType, err.timeoutMs, MUTATE_TIMEOUT_HINT);
+      throw err;
+    }
+    if (res.type !== 'machine.engine.restart.response') throw new Error(`意外的应答 ${res.type}`);
     return res;
   }
 

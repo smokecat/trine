@@ -4,6 +4,8 @@
  */
 import { CLAUDE_ENGINE_ID, type EngineSummary, type MachineInfo } from '@trine/core';
 import { EngineUpdateSection } from '@/components/machines/EngineUpdateSection.tsx';
+import { EngineRestartSection } from '@/components/machines/EngineRestartSection.tsx';
+import { supportsEngineRestart } from '@/components/machines/engine-restart.ts';
 import { claudeLatestView, CODEX_RUNNING_NOTE, engineLatestView, shortClaudeVersion, supportsClaudeUpdate } from '@/components/machines/claude-update.ts';
 import type { useClient } from '@/app/runtime.ts';
 import { EngineName } from '@/components/shell/EngineIcon.tsx';
@@ -72,6 +74,15 @@ function EngineCard({
           latest={latest}
           check={() => client.checkEngine(machineId, engine.id)}
           now={now}
+        />
+      )}
+      {client && !isClaude && supportsEngineRestart(engine) && (
+        <EngineRestartSection
+          engineName={engine.displayName}
+          idPrefix={engine.id}
+          machineName={machineName}
+          online={online}
+          restart={() => client.restartEngine(machineId, engine.id)}
         />
       )}
     </div>

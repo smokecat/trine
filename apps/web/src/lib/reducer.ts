@@ -854,6 +854,7 @@ export function applyEvent(tl: Timeline, event: AgentToClientEvent): Timeline {
     case 'machine.claude.check.response':
     case 'machine.engine.update.response':
     case 'machine.engine.check.response':
+    case 'machine.engine.restart.response':
     case 'machine.usage.response':
     case 'machine.agent.restart.response':
     case 'machine.stats':
