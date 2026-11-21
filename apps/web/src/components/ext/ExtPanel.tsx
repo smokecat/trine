@@ -120,7 +120,7 @@ export function ExtPanelSheet({
       <SheetContent
         side={desktop ? 'right' : 'bottom'}
         data-testid="ext-panel"
-        className={cn('gap-0 overflow-y-auto', desktop ? 'w-[min(26rem,100vw)] sm:max-w-none' : 'max-h-[85dvh] rounded-t-2xl')}
+        className={cn('gap-0 overflow-y-auto', desktop ? 'w-[min(26rem,100vw)] sm:max-w-none' : 'max-h-[85dvh] rounded-t-2xl safe-bottom')}
       >
         <SheetHeader className="px-4 pt-4 pb-2">
           <SheetTitle>{ext?.contributes[point]?.title ?? '扩展'}</SheetTitle>

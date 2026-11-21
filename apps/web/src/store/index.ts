@@ -22,6 +22,7 @@ export function createTrineStore(): TrineStore {
     paired: false,
     serverUrl: null,
     sessions: {},
+    doneAt: {},
     capabilities: {},
     syncing: {},
     timelines: {},
@@ -74,6 +75,26 @@ export function bindClient(store: TrineStore, client: TrineClient, now: () => nu
     client.on('connection', (connection) => store.setState({ connection })),
     client.on('queue', (queuedCount) => store.setState({ queuedCount })),
     client.on('sync', (syncing) => store.setState({ syncing })),
+    // 「已完成」本地叠加态：run.done 打标，重新开跑 / 致命错误 / 点进去看过即清
+    client.on('event', (machineId, event) => {
+      if (event.type !== 'run.done' && event.type !== 'run.state' && event.type !== 'error.fatal') return;
+      if (event.sessionId === undefined) return; // 这三类都是会话级事件，理论上必有；防御机器级
+      const key = timelineKey(machineId, event.sessionId);
+      if (event.type === 'run.done') {
+        store.setState((s) => ({ doneAt: { ...s.doneAt, [key]: now() } }));
+      } else if (
+        (event.type === 'run.state' && (event.state === 'running' || event.state === 'stopped' || event.state === 'error')) ||
+        event.type === 'error.fatal'
+      ) {
+        store.setState((s) =>
+          s.doneAt[key] === undefined ? s : (() => {
+            const next = { ...s.doneAt };
+            delete next[key];
+            return { doneAt: next };
+          })(),
+        );
+      }
+    }),
     client.on('peer', () => snapshotAll()),
     client.on('machine', (machine) => store.setState((s) => ({ machines: { ...s.machines, [machine.machineId]: machine } }))),
     client.on('sessions', (machineId, sessions) => store.setState((s) => ({ sessions: { ...s.sessions, [machineId]: sessions } }))),

@@ -81,6 +81,14 @@ export interface SessionsSlice {
    * `run.state`（更新 state 与 lastActivityAt）。刷新后为空，由列表页发 session.list.request 重建。
    */
   sessions: Record<string, Record<string, SessionMeta>>;
+  /**
+   * timelineKey → 完成时刻。「已完成」是**客户端本地视角**的叠加态
+   * （参考 claude-float 的边沿语义）：收到 `run.done` 标记，用户点进该会话
+   * （看过）或该会话重新开跑（`run.state` running / `error.fatal`）即清除。
+   * agent 的 SessionMeta.state 不掺这个语义——它不知道「你看没看过」。
+   * 不持久化：刷新即失，与「看过即消」的轻提示定位一致。
+   */
+  doneAt: Record<string, number>;
   /** timelineKey → 会话能力。来源：`session.capabilities` */
   capabilities: Record<string, Capabilities>;
 }

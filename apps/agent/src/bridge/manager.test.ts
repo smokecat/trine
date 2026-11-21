@@ -610,16 +610,21 @@ function fakeFlags() {
   const pending = new Map<string, string>();
   const deleted = new Set<string>();
   const pinned = new Map<string, number>();
+  const autoTitles = new Map<string, string>();
   const flags: SessionFlags = {
     archivedAt: (sid) => archived.get(sid),
     pinnedAt: (sid) => pinned.get(sid),
     pendingTitle: (sid) => pending.get(sid),
+    autoTitle: (sid) => autoTitles.get(sid),
+    setAutoTitle: async (sid, title) => {
+      autoTitles.set(sid, title);
+    },
     isDeleted: (sid) => deleted.has(sid),
     unarchiveNow: (sid) => {
       archived.delete(sid);
     },
   };
-  return { flags, archived, pending, deleted, pinned };
+  return { flags, archived, pending, deleted, pinned, autoTitles };
 }
 
 /** 让假会话像真 ClaudeSession 一样回调 onMeta（状态迁移时） */

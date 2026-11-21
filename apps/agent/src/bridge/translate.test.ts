@@ -8,6 +8,7 @@
 import { describe, expect, test } from 'bun:test';
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import { AgentToClientEventSchema } from '@trine/core';
+import { PriceTableSchema } from './pricing.ts';
 import { createTranslateState, permissionModeFromStatus, translateMessage, type TranslateState } from './translate.ts';
 
 function ctx(state: TranslateState, now = 1_000): { now: number; state: TranslateState } {
@@ -744,5 +745,130 @@ describe('本地斜杠命令的输出', () => {
     expect(translateMessage(localOutput('  \n'), ctx(state))).toEqual([]);
     const normal = translateMessage(assistantMessage([{ type: 'text', text: 'hi' }]), ctx(createTranslateState(0)));
     expect(normal[0]).not.toHaveProperty('command');
+  });
+});
+
+describe('translateMessage · result 成本（价目表模式）', () => {
+  const pricing = PriceTableSchema.parse({
+    models: {
+      'deepseek-flash': {
+        peak: { input: 0.3, output: 1.2, cacheRead: 0.006, cacheWrite: 0.3 },
+        offPeak: { input: 0.15, output: 0.6, cacheRead: 0.003, cacheWrite: 0.15 },
+      },
+      'claude-haiku-5-5': { input: 0.25, output: 1.25, cacheRead: 0.03, cacheWrite: 0.25 },
+    },
+  });
+
+  function usage(overrides: Record<string, unknown>) {
+    return {
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
+      webSearchRequests: 0,
+      costUSD: 0,
+      contextWindow: 1_000_000,
+      maxOutputTokens: 128_000,
+      ...overrides,
+    };
+  }
+
+  function result(modelUsage: Record<string, unknown>, totalCost: number): SDKMessage {
+    return {
+      type: 'result',
+      subtype: 'success',
+      duration_ms: 10,
+      duration_api_ms: 10,
+      is_error: false,
+      num_turns: 1,
+      result: 'ok',
+      stop_reason: 'end_turn',
+      total_cost_usd: totalCost,
+      usage: {},
+      modelUsage,
+      permission_denials: [],
+      uuid: 'u',
+      session_id: 's1',
+    } as unknown as SDKMessage;
+  }
+
+  /** 峰时（周二 UTC 02:xx），与 pricing 的默认峰时规则一致 */
+  const atPeak = Date.parse('2026-11-10T02:19:56Z');
+
+  test('按 token 自算，忽略 CC 按 Sonnet 档报的总价', () => {
+    const state = createTranslateState(0);
+    // 269767 全 miss + 171 out，峰时 flash：0.3/M 与 1.2/M
+    const msg = result({ 'deepseek-flash': usage({ inputTokens: 269_767, outputTokens: 171 }) }, 0.5412);
+    const out = translateMessage(msg, { now: atPeak, state, pricing });
+    expect((out[0] as { costUsd: number }).costUsd).toBeCloseTo(
+      (269_767 * 0.3 + 171 * 1.2) / 1_000_000,
+      10,
+    );
+    // 与 CC 的 Sonnet 估价（≈$0.54）不是一回事
+    expect((out[0] as { costUsd: number }).costUsd).toBeLessThan(0.1);
+  });
+
+  test('modelUsage 跨轮累计：第二轮只算增量', () => {
+    const state = createTranslateState(0);
+    translateMessage(result({ 'deepseek-flash': usage({ inputTokens: 1_000_000 }) }, 2), {
+      now: atPeak,
+      state,
+      pricing,
+    });
+    const second = translateMessage(
+      result({ 'deepseek-flash': usage({ inputTokens: 1_000_000, outputTokens: 500_000 }) }, 2.4),
+      { now: atPeak, state, pricing },
+    );
+    // 第二轮只新增 50 万 output：500000 × 1.2/M = 0.6
+    expect((second[0] as { costUsd: number }).costUsd).toBeCloseTo(0.6, 10);
+  });
+
+  test('缓存命中按 cacheRead 单价算', () => {
+    const state = createTranslateState(0);
+    const msg = result(
+      { 'deepseek-flash': usage({ inputTokens: 1_871, cacheReadInputTokens: 269_824 }) },
+      0.5,
+    );
+    const out = translateMessage(msg, { now: atPeak, state, pricing });
+    expect((out[0] as { costUsd: number }).costUsd).toBeCloseTo(
+      (1_871 * 0.3 + 269_824 * 0.006) / 1_000_000,
+      10,
+    );
+  });
+
+  test('价目表没覆盖的模型沿用 SDK 报的成本', () => {
+    const state = createTranslateState(0);
+    const msg = result({ 'claude-opus-5-5': usage({ inputTokens: 100, costUSD: 0.9 }) }, 0.9);
+    const out = translateMessage(msg, { now: atPeak, state, pricing });
+    expect((out[0] as { costUsd: number }).costUsd).toBeCloseTo(0.9, 10);
+  });
+
+  test('价目表一个都没对上 → 回退 SDK 累计值', () => {
+    const state = createTranslateState(0);
+    const msg = result({}, 0.5);
+    const out = translateMessage(msg, { now: atPeak, state, pricing });
+    expect((out[0] as { costUsd: number }).costUsd).toBeCloseTo(0.5, 10);
+  });
+
+  test('崩溃型零值 result 不把基线打回 0（下一轮不重复计费）', () => {
+    const state = createTranslateState(0);
+    translateMessage(result({ 'deepseek-flash': usage({ inputTokens: 1_000_000 }) }, 0.3), {
+      now: atPeak,
+      state,
+      pricing,
+    });
+    // 崩溃帧带零值
+    const crash = translateMessage(result({ 'deepseek-flash': usage({}) }, 0.3), {
+      now: atPeak,
+      state,
+      pricing,
+    });
+    expect((crash[0] as { costUsd: number }).costUsd).toBe(0);
+    // 恢复正常后仍只算新增
+    const next = translateMessage(
+      result({ 'deepseek-flash': usage({ inputTokens: 1_100_000 }) }, 0.33),
+      { now: atPeak, state, pricing },
+    );
+    expect((next[0] as { costUsd: number }).costUsd).toBeCloseTo(0.03, 10);
   });
 });

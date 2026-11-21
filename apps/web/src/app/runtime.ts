@@ -49,6 +49,23 @@ let booted = false;
 export async function boot(): Promise<void> {
   if (booted) return;
   booted = true;
+  // Web Launch Handler：manifest 声明 handle_links: preferred 后，PWA 以 URL
+  // 启动（浮窗/通知深链走 chrome --app-id <url>）时 Chromium 把链接投递给
+  // launchQueue 而不再自动导航——没人消费就只剩「聚焦窗口」，深链丢失。
+  // 在这里消费：导航到目标路径（整页加载即可，boot 本来就在最早执行）。
+  const launchQueue = (window as { launchQueue?: { setConsumer: (c: (p: { targetURL?: string }) => void) => void } }).launchQueue;
+  if (launchQueue !== undefined) {
+    launchQueue.setConsumer((params) => {
+      try {
+        const url = params.targetURL;
+        if (url === undefined) return;
+        const target = new URL(url, location.href);
+        if (target.origin === location.origin) location.assign(target.pathname + target.search + target.hash);
+      } catch {
+        // 畸形 URL：忽略，保持当前页
+      }
+    });
+  }
   try {
     const { kv, persistent } = browserKv();
     const docs = browserDocStore();
@@ -74,6 +91,9 @@ export async function boot(): Promise<void> {
       },
       onClient: (client) => {
         runtimeState.setState({ client });
+        // Web Push 启动重报：本地开关开着就把当前订阅重报一遍（幂等收敛漂移）。
+        // fire-and-forget——推送是旁路，拖不得启动
+        void import('../lib/push.ts').then((m) => m.resyncPushOnBoot(client));
         return bindClient(store, client);
       },
       onClientGone: () => runtimeState.setState({ client: null }),

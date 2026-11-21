@@ -286,6 +286,17 @@ agent 侧所有产出 SessionMeta 的出口（list、session.created、session.u
 - 错误码：`unsupported`、`disabled`、`denied`、`stale`、`not_found`、`busy`、`timeout`、`invalid_output`、`output_limit`、`io`、`unknown_outcome`、`extension_error`。扩展错误只显示在面板或 toast 里，不进 `error.fatal`
 - 互操作：新 client + 旧 agent 不显示扩展入口；旧 client + 新 agent 不发扩展帧，`SessionMeta.links` 被 strip，`ext.record` 被 schema 丢弃。新 client + 0.16.x agent：目录里没有 `newSession`、摘要里没有 `records`，不出现「从任务开始」、不拉记录卡。agent 回滚到旧版时 `extensions.json`、`session-links.json`、`session-ext-records.json` 被忽略但保留
 
+### 3.2 Web Push 通知（transport 层，server/web 同版本部署）
+
+PWA 装成 APP 后的系统级推送。帧都在 transport 层（不是 E2E 密文事件——推送要在设备离线时由 relay 直接触发，而 relay 读不了密文）。文案复用推送脱敏渲染（机器标识 + 事件类型），payload 经 RFC 8291 加密，推送服务只见密文；按 a2c 帧的 `recipientDeviceId` 定向投递，目标设备有 WS 连接（在线）时不推，同 (设备, 机器, 会话, hint) 30s 去抖。
+
+- `push.config { vapidPublicKey }`（server → client，连接建立即发）— VAPID 公钥首启自动生成落库；没启用 Web Push 的部署不发，client 据此隐藏通知开关
+- `push.subscribe { endpoint, keys: { p256dh, auth } }`（client → server）→ `push.subscribed { ok, error? }` — deviceId 取连接身份；一台设备一条订阅，覆盖式存储；404/410 投递失败时服务端自动清订阅
+- `push.unsubscribe { endpoint }`（client → server）→ 同款回执
+- `push.mute { sessionIds[] }`（client → server，无回执）— **全量覆盖**该设备的会话静音名单（轮询制会话的 run.done 防骚扰）；名单是本设备私有的（推送本就按设备订阅），客户端本地列表即真相，重连重报即收敛。静音只挡带 sessionId 的会话级事件，机器级事件不受影响
+- 点击通知的深链：payload 带 `machineId`/`sessionId`（密文内），SW 导航到 `/s/:machineId/:sessionId`
+- 互操作：旧 client 收到 `push.config` 会在 connection 层被 schema 拒掉整帧——**server 与 web 必须同版本部署**；旧 server 收到 `push.subscribe` 只会拒这一帧，连接不断
+
 ## 4. 配对
 
 - 带外（QR/配对码）内容：`{ serverUrl, agentPubKey, pairingToken（一次性）}`

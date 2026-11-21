@@ -12,6 +12,7 @@
   "dependencies": {
     "@trine/core": "workspace:*",
     "hono": "^4.13.5",
+    "web-push": "^4.0.0",
     "zod": "^4.5.4"
   },
   "devDependencies": {

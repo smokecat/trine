@@ -18,6 +18,8 @@
  * `session.updated` 广播回来，store 自然更新。
  */
 import { effortOptions } from '@/lib/engine-model.ts';
+import { getPushMutes, setPushMute } from '@/lib/push.ts';
+import { useClient } from '@/app/runtime.ts';
 import { useEffect, useState } from 'react';
 import type { EngineSummary, PermissionMode, SessionMeta } from '@trine/core';
 import { Button } from '@/components/ui/button.tsx';
@@ -42,6 +44,32 @@ import {
 } from './permission-mode.ts';
 
 export type SettingsSection = 'model' | 'cwd' | 'permission';
+
+/** 会话级推送静音：设备本地名单 + 全量上报 relay（lib/push.ts） */
+function PushMuteSection({ sessionId }: { sessionId: string }): React.JSX.Element {
+  const client = useClient();
+  const [muted, setMuted] = useState(() => getPushMutes().includes(sessionId));
+  const toggle = (next: boolean): void => {
+    setMuted(next);
+    setPushMute(client, sessionId, next);
+  };
+  return (
+    <div className="flex flex-col gap-1.5" data-testid="push-mute">
+      <h4 className="font-medium">通知</h4>
+      <p className="text-text-3 text-[11.5px]">
+        只影响这台设备收到的系统推送；总开关在 设置 → 通知。轮询制的会话建议静音，免得每次跑完都响。
+      </p>
+      <div className="flex flex-wrap gap-1.5">
+        <Chip data-testid="push-mute-on" selected={muted} onClick={() => toggle(true)}>
+          静音此会话
+        </Chip>
+        <Chip data-testid="push-mute-off" selected={!muted} onClick={() => toggle(false)}>
+          接收通知
+        </Chip>
+      </div>
+    </div>
+  );
+}
 
 export interface SessionSettingsActions {
   setModel: (model: string) => void;
@@ -354,6 +382,9 @@ export function SessionSettingsSheet({
           >
             查看会话状态（/status）
           </Button>
+
+          {/* --- 通知：本设备的会话级静音（轮询会话的 run.done 防骚扰）；总开关在 设置→通知 --- */}
+          {meta !== undefined && <PushMuteSection sessionId={meta.sessionId} />}
 
           {/* --- 高级：出问题时的恢复入口，平时不该碰 --- */}
           <Disclosure summary="高级">

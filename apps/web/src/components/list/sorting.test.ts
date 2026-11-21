@@ -41,6 +41,22 @@ describe('compareSessions / selectSessionRows', () => {
     expect(selectSessionRows(sessions, null).map((r) => r.meta.sessionId)).toEqual(['c', 'b', 'd', 'a']);
   });
 
+  test('「已完成」（run.done 打标、未看过）排在等待之后、运行之前', () => {
+    const sessions = {
+      m1: {
+        a: meta({ sessionId: 'a', state: 'idle', lastActivityAt: 900 }),
+        b: meta({ sessionId: 'b', state: 'running', lastActivityAt: 100 }),
+        c: meta({ sessionId: 'c', state: 'waiting_permission', lastActivityAt: 1 }),
+        done: meta({ sessionId: 'done', state: 'idle', lastActivityAt: 50 }),
+      },
+    };
+    const rows = selectSessionRows(sessions, null, { 'm1/done': 123 });
+    // done 提到与 running 同档，档内仍按 lastActivityAt（b=100 > done=50）
+    expect(rows.map((r) => r.meta.sessionId)).toEqual(['c', 'b', 'done', 'a']);
+    // 标记过期来源只有「看过」或「重新开跑」——不因时间衰减
+    expect(selectSessionRows(sessions, null, {}).map((r) => r.meta.sessionId)).toEqual(['c', 'b', 'a', 'done']);
+  });
+
   test('置顶会话排最前，越晚置顶越靠上，不随状态跳', () => {
     const sessions = {
       m1: {

@@ -54,6 +54,13 @@ describe('matchesStatus', () => {
     expect(ALL_STATES.filter((s) => matchesStatus(s, 'ended'))).toEqual(['error', 'stopped']);
     expect(ALL_STATES.every((s) => matchesStatus(s, 'all'))).toBe(true);
   });
+
+  test('「已完成」只看本地标记（justDone），不看 agent state', () => {
+    expect(matchesStatus('idle', 'done')).toBe(false);
+    expect(matchesStatus('idle', 'done', true)).toBe(true);
+    // 标记是 run.done 打的，理论上只落在 idle 上；判据本身只认标记
+    expect(matchesStatus('running', 'done', true)).toBe(true);
+  });
 });
 
 describe('filterSessions 管线', () => {

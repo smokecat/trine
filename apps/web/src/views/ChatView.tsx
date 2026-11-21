@@ -72,7 +72,7 @@ import { SessionHeadMenu } from '@/components/chat/SessionHeadMenu.tsx';
 import { SessionUsage } from '@/components/usage/PlanUsage.tsx';
 import { supportsContextRefresh } from '@/components/usage/usage-model.ts';
 import { composerOfflineHint } from '@/components/banners/conditions.ts';
-import { useClient, useTrine } from '@/app/runtime.ts';
+import { store, useClient, useTrine } from '@/app/runtime.ts';
 import {
   agentSupportsAttachments,
   agentSupportsBgTaskStop,
@@ -94,7 +94,7 @@ import { timelineKey } from '@/lib/storage.ts';
 import { CLAUDE_ENGINE_ID } from '@trine/core';
 import { capabilitiesOf, engineModeLabel, engineOf, hasMultipleEngines, sessionEngineTag } from '@/lib/engine-model.ts';
 import { EngineIcon } from '@/components/shell/EngineIcon.tsx';
-import { formatCost } from '@/lib/format.ts';
+import { CostLabel } from '@/components/chat/CostLabel.tsx';
 import { waitingForOfTool } from '@/lib/waiting.ts';
 import { ExtHeadEntry, ExtPanelSheet } from '@/components/ext/ExtPanel.tsx';
 import { FilePanel, type DrawerHandoff } from '@/components/files/FilePanel.tsx';
@@ -111,7 +111,7 @@ import { useIsDesktop } from '@/components/shell/use-media-query.ts';
 import { contentMaxWidth, effectiveContentWidth, setContentWidthOverride, type ContentWidth } from '@/lib/layout-prefs.ts';
 
 type InfoCardState =
-  | { kind: 'status'; rows: { label: string; value: string }[] }
+  | { kind: 'status'; rows: { label: string; value: React.ReactNode }[] }
   | { kind: 'mcp'; servers: McpServerStatus[] }
   | { kind: 'error'; message: string };
 
@@ -158,6 +158,16 @@ export function ChatView(): React.JSX.Element {
   const [insertRequest, setInsertRequest] = useState<{ id: number; text: string } | undefined>(undefined);
   // 换了会话（例如扩展的「新会话接续」跳过来）：面板不跟过去
   useEffect(() => setExtOpen(false), [machineId, sessionId]);
+  // 「已完成」是看过即消的本地提示（store/types.ts doneAt 注释）：进会话即清
+  useEffect(() => {
+    store.setState((s) =>
+      s.doneAt[key] === undefined ? s : (() => {
+        const doneAt = { ...s.doneAt };
+        delete doneAt[key];
+        return { doneAt };
+      })(),
+    );
+  }, [key]);
   const composerExts = useComposerExtensions(machineId);
   // 文件查看（agent ≥ 0.20.0，按 machine.info.files 判断）：工具卡与消息里的路径可点，
   // 头部菜单「浏览文件」；面板状态在 URL 里（返回键逐级退回）
@@ -578,7 +588,9 @@ export function ChatView(): React.JSX.Element {
             { label: '模型', value: res.model === '' ? '默认' : res.model },
             { label: '工作目录', value: res.cwd },
             { label: '权限模式', value: engineModeText ?? res.permissionMode },
-            ...(engineCaps.cost === true ? [{ label: '本会话成本', value: formatCost(res.costUsd) }] : []),
+            ...(engineCaps.cost === true
+              ? [{ label: '本会话成本', value: <CostLabel usd={res.costUsd} /> }]
+              : []),
             {
               label: '上下文',
               value:

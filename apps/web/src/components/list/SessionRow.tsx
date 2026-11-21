@@ -31,7 +31,8 @@ import type { SessionMeta } from '@trine/core';
 import { CLAUDE_ENGINE_ID } from '@trine/core';
 import { StatePill } from '@/components/shell/StatusDot.tsx';
 import { EngineIcon, engineColorClass } from '@/components/shell/EngineIcon.tsx';
-import { formatCost, formatRelativeTime, truncate } from '@/lib/format.ts';
+import { formatRelativeTime, truncate } from '@/lib/format.ts';
+import { formatCostIn, useCostCurrency } from '@/lib/currency.ts';
 import { cn } from '@/lib/utils.ts';
 import { lastEventPrefix, sessionTitle, shortCwd } from './sorting.ts';
 
@@ -39,6 +40,7 @@ export function SessionRow({
   machineId,
   machineName,
   meta,
+  justDone = false,
   variant = 'full',
   showMachine = true,
   showCost = true,
@@ -55,6 +57,8 @@ export function SessionRow({
   machineId: string;
   machineName: string;
   meta: SessionMeta;
+  /** 「已完成」本地标记（store doneAt）：显示绿色 chip，替换「空闲」pill */
+  justDone?: boolean;
   variant?: 'full' | 'compact';
   /** 「全部」过滤下才有意义 */
   showMachine?: boolean;
@@ -78,6 +82,7 @@ export function SessionRow({
   const compact = variant === 'compact';
   const attn = meta.state === 'waiting_permission';
   const prefix = lastEventPrefix(meta.state);
+  const currency = useCostCurrency();
 
   return (
     <div
@@ -113,7 +118,19 @@ export function SessionRow({
           {selected && (
             <CheckIcon aria-label="已选中" className="text-brand-ink size-3.5 shrink-0" data-testid="session-row-check" />
           )}
-          <StatePill state={meta.state} waitingFor={meta.waitingFor} />
+          {justDone && meta.state !== 'running' && meta.state !== 'waiting_permission' ? (
+            // 「已完成」：run.done 打标的本地提示（看过即消），替换掉「空闲」pill
+            <span
+              data-testid="state-pill"
+              data-state="done"
+              className="bg-green-soft text-green inline-flex shrink-0 items-center gap-[5px] rounded-full px-2 py-0.5 text-[11px] font-medium"
+            >
+              <CheckIcon className="size-3" aria-hidden />
+              已完成
+            </span>
+          ) : (
+            <StatePill state={meta.state} waitingFor={meta.waitingFor} />
+          )}
           {/* 空闲但子进程里还有后台任务在跑（agent ≥ 0.7.0 的 bgRunning）：弱提示，不当成运行中 */}
           {meta.bgRunning !== undefined && meta.bgRunning > 0 && meta.state !== 'running' && meta.state !== 'waiting_permission' && (
             <span data-testid="bg-running-badge" className="text-text-3 shrink-0 text-[11px]">
@@ -185,7 +202,7 @@ export function SessionRow({
           )}
           {!compact && showCost && (
             <span className="text-text-3 tabular shrink-0 font-mono text-[11px]">
-              {formatCost(meta.costUsd)}
+              {formatCostIn(meta.costUsd, currency)}
             </span>
           )}
         </div>

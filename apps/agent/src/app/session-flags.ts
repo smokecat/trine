@@ -60,6 +60,12 @@ export const SessionFlagsFileSchema = z.object({
   deleted: TsMap,
   pendingTitle: z.record(z.string(), z.string()),
   pinned: TsMap.default({}),
+  /**
+   * trine 自己生成的会话主题标题（见 bridge/auto-title.ts）。
+   * CC 的自动标题只在交互式会话里生成，SDK 会话没有；这里存一份，
+   * 显示优先级低于用户 /rename 的 customTitle，高于 SDK 的 summary。
+   */
+  autoTitles: z.record(z.string(), z.string()).default({}),
 });
 export type SessionFlagsFile = z.infer<typeof SessionFlagsFileSchema>;
 
@@ -136,6 +142,22 @@ export class SessionFlagsStore implements SessionFlags {
 
   pinnedAt(sessionId: string): number | undefined {
     return own(this.#data.pinned, sessionId);
+  }
+
+  autoTitle(sessionId: string): string | undefined {
+    return own(this.#data.autoTitles, sessionId);
+  }
+
+  /** 记下 trine 生成的标题；写盘失败回滚自己那次内存改动，调用方只 log */
+  setAutoTitle(sessionId: string, title: string): Promise<void> {
+    const previous = own(this.#data.autoTitles, sessionId);
+    if (previous === title) return this.#settled();
+    put(this.#data.autoTitles, sessionId, title);
+    return this.#persistOrRevert(() => {
+      if (own(this.#data.autoTitles, sessionId) !== title) return;
+      if (previous === undefined) delete this.#data.autoTitles[sessionId];
+      else put(this.#data.autoTitles, sessionId, previous);
+    });
   }
 
   isDeleted(sessionId: string): boolean {
@@ -247,6 +269,7 @@ export class SessionFlagsStore implements SessionFlags {
     delete this.#data.archived[sessionId];
     delete this.#data.pendingTitle[sessionId];
     delete this.#data.pinned[sessionId];
+    delete this.#data.autoTitles[sessionId];
     this.#pendingSetAt.delete(sessionId);
     this.#selfWriteAt.delete(sessionId);
     put(this.#data.deleted, sessionId, at);
@@ -363,7 +386,7 @@ export class SessionFlagsStore implements SessionFlags {
 }
 
 function emptyFlags(): SessionFlagsFile {
-  return { v: 1, archived: {}, deleted: {}, pendingTitle: {}, pinned: {} };
+  return { v: 1, archived: {}, deleted: {}, pendingTitle: {}, pinned: {}, autoTitles: {} };
 }
 
 /** 只认自有属性（sessionId 来自远端，别让 `__proto__` 之类撞到原型链） */

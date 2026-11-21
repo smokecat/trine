@@ -277,6 +277,27 @@ titles. The Bark provider can see notification metadata. Keep aliases non-sensit
 Notifications are best-effort, deduplicated and suppressed while a client is online
 by default. See the environment template for the relevant settings.
 
+## 6b. Web Push notifications (PWA, zero config)
+
+Browsers that installed trine as an app (iOS 16.4+ "Add to Home Screen" from
+Safari, Android/desktop Chrome) can receive native system notifications with
+**no server configuration**: VAPID keys are generated on first start and stored
+in the database. Toggle it per device in the web app: Settings → 通知.
+
+iPhone note (tested): Apple's push service rejects a `mailto:` subject on
+localhost (403 BadJwtToken) and binds each subscription to the VAPID public
+key (rotating keys returns 400 VapidPkHashMismatch). Set
+`TRINE_VAPID_SUBJECT=https://your-trine-host.example` before your first
+iPhone subscribes — see the environment template.
+
+Deployment notes:
+
+- Requires this server version **and** the matching web build — deploy both
+  together (an old web build cannot parse the new `push.config` frame).
+- Same desensitized wording as Bark (machine label + event type), per-device
+  delivery and suppression: a device gets a push only when it has no live
+  WebSocket connection.
+
 ## 7. Backups
 
 Use SQLite's backup mechanism, not a raw copy of a database with an active WAL:

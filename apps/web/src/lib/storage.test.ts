@@ -12,6 +12,7 @@ import {
   saveMachineDoc,
   loadPeer,
   KNOWN_MODELS_SEED,
+  DEFAULT_KNOWN_MODELS,
   loadPrefs,
   savePrefs,
   loadTimeline,
@@ -64,7 +65,7 @@ describe('storage · peer 落盘取 max', () => {
 
   test('prefs 缺省：预置模型只有别名，默认 opus + bypass', () => {
     const prefs = loadPrefs(new MemoryKv());
-    expect(prefs.knownModels).toEqual(['fable', 'fable[1m]', 'opus', 'opus[1m]', 'sonnet', 'sonnet[1m]', 'haiku']);
+    expect(prefs.knownModels).toEqual(DEFAULT_KNOWN_MODELS);
     expect(prefs.knownModelsSeed).toBe(KNOWN_MODELS_SEED);
     expect(prefs.defaultModel).toBe('opus[1m]');
     expect(prefs.defaultPermissionMode).toBe('bypassPermissions');
@@ -77,7 +78,7 @@ describe('storage · peer 落盘取 max', () => {
       JSON.stringify({ v: 1, theme: 'dark', promptSnippets: [], knownModels: ['claude-opus-5', 'my-model', 'claude-opus-5-5[1m]'] }),
     );
     const first = loadPrefs(kv);
-    expect(first.knownModels).toEqual(['fable', 'fable[1m]', 'opus', 'opus[1m]', 'sonnet', 'sonnet[1m]', 'haiku', 'my-model']);
+    expect(first.knownModels).toEqual([...DEFAULT_KNOWN_MODELS, 'my-model']);
     expect(first.knownModelsSeed).toBe(KNOWN_MODELS_SEED);
     expect(first.theme).toBe('dark');
     // 老 prefs 没有默认值字段：落默认，不重置其它字段
@@ -100,7 +101,7 @@ describe('storage · peer 落盘取 max', () => {
         knownModelsSeed: 2,
       }),
     );
-    expect(loadPrefs(kv).knownModels).toEqual(['fable', 'fable[1m]', 'opus', 'opus[1m]', 'sonnet', 'sonnet[1m]', 'haiku', 'claude-opus-4-8']);
+    expect(loadPrefs(kv).knownModels).toEqual([...DEFAULT_KNOWN_MODELS, 'claude-opus-4-8']);
   });
 
   test('默认模型 / 权限模式坏值落默认，合法值保留', () => {

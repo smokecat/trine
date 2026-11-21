@@ -746,6 +746,92 @@ export class Store {
   }
 
   // -------------------------------------------------------------------------
+  // Web Push（PWA 通知）：订阅表 + VAPID 密钥对
+  // -------------------------------------------------------------------------
+
+  /** 覆盖式保存一台设备的订阅（浏览器轮换 endpoint 即换行） */
+  upsertPushSubscription(sub: {
+    deviceId: string;
+    endpoint: string;
+    p256dh: string;
+    auth: string;
+  }, now = Date.now()): void {
+    this.db
+      .query(
+        `INSERT INTO push_subscriptions (device_id, endpoint, p256dh, auth, updated_at)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT (device_id) DO UPDATE SET
+           endpoint = excluded.endpoint, p256dh = excluded.p256dh,
+           auth = excluded.auth, updated_at = excluded.updated_at`,
+      )
+      .run(sub.deviceId, sub.endpoint, sub.p256dh, sub.auth, now);
+  }
+
+  removePushSubscription(deviceId: string): boolean {
+    return this.db
+      .query('DELETE FROM push_subscriptions WHERE device_id = ?')
+      .run(deviceId).changes > 0;
+  }
+
+  /** 全量覆盖一台设备的静音名单（客户端本地列表即真相，重连重报即收敛） */
+  setPushMutes(deviceId: string, sessionIds: readonly string[], now = Date.now()): void {
+    this.db.transaction(() => {
+      this.db.query('DELETE FROM push_mutes WHERE device_id = ?').run(deviceId);
+      const insert = this.db.query(
+        'INSERT OR IGNORE INTO push_mutes (device_id, session_id, updated_at) VALUES (?, ?, ?)',
+      );
+      for (const sessionId of sessionIds) insert.run(deviceId, sessionId, now);
+    })();
+  }
+
+  isPushMuted(deviceId: string, sessionId: string): boolean {
+    const row = this.db
+      .query('SELECT 1 FROM push_mutes WHERE device_id = ? AND session_id = ?')
+      .get(deviceId, sessionId);
+    return row !== null && row !== undefined;
+  }
+
+  getPushSubscription(deviceId: string): {
+    deviceId: string;
+    endpoint: string;
+    p256dh: string;
+    auth: string;
+    updatedAt: number;
+  } | null {
+    const row = this.db
+      .query('SELECT * FROM push_subscriptions WHERE device_id = ?')
+      .get(deviceId) as Record<string, unknown> | null;
+    if (!row) return null;
+    return {
+      deviceId: row.device_id as string,
+      endpoint: row.endpoint as string,
+      p256dh: row.p256dh as string,
+      auth: row.auth as string,
+      updatedAt: row.updated_at as number,
+    };
+  }
+
+  /** VAPID 密钥对：取不到时用生成器造一副并存回去（首启自动生成，跨重启稳定） */
+  getOrInitVapid(
+    generate: () => { publicKey: string; privateKey: string },
+    now = Date.now(),
+  ): { publicKey: string; privateKey: string } {
+    const row = this.db
+      .query('SELECT public_key, private_key FROM push_vapid WHERE id = 1')
+      .get() as Record<string, unknown> | null;
+    if (row) {
+      return { publicKey: row.public_key as string, privateKey: row.private_key as string };
+    }
+    const keys = generate();
+    this.db
+      .query(
+        'INSERT INTO push_vapid (id, public_key, private_key, created_at) VALUES (1, ?, ?, ?)',
+      )
+      .run(keys.publicKey, keys.privateKey, now);
+    return keys;
+  }
+
+  // -------------------------------------------------------------------------
   // 清理入口
   // -------------------------------------------------------------------------
 

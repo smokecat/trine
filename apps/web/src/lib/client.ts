@@ -147,6 +147,8 @@ export interface ClientEvents {
   capabilities: (machineId: string, sessionId: string, capabilities: Capabilities) => void;
   prefs: (prefs: Prefs) => void;
   notice: (notice: ClientNotice) => void;
+  /** 服务端对 push.subscribe / push.unsubscribe 的回执（设置页反馈用） */
+  pushSubscribed: (ok: boolean, error?: string) => void;
   /** 排队消息为编辑而撤回成功（或未送达的消息点了编辑）：把文本放回该会话的输入框 */
   restoreDraft: (machineId: string, sessionId: string, text: string) => void;
   /** 每条已应用的 a2c 事件（调试 / e2e 断言用） */
@@ -321,6 +323,8 @@ export class TrineClient {
   readonly #listeners = new Map<keyof ClientEvents, Set<Listener>>();
   readonly #machineWaiters: { resolve: (machineId: string) => void }[] = [];
   #connection: Connection | null = null;
+  /** 服务端 push.config 下发的 VAPID 公钥；null = 未启用/未收到 */
+  #pushVapid: string | null = null;
   #syncing: Record<string, SyncMode> = {};
   #lastQueued = 0;
   #connectionSnapshot: ConnectionSnapshot = { status: 'idle', attempt: 0, nextRetryAt: null, lastCloseCode: null, lastError: null };
@@ -455,6 +459,13 @@ export class TrineClient {
   }
   get connection(): ConnectionSnapshot {
     return this.#connectionSnapshot;
+  }
+  /**
+   * 服务端在连接建立时下发的 Web Push VAPID 公钥（push.config）。
+   * null = 服务端没启用推送 / 还没收到。设置页据此决定通知开关是否可用。
+   */
+  get pushVapidKey(): string | null {
+    return this.#pushVapid;
   }
   /** 当前同步/回填中的 scope（key 同 sync 事件） */
   get syncing(): Record<string, SyncMode> {
@@ -687,6 +698,12 @@ export class TrineClient {
       case 'pair.abort':
         // 服务端把 agent 发的 pair.* 广播给全部 client：与本连接无关，静默忽略
         return;
+      case 'push.config':
+        this.#pushVapid = frame.vapidPublicKey;
+        return;
+      case 'push.subscribed':
+        this.#emit('pushSubscribed', frame.ok, frame.error);
+        return;
       default:
         this.#log(`[client] 忽略未处理的 transport 帧 ${frame.type}`);
     }
@@ -891,6 +908,27 @@ export class TrineClient {
     const sent = this.#connection?.send({ type: 'park.recall', machineId, sessionId, seq: entry.parkedSeq }) ?? false;
     if (sent) this.#updateTimeline(machineId, sessionId, (tl) => removeLocalEntry(tl, clientMsgId));
     return sent;
+  }
+
+  /**
+   * Web Push：上报本设备的推送订阅（服务端按连接身份归档，回执走
+   * `pushSubscribed` 事件）。返回 false = 当前未连接。
+   */
+  subscribePush(sub: { endpoint: string; keys: { p256dh: string; auth: string } }): boolean {
+    return this.#connection?.send({ type: 'push.subscribe', ...sub }) ?? false;
+  }
+
+  /** Web Push：退订。幂等；未连接时返回 false（本地退订仍会做）。 */
+  unsubscribePush(endpoint: string): boolean {
+    return this.#connection?.send({ type: 'push.unsubscribe', endpoint }) ?? false;
+  }
+
+  /**
+   * Web Push：全量覆盖本设备的会话静音名单（轮询会话防骚扰）。
+   * 无回执：幂等覆盖，重连重报即收敛（lib/push.ts 的 boot 同步）。
+   */
+  sendPushMutes(sessionIds: readonly string[]): boolean {
+    return this.#connection?.send({ type: 'push.mute', sessionIds: [...sessionIds] }) ?? false;
   }
 
   /**

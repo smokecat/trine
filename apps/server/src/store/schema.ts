@@ -192,6 +192,36 @@ const MIGRATIONS: string[] = [
     token_hash TEXT NOT NULL UNIQUE,
     expires_at INTEGER NOT NULL
   );`,
+  // v5: Web Push（PWA 通知）。
+  // 订阅表：一台 client 设备一条（PRIMARY KEY device_id），新订阅覆盖旧的——
+  // 浏览器轮换 endpoint 时旧订阅自然作废，不必为幽灵 endpoint 留多行。
+  // 存的字段与 transport.ts push.subscribe 帧一一对应（† 清单口径）。
+  `
+  CREATE TABLE push_subscriptions (
+    device_id   TEXT PRIMARY KEY,
+    endpoint    TEXT NOT NULL,
+    p256dh      TEXT NOT NULL,
+    auth        TEXT NOT NULL,
+    updated_at  INTEGER NOT NULL
+  );
+
+  -- VAPID 应用服务器密钥对（RFC 8292）：首启自动生成，落库跨重启稳定。
+  -- 公钥发给每个订阅者（push.config），私钥只用于本地签名，绝不出进程。
+  CREATE TABLE push_vapid (
+    id          INTEGER PRIMARY KEY CHECK (id = 1),
+    public_key  TEXT NOT NULL,
+    private_key TEXT NOT NULL,
+    created_at  INTEGER NOT NULL
+  );`,
+  // v6: 每设备的会话推送静音名单（push.mute 全量覆盖式更新）。
+  // sessionId 是 transport 明文路由字段，存它不破零知识（见 transport.ts 注释）。
+  `
+  CREATE TABLE push_mutes (
+    device_id   TEXT NOT NULL,
+    session_id  TEXT NOT NULL,
+    updated_at  INTEGER NOT NULL,
+    PRIMARY KEY (device_id, session_id)
+  );`,
 ];
 
 /** 当前 schema 版本 = 迁移条数 */

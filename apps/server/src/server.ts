@@ -29,6 +29,7 @@ import { BlobStore } from './blobs.ts';
 import { loadConfig, type ServerConfig } from './config.ts';
 import { clientSource, createHttpApp } from './http.ts';
 import { createPushDispatcher } from './push/index.ts';
+import { WebPushService } from './push/webpush.ts';
 import { Store } from './store/index.ts';
 import { RelayHub } from './ws/hub.ts';
 import {
@@ -200,9 +201,20 @@ export async function startServer(
   if (push.enabled) {
     console.info(`[push] 已启用渠道：${push.channelNames.join(', ')}`);
   }
+  // Web Push（PWA 通知）：按设备定向，与 dispatcher 的广播渠道互补。
+  // VAPID 密钥首启自动生成落库，无任何必填配置
+  const webpush = new WebPushService({
+    store,
+    isDeviceOnline: (deviceId) =>
+      registry.allClients().some((c) => c.deviceId === deviceId),
+    rawAlias: config.pushAliases,
+    // env 缺省时服务用兜底 subject;iOS 部署应配 TRINE_VAPID_SUBJECT(见 config)
+    ...(config.vapidSubject ? { vapidSubject: config.vapidSubject } : {}),
+    log: (line) => console.info(line),
+  });
   // auth 注入 hub：背书式登记（D8）——agent 发来合规 pair.confirm 时
   // 由 hub 直接把 client 设备登记进来
-  const hub = new RelayHub<WS>({ store, registry, config, push, auth });
+  const hub = new RelayHub<WS>({ store, registry, config, push, webpush, auth });
 
   const blobs =
     config.blobDir === ''

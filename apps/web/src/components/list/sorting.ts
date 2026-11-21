@@ -12,6 +12,11 @@ import type { SessionMeta, SessionState } from '@trine/core';
 export interface SessionRowData {
   machineId: string;
   meta: SessionMeta;
+  /**
+   * 「已完成」本地叠加态（store 的 doneAt，来源 run.done）：刚跑完还没被看过。
+   * agent 的 state 落回 idle；这个标记只影响展示（chip / 排序 / 状态筛选）。
+   */
+  justDone?: boolean;
 }
 
 /**
@@ -47,24 +52,39 @@ export function comparePinned(a: number | undefined, b: number | undefined): num
 export function compareSessions(a: SessionRowData, b: SessionRowData): number {
   return (
     comparePinned(a.meta.pinnedAt, b.meta.pinnedAt) ||
-    STATE_RANK[a.meta.state] - STATE_RANK[b.meta.state] ||
+    rowRank(a) - rowRank(b) ||
     b.meta.lastActivityAt - a.meta.lastActivityAt ||
     (a.meta.sessionId < b.meta.sessionId ? -1 : a.meta.sessionId > b.meta.sessionId ? 1 : 0)
   );
 }
 
 /**
+ * 行档位：等待批准 > **已完成（未看过）** > 运行中 > 其余。
+ * 「已完成」插在等待与运行之间——刚干完的活最值得被瞥一眼，但不能压过
+ * 等你批准的事（参考 claude-float 的托盘排序：空闲（刚完成）在最上，等待靠徽章提示）。
+ */
+function rowRank(row: SessionRowData): number {
+  const rank = STATE_RANK[row.meta.state];
+  return row.justDone === true && rank > 1 ? 1 : rank;
+}
+
+/**
  * 把 store 的 `sessions`（machineId → sessionId → meta）摊平、过滤、排序。
- * `filter === null` 表示「全部」。
+ * `filter === null` 表示「全部」。`doneAt`（store 的已完成标记）可选，给了
+ * 就把带标记的行标 `justDone`，供排序 / 状态筛选 / chip 使用。
  */
 export function selectSessionRows(
   sessions: Record<string, Record<string, SessionMeta>>,
   filter: string | null,
+  doneAt?: Record<string, number>,
 ): SessionRowData[] {
   const rows: SessionRowData[] = [];
   for (const [machineId, map] of Object.entries(sessions)) {
     if (filter !== null && machineId !== filter) continue;
-    for (const meta of Object.values(map)) rows.push({ machineId, meta });
+    for (const meta of Object.values(map)) {
+      const justDone = doneAt !== undefined && doneAt[`${machineId}/${meta.sessionId}`] !== undefined;
+      rows.push(justDone ? { machineId, meta, justDone: true } : { machineId, meta });
+    }
   }
   return rows.sort(compareSessions);
 }

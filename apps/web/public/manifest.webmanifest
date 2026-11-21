@@ -5,6 +5,10 @@
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
+  "launch_handler": {
+    "client_mode": ["focus-existing", "navigate-existing"]
+  },
+  "handle_links": "preferred",
   "orientation": "portrait-primary",
   "lang": "zh-CN",
   "background_color": "#12181F",

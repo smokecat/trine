@@ -145,6 +145,7 @@ import {
   translateMessage,
   type TranslateState,
 } from './translate.ts';
+import type { PriceTable } from './pricing.ts';
 import type { EventBody, EventBodyOf } from './types.ts';
 import { contextUsageFrom, rateLimitPatchFromEvent, type RateLimitPatch } from './usage.ts';
 
@@ -196,6 +197,8 @@ export interface ClaudeSessionOptions {
   heartbeatIntervalMs?: number;
   /** 注入 SDK query，测试用假实现替换 */
   queryFn?: typeof query;
+  /** 第三方模型价目表（见 pricing.ts）；不给 = 用 SDK 的 total_cost_usd */
+  priceTable?: PriceTable;
   /** 注入延时（续跑退避用）；测试传假实现避免真睡 */
   sleep?: (ms: number) => Promise<void>;
   /** run 结束回调，供 SessionManager 做空闲回收计时 */
@@ -319,6 +322,8 @@ export class ClaudeSession implements EngineSession {
   #costBaselineUsd = 0;
   /** 当前 query 报上来的累计成本（该 query 内单调递增） */
   #currentQueryCostUsd = 0;
+  /** 第三方模型价目表；undefined = 用 SDK 的 total_cost_usd */
+  readonly #priceTable: PriceTable | undefined;
   #lastActivityAt: number;
   #closed = false;
   #resumeRequested: boolean;
@@ -403,6 +408,7 @@ export class ClaudeSession implements EngineSession {
     this.#pendingRewind = options.rewindPoint;
     this.#onRewindApplied = options.onRewindApplied;
     this.#onRateLimits = options.onRateLimits;
+    this.#priceTable = options.priceTable;
     this.#lastActivityAt = this.#now();
     this.#translate = createTranslateState(this.#now());
 
@@ -1208,11 +1214,17 @@ export class ClaudeSession implements EngineSession {
       bodies = translateMessage(message, {
         now: this.#now(),
         state: this.#translate,
+        ...(this.#priceTable === undefined ? {} : { pricing: this.#priceTable }),
       });
     } catch (err) {
       this.#log(`[session ${this.sessionId}] 翻译 SDK 消息失败，已跳过该帧（type=${message.type}）：${errorText(err)}`);
     }
+    // 配了价目表时，会话累计成本改为「按 turn 累加 run.done 的增量」：
+    // translate 已经按 token 自己算过（见 pricing.ts），这里不能再拿 SDK 的
+    // total_cost_usd 覆盖，否则显示的还是被高估的数。
+    let pricedRunUsd: number | undefined;
     for (const body of bodies) {
+      if (body.type === 'run.done') pricedRunUsd = body.costUsd;
       this.#applyHeartbeatSideEffects(body);
       this.#emit(body);
     }
@@ -1221,7 +1233,7 @@ export class ClaudeSession implements EngineSession {
     this.#touch();
 
     if (message.type === 'result') {
-      this.#closeRound(message);
+      this.#closeRound(message, pricedRunUsd);
       this.#refreshContext();
     }
   }
@@ -1422,7 +1434,7 @@ export class ClaudeSession implements EngineSession {
    * RESUME_HINT，用户原文静默丢失；以及首帧因故没打标记被判成自发轮——result
    * 一到就纠正回用户轮，在途消息不会永久挂死。
    */
-  #closeRound(message: Extract<SDKMessage, { type: 'result' }>): void {
+  #closeRound(message: Extract<SDKMessage, { type: 'result' }>, pricedRunUsd?: number): void {
     const round = this.#round;
     this.#round = undefined;
     if (round !== undefined) this.#reconcileRoundByResult(round, message);
@@ -1431,9 +1443,14 @@ export class ClaudeSession implements EngineSession {
     // 是 **per-query() 累计**，且文档明说 resumed session 从头算
     // （"resumed sessions start fresh"）。直接赋值会让 resume 后会话成本
     // 从 $1.20 缩水成本轮的 $0.05。
-    const raw = message.total_cost_usd;
-    if (typeof raw === 'number' && Number.isFinite(raw)) {
-      this.#currentQueryCostUsd = raw;
+    if (this.#priceTable !== undefined && pricedRunUsd !== undefined) {
+      // 价目表模式：累加本 turn 自算的增量（与 run.done 同一来源，口径一致）
+      this.#currentQueryCostUsd += pricedRunUsd;
+    } else {
+      const raw = message.total_cost_usd;
+      if (typeof raw === 'number' && Number.isFinite(raw)) {
+        this.#currentQueryCostUsd = raw;
+      }
     }
     this.#costUsd = this.#costBaselineUsd + this.#currentQueryCostUsd;
     this.#onMeta?.(this.meta());
@@ -1580,6 +1597,9 @@ export class ClaudeSession implements EngineSession {
     this.#costBaselineUsd += this.#currentQueryCostUsd;
     this.#currentQueryCostUsd = 0;
     this.#translate.lastCostUsd = 0;
+    // 新 query 的 modelUsage 从 0 重新累计，价目表基线一并清零（否则增量会被 clamp 成 0）
+    this.#translate.lastTokens = {};
+    this.#translate.lastModelCostUsd = {};
     this.#round = undefined;
     // 子进程一拆，在跑的后台任务随之死亡
     this.#syncBgTasks(this.#bgTasks.markAllStopped());

@@ -207,12 +207,26 @@ export type Prefs = z.infer<typeof PrefsSchema>;
  * 1M 上下文；haiku 没有 1M 形式，CLI 会拒收 `haiku[1m]`）。不放具体 ID：那样
  * 每次模型升级都得改这里并补种。
  */
-export const DEFAULT_KNOWN_MODELS = ['fable', 'fable[1m]', 'opus', 'opus[1m]', 'sonnet', 'sonnet[1m]', 'haiku'];
+export const DEFAULT_KNOWN_MODELS = [
+  'fable',
+  'fable[1m]',
+  'opus',
+  'opus[1m]',
+  'sonnet',
+  'sonnet[1m]',
+  'haiku',
+  // 网关直通的第三方模型（jev-gateway 按模型名前缀路由：deepseek-* → DeepSeek 上游）。
+  // 写上具体 ID 是刻意的：别名只对 Anthropic 系有意义，这些名字本身就是选择器里的标识。
+  'deepseek-flash[1m]',
+  'deepseek-flash',
+  'deepseek-v4-pro',
+];
 /**
  * 与 DEFAULT_KNOWN_MODELS 同步递增：v1 首发四款；v2 加 claude-opus-5-5（2026-09-25）；
- * v3 换成别名，并移除 v1/v2 预置的具体 ID（2026-10-18）。
+ * v3 换成别名，并移除 v1/v2 预置的具体 ID（2026-10-18）；
+ * v4 预置 DeepSeek 三款（2026-11-11，走 8787 网关直通）。
  */
-export const KNOWN_MODELS_SEED = 3;
+export const KNOWN_MODELS_SEED = 4;
 /** v3 之前预置过的具体 ID：补种 v3 时从老 prefs 里移除（用户自己加的不动） */
 const LEGACY_KNOWN_MODELS = [
   'claude-fable-5-1',

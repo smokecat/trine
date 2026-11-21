@@ -33,6 +33,9 @@ import {
 import { EventEmitter, scopedEmitter } from './emitter.ts';
 import type { EngineSession } from '../engine/types.ts';
 import { ClaudeSession, type RewindPoint, type SessionRuntimeMeta } from './session.ts';
+import { readAiTitle, readAiTitles } from './ai-title.ts';
+import { generateSessionTitle } from './auto-title.ts';
+import type { PriceTable } from './pricing.ts';
 import type { HeadlessProbe } from './session-origin.ts';
 import type { EventBody } from './types.ts';
 import type { RateLimitPatch } from './usage.ts';
@@ -45,6 +48,10 @@ export interface SessionFlags {
   archivedAt(sessionId: string): number | undefined;
   pinnedAt(sessionId: string): number | undefined;
   pendingTitle(sessionId: string): string | undefined;
+  /** trine 自己生成的会话主题标题（见 auto-title.ts） */
+  autoTitle(sessionId: string): string | undefined;
+  /** 记下 trine 生成的标题（写盘失败会 reject） */
+  setAutoTitle(sessionId: string, title: string): Promise<void>;
   isDeleted(sessionId: string): boolean;
   /** 同步清掉归档标记（落盘在后台）——`#onMeta` 是同步回调，等不了写盘 */
   unarchiveNow(sessionId: string): void;
@@ -58,9 +65,23 @@ export interface SessionSeed {
   createdAt?: number;
 }
 
-/** SDK 会话信息 → 显示标题（summary 本身已是「custom title → 自动摘要 → 首条输入」） */
-export function titleFromInfo(info: SDKSessionInfo): string {
-  return info.customTitle ?? info.summary ?? info.firstPrompt ?? '';
+/**
+ * SDK 会话信息 → 显示标题。
+ *
+ * 优先级：用户 `/rename` 的 customTitle > CC 自动标题（ai-title）> **首条输入**
+ * > SDK 的 summary。
+ *
+ * 关键：没有标题时 SDK 的 `summary` 是**最后一条用户消息**，跟着它走会让列表
+ * 标题每问一句就变一次。首条输入稳定，也最接近「这个会话在聊什么」。
+ * CC 自动标题只在交互式会话里生成；SDK 会话没有，这时由 trine 自己的
+ * auto-title（`flags.autoTitles`）在首轮跑完后补一个主题标题。
+ */
+export function titleFromInfo(info: SDKSessionInfo, aiTitle?: string | undefined): string {
+  // 用 || 而不是 ??：空串（SDK 给 '' 表示没有）也应当继续往下一档回退。
+  // 首条是斜杠命令（如 /bujia）时它不是有意义的标题，退回 summary。
+  const firstPrompt = info.firstPrompt?.trim();
+  const usableFirst = firstPrompt !== undefined && firstPrompt.length >= 4 && !firstPrompt.startsWith('/');
+  return info.customTitle || aiTitle || (usableFirst ? firstPrompt : '') || info.summary || '';
 }
 
 /** SDK 会话信息 → resume 种子 */
@@ -125,6 +146,8 @@ export interface SessionManagerOptions {
   uploadsDir?: (sessionId: string) => string;
   /** 给会话子进程额外设的环境变量（叠在 agent 自己的 env 上）；不给 = 原样继承 */
   sessionEnv?: (sessionId: string) => Record<string, string>;
+  /** 第三方模型价目表（见 pricing.ts），透传给每个 Claude 会话；不给 = 用 SDK 成本 */
+  priceTable?: PriceTable;
   /** 会话标记；不给则不合并 archived / pendingTitle、不过滤墓碑 */
   flags?: SessionFlags;
   /** 会话关联（扩展，ext/links-store.ts）：decorate 时并进 meta.links */
@@ -235,6 +258,7 @@ export class SessionManager {
   readonly #claudeExecutable: string | undefined;
   readonly #uploadsDir: ((sessionId: string) => string) | undefined;
   readonly #sessionEnv: ((sessionId: string) => Record<string, string>) | undefined;
+  readonly #priceTable: PriceTable | undefined;
   readonly #flags: SessionFlags | undefined;
   readonly #sessionLinks: ((sessionId: string) => SessionLink[] | undefined) | undefined;
   readonly #rememberedParams: SessionManagerOptions['rememberedParams'];
@@ -254,6 +278,9 @@ export class SessionManager {
   readonly #titled = new Set<string>();
   /** 轮末标题复查的定时器（每个会话至多一个） */
   readonly #titleTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+  /** 本进程已尝试过自动起名的会话：失败不重试，避免每轮都打一次模型 */
+  readonly #autoTitleTried = new Set<string>();
 
   /** sessionId → 活跃会话。**这张表就是互斥锁** */
   readonly #sessions = new Map<string, EngineSession>();
@@ -279,6 +306,7 @@ export class SessionManager {
     this.#claudeExecutable = options.claudeExecutable;
     this.#uploadsDir = options.uploadsDir;
     this.#sessionEnv = options.sessionEnv;
+    this.#priceTable = options.priceTable;
     this.#onRunEnd = options.onRunEnd;
     this.#onPermissionModeChange = options.onPermissionModeChange;
     this.#onRewindApplied = options.onRewindApplied;
@@ -393,6 +421,7 @@ export class SessionManager {
       ...(this.#onRateLimits === undefined ? {} : { onRateLimits: this.#onRateLimits }),
       ...(this.#uploadsDir === undefined ? {} : { additionalDirectories: [this.#uploadsDir(args.sessionId)] }),
       ...(this.#sessionEnv === undefined ? {} : { env: this.#sessionEnv(args.sessionId) }),
+      ...(this.#priceTable === undefined ? {} : { priceTable: this.#priceTable }),
     });
 
     this.#sessions.set(args.sessionId, session);
@@ -565,6 +594,10 @@ export class SessionManager {
       externalList,
     ]);
     await this.#probeHeadless(infos);
+    // CC 自动标题在转录里，SDK 不返回（见 ai-title.ts）；一次批量读，带 mtime 缓存
+    const aiTitles = await readAiTitles(
+      infos.map((info) => ({ sessionId: info.sessionId, ...(info.cwd === undefined ? {} : { cwd: info.cwd }) })),
+    );
 
     const out: SessionMeta[] = [];
     const seen = new Set<string>();
@@ -574,8 +607,12 @@ export class SessionManager {
       // 墓碑兜底：删除后子进程 re-stamp 等意外可能留下残缺 jsonl，别让它复活
       if (this.#flags?.isDeleted(info.sessionId) === true) continue;
       // 派生字段回填缓存（验收 V1）：之后 snapshot / #onMeta 的广播与本次列表同口径
-      this.#backfill(info);
-      out.push(this.decorate(this.#fromInfo(info), { hasCustomTitle: info.customTitle !== undefined }));
+      this.#backfill(info, aiTitles.get(info.sessionId));
+      out.push(
+        this.decorate(this.#fromInfo(info, aiTitles.get(info.sessionId)), {
+          hasCustomTitle: info.customTitle !== undefined,
+        }),
+      );
     }
 
     // 同时在运行的其他引擎会话：标题、分支等以目录为准（如 CLI 里改了名），运行时字段以缓存为准
@@ -672,11 +709,14 @@ export class SessionManager {
     const flags = this.#flags;
     if (flags === undefined) return rest;
     const pending = options.hasCustomTitle === true ? undefined : flags.pendingTitle(meta.sessionId);
+    // trine 生成的主题标题：用户改过名（customTitle）时让位
+    const auto = options.hasCustomTitle === true ? undefined : flags.autoTitle(meta.sessionId);
     const at = flags.archivedAt(meta.sessionId);
     const pinnedAt = flags.pinnedAt(meta.sessionId);
     return {
       ...rest,
       ...(pending === undefined ? {} : { title: pending }),
+      ...(pending === undefined && auto !== undefined ? { title: auto } : {}),
       ...(at === undefined ? {} : { archived: true, archivedAt: at }),
       ...(pinnedAt === undefined ? {} : { pinnedAt }),
     };
@@ -731,17 +771,19 @@ export class SessionManager {
     if (current !== undefined) {
       if (current.title === '' || current.lastEvent === undefined) {
         const info = await this.#getSessionInfo(sessionId).catch(() => undefined);
-        if (info !== undefined) this.#backfill(info);
+        if (info !== undefined) this.#backfill(info, await readAiTitle(info.sessionId, info.cwd));
       }
       return this.metaOf(sessionId);
     }
     const external = this.#external?.metaOf(sessionId);
     if (external !== undefined) return this.#decorateExternal(external);
     const info = await this.#getSessionInfo(sessionId);
-    if (info !== undefined) await this.#probeHeadless([info]);
-    return info === undefined
-      ? undefined
-      : this.decorate(this.#fromInfo(info), { hasCustomTitle: info.customTitle !== undefined });
+    if (info === undefined) return undefined;
+    await this.#probeHeadless([info]);
+    const aiTitle = await readAiTitle(info.sessionId, info.cwd);
+    return this.decorate(this.#fromInfo(info, aiTitle), {
+      hasCustomTitle: info.customTitle !== undefined,
+    });
   }
 
   /** 写转录的 custom-title（与 CLI `/rename` 同格式）。文件不存在 / 0 字节时 SDK 抛错 */
@@ -772,14 +814,17 @@ export class SessionManager {
    * 写回，而 snapshot()、`#onMeta` 都从缓存出 meta——没手动改过名的会话缓存
    * title 永远是 ''，rename / archive / 状态迁移广播出去的就是贫瘠版。
    */
-  #backfill(info: SDKSessionInfo): void {
+  #backfill(info: SDKSessionInfo, aiTitle?: string | undefined): void {
     const cached = this.#meta.get(info.sessionId);
     if (cached === undefined) return;
-    const title = titleFromInfo(info);
+    const title = titleFromInfo(info, aiTitle);
     const patch: Partial<SessionMeta> = {};
     if (info.customTitle !== undefined) {
       this.#titled.add(info.sessionId);
       if (cached.title !== info.customTitle) patch.title = info.customTitle;
+    } else if (aiTitle !== undefined) {
+      // CC 自动标题同样要能覆盖缓存：它是转录里会随会话进展更新的正式标题
+      if (cached.title !== aiTitle) patch.title = aiTitle;
     } else if (cached.title === '' && title !== '') {
       patch.title = title;
     }
@@ -804,14 +849,14 @@ export class SessionManager {
   }
 
   /** SDK 会话信息 + 本进程运行时状态 → SessionMeta（未合并标记） */
-  #fromInfo(info: SDKSessionInfo): SessionMeta {
+  #fromInfo(info: SDKSessionInfo, aiTitle?: string | undefined): SessionMeta {
     const live = this.#sessions.get(info.sessionId);
     const cached = this.#meta.get(info.sessionId);
     const remembered = cached === undefined ? this.#rememberedParams?.(info.sessionId) : undefined;
     const state = live?.state ?? cached?.state ?? 'idle';
     return {
       sessionId: info.sessionId,
-      title: titleFromInfo(info),
+      title: titleFromInfo(info, aiTitle),
       state,
       lastActivityAt: live?.lastActivityAt ?? info.lastModified,
       cwd: info.cwd ?? cached?.cwd ?? '',
@@ -903,11 +948,50 @@ export class SessionManager {
     this.#emitter.emit({ type: 'session.updated', session: this.decorate(merged) }, null);
     if (previous !== undefined && inRun(previous.state) && !inRun(runtime.state)) {
       this.#onRunEnd?.(sid);
+      // 先跟上引擎自己起的标题（Claude Code 的 aiTitle）；再给没有正式
+      // 标题的会话补一个主题标题（不改转录，存 flags）
       this.#refreshTitle(sid, true);
+      this.#maybeAutoTitle(sid);
     }
     if (previous !== undefined && previous.permissionMode !== runtime.permissionMode) {
       this.#onPermissionModeChange?.(sid, runtime.permissionMode);
     }
+  }
+
+  /**
+   * 没有正式标题的会话，首轮跑完后生成一个主题标题（见 auto-title.ts）。
+   *
+   * 只在「标题还等于首条消息」时触发：用户 `/rename` 过（customTitle）或
+   * CC 给了自动标题（customTitle/aiTitle）的会话不受影响。生成结果存进
+   * flags（不改转录），失败静默——列表退回显示首条消息。
+   */
+  #maybeAutoTitle(sessionId: string): void {
+    if (process.env.TRINE_AUTO_TITLE === 'off') return;
+    if (this.#autoTitleTried.has(sessionId)) return;
+    if (this.#flags?.autoTitle(sessionId) !== undefined) return;
+    const meta = this.#meta.get(sessionId);
+    if (meta === undefined) return;
+    const firstPrompt = meta.firstPrompt?.trim();
+    // 斜杠命令 / 过短的输入起不出有意义的标题，交给列表回退 summary
+    if (firstPrompt === undefined || firstPrompt.length < 4 || firstPrompt.startsWith('/')) return;
+    if (meta.title !== '' && meta.title !== firstPrompt) return;
+    this.#autoTitleTried.add(sessionId);
+    const flags = this.#flags;
+    if (flags === undefined) return;
+    void (async () => {
+      const title = await generateSessionTitle(firstPrompt);
+      if (title === undefined || flags.isDeleted(sessionId)) return;
+      try {
+        await flags.setAutoTitle(sessionId, title);
+      } catch {
+        return;
+      }
+      const current = this.#meta.get(sessionId);
+      if (current === undefined) return;
+      const merged = { ...current, title };
+      this.#meta.set(sessionId, merged);
+      this.#emitter.emit({ type: 'session.updated', session: this.decorate(merged) }, null);
+    })();
   }
 
   /**

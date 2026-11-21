@@ -38,6 +38,7 @@ import { TrustStore } from '../files/trust-store.ts';
 import { BookmarkStore } from '../files/bookmark-store.ts';
 import { EventEmitter } from '../bridge/emitter.ts';
 import { SessionManager, type CreateSessionArgs } from '../bridge/manager.ts';
+import { loadPriceTable } from '../bridge/pricing.ts';
 import type { EngineSession } from '../engine/types.ts';
 import { createHeadlessProbe, type HeadlessProbe } from '../bridge/session-origin.ts';
 import type { EventBody, OutboundEvent } from '../bridge/types.ts';
@@ -290,6 +291,8 @@ export class AgentApp {
             log,
             onChange: () => app.#emitMachine({ type: 'machine.info', info: app.machineInfo() }),
           });
+    // {home}/pricing.json（可选）：第三方模型的单价，缺席则沿用 SDK 成本
+    const priceTable = loadPriceTable(join(resolve(config.home), 'pricing.json'), log);
     const manager = new SessionManager({
       emitter,
       now,
@@ -309,6 +312,9 @@ export class AgentApp {
       // 会话里跑的 `trine-agent restart` 据此找到本 agent、认出发起的会话
       // home 转成绝对路径：子进程的 cwd 是会话目录，相对路径会指到别处
       sessionEnv: (sessionId) => ({ TRINE_HOME: resolve(config.home), TRINE_SESSION_ID: sessionId }),
+      // 第三方模型（deepseek-* / glm-*）的价目表：CC 内置价目表里没有它们，
+      // 不配就会按 Sonnet 档高估数倍（见 bridge/pricing.ts）
+      ...(priceTable === undefined ? {} : { priceTable }),
       ...(config.maxSessions === undefined ? {} : { maxConcurrent: config.maxSessions }),
       ...(config.idleTimeoutMs === undefined ? {} : { idleTimeoutMs: config.idleTimeoutMs }),
       ...(deps.listSessionsFn === undefined ? {} : { listSessionsFn: deps.listSessionsFn }),

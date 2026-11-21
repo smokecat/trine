@@ -260,6 +260,15 @@
   }
 }
 
+/* PWA 刘海下顶部 toast 的避让：sonner 的 fixed 容器自带 inline top（默认
+ * 间距 32px），用同值 + 安全区 calc 覆盖；只在真有安全区的方向生效
+ * （env 无刘海时为 0，等价于默认）。桌面浏览器不受影响。 */
+@supports (top: env(safe-area-inset-top, 0px)) {
+  ol[data-sonner-toaster][data-y-position='top'] {
+    top: calc(env(safe-area-inset-top, 0px) + 32px) !important;
+  }
+}
+
 /* iOS Safari 聚焦字号 <16px 的输入框会自动放大页面（且不回缩），触屏设备上
  * 统一抬到 16px；!important 用来压过组件上的 text-xs / text-[14px] 等工具类 */
 @media (pointer: coarse) {

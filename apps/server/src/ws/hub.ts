@@ -27,6 +27,7 @@ import {
 import type { AuthService } from '../auth/index.ts';
 import type { ServerConfig } from '../config.ts';
 import type { PushDispatcher } from '../push/index.ts';
+import type { WebPushService } from '../push/webpush.ts';
 import { ParkedQueue } from '../store/parked.ts';
 import type { FrameDir, Store } from '../store/index.ts';
 import type {
@@ -86,6 +87,12 @@ export interface HubDeps<T extends Sendable = Sendable> {
    */
   auth?: AuthService;
   push?: PushDispatcher;
+  /**
+   * Web Push（PWA 通知）服务：按设备定向，与 dispatcher 的广播模型互补
+   * （为什么分两套见 push/webpush.ts 的头注释）。可选省略时 push.* 帧退化为
+   * 回执「未启用」，routeToRecipient 不做按设备投递。
+   */
+  webpush?: WebPushService;
   now?: () => number;
   log?: (line: string) => void;
 }
@@ -156,6 +163,10 @@ export class RelayHub<T extends Sendable = Sendable> {
         return this.handleSync(conn, frame);
       case 'park.recall':
         return this.handleRecall(conn, frame);
+      case 'push.subscribe':
+      case 'push.unsubscribe':
+      case 'push.mute':
+        return this.handlePushSubs(conn, frame);
       case 'pair.begin':
       case 'pair.confirm':
       case 'pair.abort':
@@ -167,8 +178,43 @@ export class RelayHub<T extends Sendable = Sendable> {
       case 'parked.count':
       case 'park.expired':
       case 'relay.reject':
+      case 'push.config':
+      case 'push.subscribed':
         return { kind: 'rejected', reason: `server_only_frame:${frame.type}` };
     }
+  }
+
+  /**
+   * push.subscribe / push.unsubscribe / push.mute：client 的 Web Push 订阅与
+   * 会话静音名单。deviceId 一律取连接身份（token 换回的），帧上没有自报字段可骗。
+   * 仅 client 角色可发——agent 机器没有「收通知的浏览器」。
+   */
+  private handlePushSubs(
+    conn: Conn<T>,
+    frame: Extract<TransportFrame, { type: 'push.subscribe' | 'push.unsubscribe' | 'push.mute' }>,
+  ): HandleOutcome {
+    if (conn.role !== 'client') {
+      return { kind: 'rejected', reason: 'push_sub_from_agent' };
+    }
+    const webpush = this.deps.webpush;
+    if (!webpush) {
+      // 该部署没启用 Web Push（理论上不会发生：装配总造服务；留作测试兜底）
+      this.send(conn, encodeTransportFrame({
+        type: 'push.subscribed', ok: false, error: '本服务未启用 Web Push',
+      }));
+      return { kind: 'ignored', reason: 'webpush_disabled' };
+    }
+    if (frame.type === 'push.subscribe') {
+      webpush.subscribe(conn.deviceId, frame);
+      this.send(conn, encodeTransportFrame({ type: 'push.subscribed', ok: true }));
+    } else if (frame.type === 'push.mute') {
+      // 静音名单无回执：全量覆盖幂等，客户端重连重报即收敛
+      webpush.setMutes(conn.deviceId, frame.sessionIds);
+    } else {
+      webpush.unsubscribe(conn.deviceId);
+      this.send(conn, encodeTransportFrame({ type: 'push.subscribed', ok: true }));
+    }
+    return { kind: 'ignored', reason: `push_${frame.type}` };
   }
 
   // -------------------------------------------------------------------------
@@ -297,6 +343,18 @@ export class RelayHub<T extends Sendable = Sendable> {
         hint: frame.pushHint,
         at: now,
       });
+      // Web Push 按帧的收件设备定向投递（每收件人一帧，天然知道推给谁）；
+      // 同样 fire-and-forget，绝不阻塞中转
+      if (this.deps.webpush && frame.recipientDeviceId !== undefined) {
+        this.deps.webpush.deliverTo({
+          machineId: frame.machineId,
+          recipientDeviceId: frame.recipientDeviceId,
+          ...(frame.sessionId !== undefined
+            ? { sessionId: frame.sessionId }
+            : {}),
+          hint: frame.pushHint,
+        });
+      }
     }
     return { kind: 'relayed', dir: 'a2c', targets };
   }
@@ -824,6 +882,11 @@ export class RelayHub<T extends Sendable = Sendable> {
   /** client 上线：把全部已知机器的在线状态与排队数推一遍 */
   onClientOnline(conn: Conn<T>): void {
     const now = this.now();
+    // Web Push 公钥随首次连接下发（没启用的部署不发，client 据此隐藏通知开关）
+    const vapid = this.deps.webpush?.vapidPublicKey;
+    if (vapid) {
+      this.send(conn, encodeTransportFrame({ type: 'push.config', vapidPublicKey: vapid }));
+    }
     for (const device of this.deps.store.listDevices('agent')) {
       this.sendMachineStatus(conn, device.deviceId);
       const count = this.parked.pendingCount(device.deviceId, now);

@@ -34,6 +34,7 @@
  */
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import { PermissionModeSchema, type PermissionMode, type SessionState } from '@trine/core';
+import { costOfTokens, ratesFor, ZERO_TOKENS, type PriceTable, type TokenCounts } from './pricing.ts';
 import {
   isAsyncLaunch,
   isClaudeSubagentTool,
@@ -114,6 +115,10 @@ export interface TranslateState {
   runStartedAt: number;
   /** 上一次 result 的累计成本——SDK 的 total_cost_usd 是累计值，见下 */
   lastCostUsd: number;
+  /** 配了价目表时：各模型上一轮累计的 token 数（modelUsage 跨 turn 累计，作差用） */
+  lastTokens: Record<string, TokenCounts>;
+  /** 配了价目表时：价目表没覆盖的模型，记住它上一轮 SDK 报的累计成本 */
+  lastModelCostUsd: Record<string, number>;
   /** 正在累积 assistant.done 全文的 messageId（多块消息共享同一 id） */
   doneTextFor: string | undefined;
   /** 该 messageId 已累积的全文 */
@@ -143,6 +148,8 @@ export function createTranslateState(now: number): TranslateState {
     permissionCount: 0,
     runStartedAt: now,
     lastCostUsd: 0,
+    lastTokens: {},
+    lastModelCostUsd: {},
     currentMessageId: undefined,
     pendingSeq: 0,
     doneTextFor: undefined,
@@ -155,6 +162,8 @@ export function createTranslateState(now: number): TranslateState {
 export interface TranslateContext {
   now: number;
   state: TranslateState;
+  /** 第三方模型的价目表；不给 = 用 SDK 的 total_cost_usd（见 pricing.ts） */
+  pricing?: PriceTable | undefined;
 }
 
 /** 从 Anthropic 内容块里取文本（块可能是字符串或块数组） */
@@ -460,6 +469,62 @@ function translateUser(
  * 每个 result 带的是「到目前为止的总额」。所以 run.done 的 costUsd 取差值
  * （本次 run 的增量），会话级累计另由会话层记 lastCostUsd。
  */
+/**
+ * 用价目表把「本轮新增的 token」算成美元。
+ *
+ * `modelUsage` 是跨 turn 累计的（含子 agent / 压缩等内部调用），所以先与上一轮
+ * 基线作差；基线只单调前进（取 max），这样崩溃型 result 的零值不会把基线打回 0、
+ * 让下一轮把整段上下文重复计费。
+ *
+ * 返回 undefined = 价目表里一个模型都没对上（比如全是 Anthropic 官方模型），
+ * 调用方应回退 SDK 的 total_cost_usd。
+ */
+function pricedTurnCost(
+  message: Extract<SDKMessage, { type: 'result' }>,
+  ctx: TranslateContext,
+): number | undefined {
+  const table = ctx.pricing;
+  const modelUsage = message.modelUsage;
+  if (table === undefined || modelUsage === undefined) return undefined;
+  let total = 0;
+  let matched = false;
+  for (const [model, usage] of Object.entries(modelUsage)) {
+    const entry = table.models[model];
+    if (entry === undefined) {
+      // 没配价目的模型（子 agent 小模型等）：沿用 SDK 报的累计成本，同样作差
+      const reported = typeof usage.costUSD === 'number' && Number.isFinite(usage.costUSD) ? usage.costUSD : 0;
+      const prev = ctx.state.lastModelCostUsd[model] ?? 0;
+      total += Math.max(0, reported - prev);
+      ctx.state.lastModelCostUsd[model] = Math.max(prev, reported);
+      continue;
+    }
+    matched = true;
+    const current: TokenCounts = {
+      input: usage.inputTokens,
+      output: usage.outputTokens,
+      cacheRead: usage.cacheReadInputTokens,
+      cacheWrite: usage.cacheCreationInputTokens,
+    };
+    const prev = ctx.state.lastTokens[model] ?? ZERO_TOKENS;
+    total += costOfTokens(
+      {
+        input: Math.max(0, current.input - prev.input),
+        output: Math.max(0, current.output - prev.output),
+        cacheRead: Math.max(0, current.cacheRead - prev.cacheRead),
+        cacheWrite: Math.max(0, current.cacheWrite - prev.cacheWrite),
+      },
+      ratesFor(entry, ctx.now, table),
+    );
+    ctx.state.lastTokens[model] = {
+      input: Math.max(prev.input, current.input),
+      output: Math.max(prev.output, current.output),
+      cacheRead: Math.max(prev.cacheRead, current.cacheRead),
+      cacheWrite: Math.max(prev.cacheWrite, current.cacheWrite),
+    };
+  }
+  return matched ? total : undefined;
+}
+
 function translateResult(
   message: Extract<SDKMessage, { type: 'result' }>,
   ctx: TranslateContext,
@@ -469,10 +534,19 @@ function translateResult(
   // `undefined - lastCostUsd` = NaN，而协议的 costUsd 是 z.number()——NaN 过不了
   // schema，client 会把整条 run.done 丢掉，UI 就永远停在「运行中」。
   // 恰恰是崩溃场景最需要这张完成卡，所以这里必须兜住。
-  const raw = message.total_cost_usd;
-  const cumulative = typeof raw === 'number' && Number.isFinite(raw) ? raw : ctx.state.lastCostUsd;
-  const delta = Math.max(0, cumulative - ctx.state.lastCostUsd);
-  ctx.state.lastCostUsd = cumulative;
+  // 配了价目表且对上了模型：自己按 token 算（第三方模型 CC 会按 Anthropic
+  // 价目高估数倍，见 pricing.ts）。否则保持原行为，用 SDK 的累计值作差。
+  const priced = pricedTurnCost(message, ctx);
+  let delta: number;
+  if (priced !== undefined) {
+    delta = priced;
+    ctx.state.lastCostUsd += priced;
+  } else {
+    const raw = message.total_cost_usd;
+    const cumulative = typeof raw === 'number' && Number.isFinite(raw) ? raw : ctx.state.lastCostUsd;
+    delta = Math.max(0, cumulative - ctx.state.lastCostUsd);
+    ctx.state.lastCostUsd = cumulative;
+  }
 
   const done: EventBody = {
     type: 'run.done',

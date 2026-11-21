@@ -15,18 +15,24 @@ import { comparePinned, compareSessions, STATE_RANK, type SessionRowData } from 
  * 状态 chip。「进行中」与 `countActiveSessions` / 机器 chip 的 activeCount
  * 同一口径（运行中 ∪ 待批准，评审 S4），否则 chip 上的数字与点进来的结果对不上。
  */
-export const STATUS_FILTERS = ['all', 'active', 'waiting', 'idle', 'ended'] as const;
+export const STATUS_FILTERS = ['all', 'active', 'waiting', 'done', 'idle', 'ended'] as const;
 export type StatusFilter = (typeof STATUS_FILTERS)[number];
 
 export const STATUS_FILTER_LABEL: Record<StatusFilter, string> = {
   all: '全部',
   active: '进行中',
   waiting: '待批准',
+  done: '已完成',
   idle: '空闲',
   ended: '出错/已停止',
 };
 
-export function matchesStatus(state: SessionState, filter: StatusFilter): boolean {
+/**
+ * `done` 是客户端本地叠加态（run.done 打标、看过即消，见 store/types.ts 的
+ * doneAt）：只匹配「刚跑完还没看过」的会话——它们在 agent 侧 state 已落回
+ * idle。其余档只看 agent 权威 state（`done` 标记的行在 `idle` 档里也出现）。
+ */
+export function matchesStatus(state: SessionState, filter: StatusFilter, justDone = false): boolean {
   switch (filter) {
     case 'all':
       return true;
@@ -34,6 +40,8 @@ export function matchesStatus(state: SessionState, filter: StatusFilter): boolea
       return state === 'running' || state === 'waiting_permission';
     case 'waiting':
       return state === 'waiting_permission';
+    case 'done':
+      return justDone;
     case 'idle':
       return state === 'idle';
     case 'ended':
@@ -371,12 +379,16 @@ export function filterSessions(
   machineNames: Record<string, string> = {},
   pinnedCwds: PinnedCwds = {},
   pinSort: PinSortContext = {},
+  doneAt: Record<string, number> = {},
 ): FilterResult {
-  // 1. 机器
+  // 1. 机器（顺手带上「已完成」本地标记，后续状态筛选 / 排序要用）
   const scoped: SessionRowData[] = [];
   for (const [machineId, map] of Object.entries(sessions)) {
     if (query.machine !== null && machineId !== query.machine) continue;
-    for (const meta of Object.values(map)) scoped.push({ machineId, meta });
+    for (const meta of Object.values(map)) {
+      const justDone = doneAt[`${machineId}/${meta.sessionId}`] !== undefined;
+      scoped.push(justDone ? { machineId, meta, justDone: true } : { machineId, meta });
+    }
   }
 
   // 2. 归档视图
@@ -401,7 +413,7 @@ export function filterSessions(
   // 4. 状态
   const statusRows = kept.filter(
     (r) =>
-      matchesStatus(r.meta.state, query.status) &&
+      matchesStatus(r.meta.state, query.status, r.justDone === true) &&
       ((query.engine ?? null) === null || (r.meta.engine ?? CLAUDE_ENGINE_ID) === query.engine),
   );
 

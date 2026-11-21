@@ -29,7 +29,7 @@ const readJson = async () => JSON.parse(await readFile(path, 'utf8')) as Record<
 describe('SessionFlagsStore · 读写', () => {
   test('不存在 → 空标记，不写文件', async () => {
     const store = await load();
-    expect(store.snapshot()).toEqual({ v: 1, archived: {}, deleted: {}, pendingTitle: {}, pinned: {} });
+    expect(store.snapshot()).toEqual({ v: 1, archived: {}, deleted: {}, pendingTitle: {}, pinned: {}, autoTitles: {} });
     await expect(stat(path)).rejects.toThrow();
     expect(logs).toEqual([]);
   });
@@ -84,7 +84,7 @@ describe('SessionFlagsStore · 读写', () => {
     await store.setPinned('s1', 2);
     await store.markDeleted('s1', 50);
     const file = await readJson();
-    expect(file).toEqual({ v: 1, archived: {}, deleted: { s1: 50 }, pendingTitle: {}, pinned: {} });
+    expect(file).toEqual({ v: 1, archived: {}, deleted: { s1: 50 }, pendingTitle: {}, pinned: {}, autoTitles: {} });
     expect((await load()).isDeleted('s1')).toBe(true);
   });
 
